@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { ReactNode } from "react";
 import type { SecurityEvent } from "../../lib/api";
 import { attributed, vendorFromModelId } from "../../lib/toolEvents";
@@ -42,9 +41,10 @@ import { Icon } from "./Icon";
  *  see `Overview`'s `SAVINGS_SECTION_ID`. */
 export const SECURITY_SECTION_ID = "security-events";
 
-/** Rows per reveal. Ten, and the same ten the App pane's recent-activity table
+/** Rows on screen. Ten, and the same ten the App pane's recent-activity table
  *  shows, because the two tables sit one pane apart and a person reading both
- *  should not have to work out that they count differently. */
+ *  should not have to work out that they count differently. Anything older is
+ *  the dashboard's to show, behind the header's "View activity". */
 const PAGE = 10;
 
 /** The gateway's verb, in the section's vocabulary - the same mapping
@@ -181,6 +181,9 @@ export interface SecurityEventsProps {
    *  whole of what a row leads to since 2026-09-23 - see the note on the
    *  button. */
   onOpenInDashboard: (event: SecurityEvent) => void;
+  /** Open the dashboard's Security list, scoped to this installation as the
+   *  feed is. The header's "View activity" (`1402:17990`). */
+  onViewActivity: () => void;
   /** The catalogue as a lookup (`modelLabelsFor`), for the Model cell's name
    *  and, where the id names no vendor, its mark - the labels the dashboard's
    *  Messages list draws. A prop rather than a field on `SecurityEvent`, which
@@ -208,29 +211,15 @@ export function SecurityEvents({
   historyUnavailable,
   onRetry,
   onOpenInDashboard,
+  onViewActivity,
   modelLabels,
   toolNames,
 }: SecurityEventsProps) {
   // Newest first on screen: a feed is read from the top, and the event a user
   // scrolled down here for is the one that just happened.
-  const all = [...events].reverse();
-  /**
-   * How many rows are on screen. Ten to start, ten more per click, matching
-   * the App pane's recent-activity table - the surface product named as the
-   * pattern for this (2026-09-23).
-   *
-   * Client-side here, unlike that table: this feed arrives over a stream and
-   * the whole session is already in memory, so there is no page to fetch and
-   * "load more" is purely revealing what is held. A session that has been open
-   * a while was drawing every event it had ever seen.
-   *
-   * Not reset when `events` grows. New events arrive at the top and the count
-   * is a floor, not a window, so a reveal the person asked for is not undone
-   * by traffic arriving after it.
-   */
-  const [visible, setVisible] = useState(PAGE);
-  const rows = all.slice(0, visible);
-  const more = all.length - rows.length;
+  // The newest ten. The "load more" that revealed the rest of the session went
+  // on 2026-10-02 for the header's "View activity", which opens the full list.
+  const rows = [...events].reverse().slice(0, PAGE);
 
   return (
     // The pane's own `gap-4` separated the notice from the card while this was a
@@ -260,13 +249,12 @@ export function SecurityEvents({
 
       <Card busy={loading}>
         {loading && <span className="sr-only">Loading security events</span>}
-        {/* The header row the Policies and Token savings cards above draw,
-          * without their action. The frame (`1402:17988`) titles this card
-          * "Recent activity" and gives it a "View activity" button; whether
+        {/* The header row the Policies and Token savings cards above draw. The
+          * frame (`1402:17988`) titles this card "Recent activity"; whether
           * that card is this feed is open (question 4 in
-          * `plans/new-app-ui-figma.md`, design sync 2026-09-30), and the dashboard
-          * has no activity URL to send the button to, so the title and the
-          * Load more below stay. */}
+          * `plans/new-app-ui-figma.md`, design sync 2026-09-30), so the title
+          * stays. Its "View activity" button is drawn, and opens `/security`
+          * for this installation. */}
         {/* The feed's connection pill - Live / Reconnecting / Offline - sat
           * beside this heading until 2026-09-23, when product asked for it to
           * go. "Live" was true on every healthy launch and said nothing; the
@@ -274,7 +262,7 @@ export function SecurityEvents({
           * either, the tray's security card having been removed in #334. An
           * offline feed and a quiet machine now look the same here. Raised
           * with the decision, not overlooked. */}
-        <CardHeader title="Security events" />
+        <CardHeader title="Security events" action={{ label: "View activity", onClick: onViewActivity }} />
         <table className="w-full">
           <thead>
             <tr>
@@ -423,19 +411,6 @@ export function SecurityEvents({
             )}
           </tbody>
         </table>
-        {/* Hidden once there is nothing left to reveal, rather than left on
-          * screen doing nothing - the same rule the App pane's copy of this
-          * control follows, and the reason its own test is called "offers Load
-          * more only when there is another page". A control that reliably does
-          * nothing is the thing the empty-state comment above already argues
-          * against. */}
-        {more > 0 && (
-          <div className="flex justify-center border-t border-base-border px-4 py-4">
-            <OutlineButton size="sm" onClick={() => setVisible((n) => n + PAGE)}>
-              Load more
-            </OutlineButton>
-          </div>
-        )}
       </Card>
     </div>
   );

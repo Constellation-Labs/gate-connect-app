@@ -329,80 +329,27 @@ describe("AppPane recent activity", () => {
     expect(screen.queryByText("row-10")).toBeNull();
   });
 
-  it("reveals the next ten without asking for another page", () => {
-    // The held rows come first. Fetching on every click would pull pages the
-    // person cannot see yet, which is what made this unbounded.
-    const onLoadMore = vi.fn();
+  it("has no Load more, however many rows it holds", () => {
+    // Replaced by the header's View activity on 2026-10-02.
     const many = Array.from({ length: 25 }, (_, i) => ({
       ...entry,
       id: `req-${i}`,
-      // `time` because it is the one per-row field this table actually draws;
-      // `title` and `reference` are on the type but have no cell here.
       time: `row-${i}`,
     }));
-    render(pane({ activity: many, onLoadMore }));
-
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect(screen.getAllByText(/^row-/)).toHaveLength(20);
-    expect(onLoadMore).not.toHaveBeenCalled();
-  });
-
-  it("asks for another page once the reveal runs past what it holds", () => {
-    const onLoadMore = vi.fn();
-    const many = Array.from({ length: 12 }, (_, i) => ({
-      ...entry,
-      id: `req-${i}`,
-      // `time` because it is the one per-row field this table actually draws;
-      // `title` and `reference` are on the type but have no cell here.
-      time: `row-${i}`,
-    }));
-    render(pane({ activity: many, onLoadMore }));
-
-    // 12 held, 10 shown: one click reveals the remaining two and runs out, so
-    // this is the click that has to reach the gateway.
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect(screen.getAllByText(/^row-/)).toHaveLength(12);
-    expect(onLoadMore).toHaveBeenCalledOnce();
-  });
-
-  it("drops the control when everything held is on screen and no page is left", () => {
-    const many = Array.from({ length: 12 }, (_, i) => ({
-      ...entry,
-      id: `req-${i}`,
-      // `time` because it is the one per-row field this table actually draws;
-      // `title` and `reference` are on the type but have no cell here.
-      time: `row-${i}`,
-    }));
-    render(pane({ activity: many }));
-
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    render(pane({ activity: many, onViewActivity: () => {} }));
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
-  it("starts the next app at ten rows, whatever the last one revealed", () => {
-    // The count followed the component rather than the app: nothing remounts
-    // the pane on a switch, so a reveal on one app carried into the next.
-    const many = Array.from({ length: 25 }, (_, i) => ({
-      ...entry,
-      id: `req-${i}`,
-      time: `row-${i}`,
-    }));
-    const { rerender } = render(pane({ name: "Claude", activity: many }));
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect(screen.getAllByText(/^row-/)).toHaveLength(20);
-
-    rerender(pane({ name: "Codex", activity: many.map((e) => ({ ...e })) }));
-    expect(screen.getAllByText(/^row-/)).toHaveLength(10);
+  it("opens the dashboard's list from the header's View activity", () => {
+    const onViewActivity = vi.fn();
+    render(pane({ activity: [entry], onViewActivity }));
+    fireEvent.click(screen.getByRole("button", { name: "View activity" }));
+    expect(onViewActivity).toHaveBeenCalledOnce();
   });
 
-  it("offers Load more only when there is another page", () => {
-    const onLoadMore = vi.fn();
-    render(pane({ activity: [entry], onLoadMore }));
-    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
-
-    cleanup();
+  it("offers View activity only when the card has a feed behind it", () => {
     render(pane({ activity: [entry] }));
-    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View activity" })).toBeNull();
   });
 });
 

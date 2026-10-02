@@ -98,6 +98,20 @@ export interface DashboardLinks {
   support: string;
   /** One request's detail in the security feed, by request id. */
   message: (requestId: string) => string;
+  /**
+   * The Messages list, filtered to what a Recent activity card draws, for its
+   * "View activity" button.
+   *
+   * `apps` are `client_tool` slugs, the same values the card's own feed sends
+   * as `tool` to `/v1/me/tool-events`, and `websites` are the provider hosts
+   * the gateway records for traffic with no tool (`claude.ai`). The dashboard
+   * ORs the two lists and ANDs the result with `device`, which is the install
+   * id the feed is scoped by. `timeRange=24h` is the feed's own window.
+   */
+  messages: (filter: { apps?: readonly string[]; websites?: readonly string[]; device?: string | null }) => string;
+  /** The Security list for one installation, for the Security events card's
+   *  "View activity" button. The feed behind that card is scoped by the same id. */
+  security: (filter: { device?: string | null }) => string;
 }
 
 /**
@@ -122,5 +136,15 @@ export function dashboardLinks(gatewayBaseUrl: string | null | undefined): Dashb
     savings: `${origin}/token-savings`,
     support: `${origin}/overview`,
     message: (requestId: string) => `${origin}/messages/${encodeURIComponent(requestId)}`,
+    messages: ({ apps = [], websites = [], device }) => {
+      const params = new URLSearchParams();
+      if (apps.length > 0) params.set("app", apps.join(","));
+      if (websites.length > 0) params.set("website", websites.join(","));
+      if (device) params.set("device", device);
+      params.set("timeRange", "24h");
+      return `${origin}/messages?${params}`;
+    },
+    security: ({ device }) =>
+      device ? `${origin}/security?${new URLSearchParams({ device })}` : `${origin}/security`,
   };
 }

@@ -3434,8 +3434,18 @@ export function NewUiApp() {
             (!installsResolved ||
               (toolEvents.view === null && toolEvents.failure === null))
           }
-          onLoadMore={
-            toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined
+          // The feed's own filters, so the dashboard opens on the rows this
+          // card was drawing and what came before them: this tool, this
+          // machine, the last 24h. Absent wherever the feed is not read (a
+          // domain pane, an unattributed machine), as the card then has no
+          // rows for the list to continue.
+          onViewActivity={
+            openTool !== null && machineKnown
+              ? () =>
+                  openDashboard((d) =>
+                    d.messages({ apps: [openTool], device: currentInstallId }),
+                  )
+              : undefined
           }
           // Each half reports its own read. Deriving the feed's flag from the
           // overview's state let a feed that answered - and answered empty - be
@@ -3598,6 +3608,11 @@ export function NewUiApp() {
             // helper already reports both failures the same way.
             onOpenInDashboard: (event) =>
               openDashboard((d) => d.message(event.requestId)),
+            // This installation's list, which is the scope the feed's stream
+            // is opened with. Org-wide when the gateway does not know the
+            // machine, rather than no button.
+            onViewActivity: () =>
+              openDashboard((d) => d.security({ device: currentInstallId })),
             modelLabels,
             toolNames,
           }}

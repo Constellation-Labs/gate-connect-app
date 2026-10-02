@@ -25,6 +25,7 @@ function section(props: Partial<Parameters<typeof SecurityEvents>[0]> = {}) {
       unavailable={false}
       onRetry={() => {}}
       onOpenInDashboard={() => {}}
+      onViewActivity={() => {}}
       {...props}
     />
   );
@@ -100,38 +101,24 @@ describe("the feed's own connection state", () => {
 });
 
 /**
- * Ten rows, then ten more per click (2026-09-23), matching the App pane's
- * recent-activity table.
- *
- * Client-side here: the feed arrives over a stream and the whole session is
- * already in memory, so there is no page to fetch. A session left open was
- * drawing every event it had ever seen.
+ * Ten rows, and the rest in the dashboard (2026-10-02). "Load more" revealed
+ * ten more per click until the header's "View activity" replaced it.
  */
 describe("how many rows it draws", () => {
   const many = (n: number) =>
     Array.from({ length: n }, (_, i) => ({ ...blocked, requestId: `req-${i}` }));
 
-  it("draws ten however many it holds", () => {
+  it("draws ten however many it holds, with nothing to load more", () => {
     render(section({ events: many(25) }));
     expect(screen.getAllByRole("row")).toHaveLength(11); // 10 + the header
-  });
-
-  it("reveals ten more per click", () => {
-    render(section({ events: many(25) }));
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect(screen.getAllByRole("row")).toHaveLength(21);
-  });
-
-  it("drops the control once everything is on screen", () => {
-    render(section({ events: many(12) }));
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect(screen.getAllByRole("row")).toHaveLength(13);
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
-  it("offers nothing to load when ten is all there is", () => {
-    render(section({ events: many(10) }));
-    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  it("opens the full list from the header's View activity", () => {
+    const onViewActivity = vi.fn();
+    render(section({ events: many(25), onViewActivity }));
+    fireEvent.click(screen.getByRole("button", { name: "View activity" }));
+    expect(onViewActivity).toHaveBeenCalledOnce();
   });
 });
 
@@ -208,7 +195,7 @@ describe("opening an event", () => {
     // ever build a URL from it.
     const onOpenInDashboard = vi.fn();
     render(section({ events: [blocked], onOpenInDashboard }));
-    fireEvent.click(screen.getByRole("button", { name: /View/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^View$/ }));
     expect(onOpenInDashboard).toHaveBeenCalledWith(blocked);
   });
 

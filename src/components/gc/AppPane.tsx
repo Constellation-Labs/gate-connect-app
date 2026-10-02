@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, CardHeader, EmptyNote, OutlineButton, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
@@ -86,7 +85,7 @@ export function AppPane({
   activity,
   pending,
   eventsPending,
-  onLoadMore,
+  onViewActivity,
   unavailable,
   unattributed,
   alert,
@@ -194,9 +193,11 @@ export function AppPane({
    *  the counters and the feed are two reads: one can be drawn while the other
    *  is still coming. */
   eventsPending?: boolean;
-  /** Fetch the next page of the feed. Absent when there is no next page, which
-   *  is what removes the control rather than leaving a dead one on screen. */
-  onLoadMore?: () => void;
+  /** Open the dashboard's Messages list with the feed's own filters, for the
+   *  Recent activity header's "View activity" (`1410:28168`). Absent when the
+   *  card has no feed behind it, which removes the button rather than sending
+   *  someone to a list this card could not have shown them. */
+  onViewActivity?: () => void;
   /** Which sections have no reading behind them.
    *
    *  Not "this app sent nothing": a tool can be routing correctly and still be
@@ -336,18 +337,12 @@ export function AppPane({
         />
       )}
 
-      {/* Keyed on the app so the reveal count starts at ten on each one.
-        * Nothing above remounts this pane on a switch, and `useToolEvents`
-        * drops its rows when the tool changes but cannot reach this count:
-        * forty rows revealed on Claude opened Codex at forty, and its first
-        * click could fetch a page nobody had asked for. */}
       <RecentActivity
-        key={name}
         activity={activity}
         pending={eventsPending}
         unavailable={unavailable?.events}
         unattributed={unattributed}
-        onLoadMore={onLoadMore}
+        onViewActivity={onViewActivity}
       />
     </div>
   );
@@ -838,7 +833,7 @@ function InfoRow({
   );
 }
 
-/** Rows per reveal, shared in spirit with `SecurityEvents`' own constant: the
+/** Rows on screen, shared in spirit with `SecurityEvents`' own constant: the
  *  two tables sit one pane apart and counting differently would be noticed. */
 const PAGE = 10;
 
@@ -847,7 +842,7 @@ function RecentActivity({
   pending,
   unavailable,
   unattributed,
-  onLoadMore,
+  onViewActivity,
 }: {
   activity: ActivityEntry[];
   /** The first page is in flight; see `AppPane`. */
@@ -856,38 +851,25 @@ function RecentActivity({
   unavailable?: boolean;
   /** No feed can exist for this surface; see `AppPane`. */
   unattributed?: boolean;
-  /** Absent when there is no next page. */
-  onLoadMore?: () => void;
+  /** Absent when there is no feed to continue; see `AppPane`. */
+  onViewActivity?: () => void;
   /** See `AppPane`. */
 }) {
-  /**
-   * How many rows are on screen. Ten to start, ten more per click
-   * (2026-09-23).
-   *
-   * A page from the gateway is whatever size the gateway chose - the request
-   * carries no `limit` - and `useToolEvents` concatenates pages as they
-   * arrive, so this table drew every row ever fetched. Two jobs on one
-   * control now: reveal what is already held, and ask for the next page when
-   * the reveal runs past the end of it.
-   *
-   * A floor rather than a window, so a page arriving does not collapse a
-   * reveal the person asked for.
-   */
-  const [visible, setVisible] = useState(PAGE);
-  const rows = activity.slice(0, visible);
-  /** Something left to show, or something left to fetch. Either is a reason to
-   *  keep the control; neither means it would sit there doing nothing. */
-  const more = activity.length > rows.length || onLoadMore !== undefined;
+  // The newest ten. "Load more" revealed and fetched the rest until
+  // 2026-10-02; the header's "View activity" opens the full list instead.
+  const rows = activity.slice(0, PAGE);
   return (
     // `scroll-mt-6` so the jump from the Tokens saved counter leaves the pane's
     // own gutter above the heading, as the Overview's savings card does.
     // No padding on the card: the header's rule and every row divider span it
     // edge to edge since the 2026-09-29 redraw (`table/recent-activity`
-    // 1410:28165), and the 16px lives on the cells. The frame's header also
-    // carries a "View activity" button (`1410:28168`); the dashboard has no
-    // activity URL to send it to, so the header draws without one.
+    // 1410:28165), and the 16px lives on the cells. The header's "View
+    // activity" button (`1410:28168`) opens the dashboard's Messages list.
     <Card id={RECENT_ACTIVITY_SECTION_ID} className="scroll-mt-6" busy={pending}>
-      <CardHeader title="Recent activity" />
+      <CardHeader
+        title="Recent activity"
+        action={onViewActivity && { label: "View activity", onClick: onViewActivity }}
+      />
 
       {pending ? (
         <PendingRows />
@@ -1028,22 +1010,6 @@ function RecentActivity({
         </table>
       )}
 
-      {more && (
-        <div className="flex justify-center border-t border-base-border px-4 py-4">
-          <OutlineButton
-            size="sm"
-            onClick={() => {
-              // Reveal first, fetch only when the reveal has run out of held
-              // rows. Fetching on every click would pull pages the person
-              // cannot see yet, which is what made this table unbounded.
-              setVisible((n) => n + PAGE);
-              if (activity.length <= visible + PAGE) onLoadMore?.();
-            }}
-          >
-            Load more
-          </OutlineButton>
-        </div>
-      )}
     </Card>
   );
 }
