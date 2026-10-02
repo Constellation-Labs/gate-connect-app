@@ -56,7 +56,7 @@ describe("the model picker, choosing several", () => {
     // Singular in both modes. `665:18405` draws it, and that frame is this
     // dialog; the plural came from `665:19069` and design pointed here.
     expect(
-      screen.getByRole("heading", { name: "Choose a Gate model" }),
+      screen.getByRole("heading", { name: "Choose Gate models" }),
     ).toBeTruthy();
     expect(screen.getByRole("dialog").textContent).toContain(
       "OpenCode will be able to use these models",
