@@ -96,6 +96,7 @@ fn an_unreachable_refresh_at_launch_is_no_verdict() {
         oauth::current().expect("bundle readable").is_some(),
         "an outage must not cost the user their stored session"
     );
+    assert!(oauth::has_stored_bundle());
 
     // 2. A 5xx is an answer about Cognito, not about the credential.
     std::env::set_var(
@@ -113,4 +114,18 @@ fn an_unreachable_refresh_at_launch_is_no_verdict() {
         matches!(refresh_session(), SessionVerdict::NeedsSignIn),
         "a refused refresh token means the user must sign in"
     );
+
+    // 4. A broken `account.json` fails the bundle read too, through its
+    //    witness. That is not a broken session: a sign-in cannot repair it,
+    //    so it must not raise "session expired".
+    std::fs::write(
+        env::app_support_dir()
+            .expect("app support dir")
+            .join("account.json"),
+        "{not json",
+    )
+    .expect("corrupt account.json");
+    let err = oauth::current().expect_err("account.json does not parse");
+    assert!(!oauth::is_corrupt_bundle(&err));
+    assert!(!oauth::has_stored_bundle());
 }

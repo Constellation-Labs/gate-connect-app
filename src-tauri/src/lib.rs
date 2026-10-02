@@ -4298,7 +4298,7 @@ static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 /// A refused or rejected session is dead only while a bundle is still stored:
 /// a deliberate sign-out clears the bundle (`oauth::clear`) and must stay quiet
 /// even though `auth_mode` is still OAuth. A bundle that no longer parses is
-/// still stored ([`is_corrupt_bundle`](gate_connect_core::oauth::is_corrupt_bundle)). An unavailable reading - the
+/// still stored ([`has_stored_bundle`](gate_connect_core::oauth::has_stored_bundle)). An unavailable reading - the
 /// identity provider could not be reached, or the secret store could not be
 /// read - is no verdict, so the tick keeps whatever it believed before. Calling
 /// it dead put "session expired" on every machine that woke offline with an
@@ -6302,12 +6302,7 @@ pub fn run() {
                     // every 30s.
                     let dead = session_dead_after_tick(
                         &reading,
-                        || {
-                            gate_connect_core::oauth::current().map_or_else(
-                                |e| gate_connect_core::oauth::is_corrupt_bundle(&e),
-                                |bundle| bundle.is_some(),
-                            )
-                        },
+                        gate_connect_core::oauth::has_stored_bundle,
                         SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed),
                     );
                     if SESSION_NEEDS_SIGNIN.swap(dead, Ordering::Relaxed) != dead {
