@@ -21,7 +21,7 @@ function page(ids: string[], nextCursor: string | null) {
   return JSON.stringify({
     generatedAt: "2026-08-19T04:20:00.000Z",
     window: { from: "2026-08-18T04:20:00.000Z", to: "2026-08-19T04:20:00.000Z" },
-    toolScope: { tool: "claude-code" },
+    toolScope: { tools: ["claude-code"] },
     events: ids.map((id) => ({
       requestId: id,
       at: "2026-08-19T04:14:00.000Z",
@@ -36,10 +36,10 @@ function page(ids: string[], nextCursor: string | null) {
 }
 
 /** Drives the hook from a component, exposing its latest value to the test. */
-function harness(props: { tool: string | null; installId?: string | null }) {
+function harness(props: { tools: readonly string[] | null; installId?: string | null }) {
   const seen: ReturnType<typeof useToolEvents>[] = [];
-  function Probe({ tool, installId }: { tool: string | null; installId?: string | null }) {
-    seen.push(useToolEvents(true, tool, installId ?? null, "cred"));
+  function Probe({ tools, installId }: { tools: readonly string[] | null; installId?: string | null }) {
+    seen.push(useToolEvents(true, tools, installId ?? null, "cred"));
     return null;
   }
   const utils = render(<Probe {...props} />);
@@ -52,18 +52,18 @@ beforeEach(() => mockCall.mockReset());
 afterEach(cleanup);
 
 describe("useToolEvents", () => {
-  it("reads the first page for the tool it was given", async () => {
+  it("reads the first page for the tools it was given", async () => {
     mockCall.mockResolvedValue(page(["a", "b"], null));
-    const { seen } = harness({ tool: "claude-code", installId: "m-1" });
+    const { seen } = harness({ tools: ["claude-code"], installId: "m-1" });
     await flush();
 
-    expect(mockCall).toHaveBeenCalledWith("claude-code", "m-1", undefined);
+    expect(mockCall).toHaveBeenCalledWith(["claude-code"], "m-1", undefined);
     expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a", "b"]);
   });
 
   it("appends a further page rather than replacing the list", async () => {
     mockCall.mockResolvedValueOnce(page(["a", "b"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
+    const { seen } = harness({ tools: ["claude-code"] });
     await flush();
 
     mockCall.mockResolvedValueOnce(page(["c"], null));
@@ -72,13 +72,13 @@ describe("useToolEvents", () => {
       await Promise.resolve();
     });
 
-    expect(mockCall).toHaveBeenLastCalledWith("claude-code", undefined, "cursor-1");
+    expect(mockCall).toHaveBeenLastCalledWith(["claude-code"], undefined, "cursor-1");
     expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a", "b", "c"]);
   });
 
   it("ignores loadMore on the last page instead of re-reading page one", async () => {
     mockCall.mockResolvedValue(page(["a"], null));
-    const { seen } = harness({ tool: "claude-code" });
+    const { seen } = harness({ tools: ["claude-code"] });
     await flush();
     expect(mockCall).toHaveBeenCalledTimes(1);
 
@@ -95,7 +95,7 @@ describe("useToolEvents", () => {
 
   it("keeps the pages it has when the next one fails", async () => {
     mockCall.mockResolvedValueOnce(page(["a", "b"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
+    const { seen } = harness({ tools: ["claude-code"] });
     await flush();
 
     mockCall.mockRejectedValueOnce(new Error("offline"));
@@ -114,12 +114,12 @@ describe("useToolEvents", () => {
     mockCall.mockImplementationOnce(
       () => new Promise<string>((resolve) => (releaseFirst = resolve)),
     );
-    const { seen, rerender } = harness({ tool: "claude-code" });
+    const { seen, rerender } = harness({ tools: ["claude-code"] });
     await flush();
 
     // Switch tools while the first read is still open, then let it land.
     mockCall.mockResolvedValueOnce(page(["codex-1"], null));
-    rerender({ tool: "codex" });
+    rerender({ tools: ["codex"] });
     await flush();
     await act(async () => {
       releaseFirst?.(page(["claude-1"], null));
@@ -132,18 +132,89 @@ describe("useToolEvents", () => {
 
   it("blanks the feed when the tool changes, rather than showing the previous one", async () => {
     mockCall.mockResolvedValueOnce(page(["a"], null));
-    const { seen, rerender } = harness({ tool: "claude-code" });
+    const { seen, rerender } = harness({ tools: ["claude-code"] });
     await flush();
     expect(seen.at(-1)?.view).not.toBeNull();
 
     mockCall.mockImplementationOnce(() => new Promise<string>(() => {}));
-    rerender({ tool: "codex" });
+    rerender({ tools: ["codex"] });
 
     expect(seen.at(-1)?.view).toBeNull();
   });
 
   it("does not read at all without a tool", async () => {
-    harness({ tool: null });
+    harness({ tools: null });
+    await flush();
+
+    expect(mockCall).not.toHaveBeenCalled();
+  });
+
+  it("reads a section's names as one feed, in a stable order", async () => {
+    mockCall.mockResolvedValue(page(["a"], null));
+    harness({ tools: ["claude-web", "claude-code", "claude-desktop"], installId: "m-1" });
+    await flush();
+
+    expect(mockCall).toHaveBeenCalledTimes(1);
+    expect(mockCall).toHaveBeenCalledWith(
+      ["claude-code", "claude-desktop", "claude-web"],
+      "m-1",
+      undefined,
+    );
+  });
+
+  it("pages across the whole set with the cursor", async () => {
+    mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
+    const { seen } = harness({ tools: ["codex", "chatgpt", "chatgpt-web"] });
+    await flush();
+
+    mockCall.mockResolvedValueOnce(page(["b"], null));
+    await act(async () => {
+      seen.at(-1)?.loadMore();
+      await Promise.resolve();
+    });
+
+    expect(mockCall).toHaveBeenLastCalledWith(
+      ["chatgpt", "chatgpt-web", "codex"],
+      undefined,
+      "cursor-1",
+    );
+    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
+  it("keys on the names, not the array, so a fresh array keeps the pages", async () => {
+    mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
+    const { seen, rerender } = harness({ tools: ["claude-code", "claude-web"] });
+    await flush();
+    mockCall.mockResolvedValueOnce(page(["b"], null));
+    await act(async () => {
+      seen.at(-1)?.loadMore();
+      await Promise.resolve();
+    });
+
+    // A new array with the same names, in another order: what a caller that
+    // builds the list each render hands in.
+    rerender({ tools: ["claude-web", "claude-code"] });
+    await flush();
+
+    expect(mockCall).toHaveBeenCalledTimes(2);
+    expect(seen.at(-1)?.paged).toBe(true);
+    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
+  it("treats a change in the set as a new scope", async () => {
+    mockCall.mockResolvedValueOnce(page(["a"], null));
+    const { seen, rerender } = harness({ tools: ["claude-code"] });
+    await flush();
+
+    mockCall.mockImplementationOnce(() => new Promise<string>(() => {}));
+    rerender({ tools: ["claude-code", "claude-web"] });
+
+    expect(seen.at(-1)?.view).toBeNull();
+    expect(mockCall).toHaveBeenLastCalledWith(["claude-code", "claude-web"], undefined, undefined);
+  });
+
+  it("does not read for an empty set", async () => {
+    harness({ tools: [] });
     await flush();
 
     expect(mockCall).not.toHaveBeenCalled();
@@ -151,7 +222,7 @@ describe("useToolEvents", () => {
 
   it("reports paged once load more has run, and clears it on reload", async () => {
     mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
+    const { seen } = harness({ tools: ["claude-code"] });
     await flush();
     expect(seen.at(-1)?.paged).toBe(false);
 
@@ -173,7 +244,7 @@ describe("useToolEvents", () => {
 
   it("does not count a refused further page as paged", async () => {
     mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
+    const { seen } = harness({ tools: ["claude-code"] });
     await flush();
 
     mockCall.mockRejectedValueOnce(new Error("429"));

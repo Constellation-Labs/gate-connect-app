@@ -66,6 +66,7 @@ import {
   isSettingsManaged,
   sectionHint,
   notInstalledSections,
+  paneClients,
   sectionMemberKeys,
 } from "./lib/groups";
 import {
@@ -497,7 +498,7 @@ export function NewUiApp() {
           // `list_tools` carries the not-installed ones too, so without it a
           // Claude pane on a machine with no Claude Code resolved to
           // `claude-code`, fired every per-tool read against a tool that cannot
-          // have traffic, and drew zeroes with no caveat - `openDomain` false
+          // have traffic, and drew zeroes with no caveat - `noPaneReading` false
           // so no unattributed marker. A number with nothing behind it, in the
           // one place principle 6 names. (The `partialReading` caveat this used
           // to name as the other half of that guard is gone; see the commit
@@ -505,15 +506,19 @@ export function NewUiApp() {
           tools.some((t) => t.slug === key && t.status.kind !== "not_installed"),
         ) ?? null)
       : null;
-  /** The open pane belongs to a proxy domain rather than a config tool. The
-   *  gateway attributes requests to config tools only - `client_tool` is
-   *  derived from each tool's own user agent, and traffic from these surfaces
-   *  arrives unattributed on purpose, because a guessed slug would file one
-   *  app's traffic under another's name. So the per-tool reads below must not
-   *  fire for a domain: filtering by its slug would return an empty reading,
-   *  and the pane would report a quiet day over traffic it cannot see. A slug
-   *  carried by an installed tool stays a tool. */
-  const openDomain = openTool === null && view.kind === "app";
+  /**
+   * Every sender the open pane's activity covers: the whole section where the
+   * engine names its surfaces apart (`SECTION_CLIENTS` - the Claude pane is
+   * Claude Code, the desktop app and claude.ai), else the one config tool.
+   * Computed once; the counters, the chart and the feed all read this list.
+   */
+  const openClients = view.kind === "app" ? paneClients(view.slug, openTool) : null;
+  /** The open pane has no per-app reading: a section the engine stamps no
+   *  sender for (the OpenAI API's traffic carries no app name) and with no
+   *  config tool installed. Filtering by a slug nothing is stamped with would
+   *  return an empty reading, and the pane would report a quiet day over
+   *  traffic it cannot see, so the reads below do not fire for it. */
+  const noPaneReading = openClients === null && view.kind === "app";
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -589,10 +594,10 @@ export function NewUiApp() {
     if (activityFailureCode) noteGatewayFailure(activityFailureCode);
   }, [activityFailureCode]);
   const toolActivity = useActivity(
-    canRead && openTool !== null && machineKnown,
+    canRead && openClients !== null && machineKnown,
     currentInstallId,
     credential,
-    openTool ?? undefined,
+    openClients ?? undefined,
   );
   /** This install's per-tool model choices, and what each tool's own config
    *  says (AG-588). One read for the whole sidebar: the backend reads every
@@ -708,11 +713,39 @@ export function NewUiApp() {
   const openModelId = openModelIds[0] ?? null;
 
   const toolEvents = useToolEvents(
-    canRead && openTool !== null && machineKnown,
-    openTool,
+    canRead && openClients !== null && machineKnown,
+    openClients,
     currentInstallId,
     credential,
   );
+  /** Whether the pane's feed covers more than its config tool, so its rows are
+   *  not that tool's own. */
+  const sectionWide =
+    openTool !== null &&
+    openClients !== null &&
+    (openClients.length !== 1 || openClients[0] !== openTool);
+  /**
+   * The config tool's own newest requests, for the Gate model warning only.
+   *
+   * A Gate model is written into the tool's config, so whether it is failing is
+   * a question about that tool's traffic alone. The section feed mixes in the
+   * desktop app and the website, whose rows say nothing about the choice and do
+   * not say which app sent them: a failing claude.ai chat would raise the
+   * warning over Claude Code, and its successes would hide Claude Code failing.
+   * So this reads page one for the tool, and only while there is a Gate model to
+   * warn about and the section feed is not already exactly this.
+   */
+  const modelFeed = useToolEvents(
+    canRead &&
+      sectionWide &&
+      GATE_MODEL_TOOLS.has(openTool) &&
+      openPref?.source === "gate" &&
+      machineKnown,
+    openTool === null ? null : [openTool],
+    currentInstallId,
+    credential,
+  );
+  const modelRecent = (sectionWide ? modelFeed : toolEvents).view?.entries.slice(0, 5) ?? null;
 
   /** When the activity surfaces were last re-read on our own initiative, for
    *  the focus edge's guard below. Starts at mount, which is when the hooks
@@ -723,8 +756,8 @@ export function NewUiApp() {
    *
    * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
    * better information. The Overview's org-wide read refreshes on any of it;
-   * the open pane's per-tool reads only when its tool is among the senders, so
-   * Codex traffic does not re-read the Claude pane. The feed is left alone
+   * the open pane's reads only when one of its senders is among them, so Codex
+   * traffic does not re-read the Claude pane and claude.ai traffic does. The feed is left alone
    * once the user has paged into it: `reload` puts page one back, and taking
    * pages away from someone reading them is worse than a stale first page.
    * Each hook's `reload` is a no-op while that hook is disabled.
@@ -737,10 +770,11 @@ export function NewUiApp() {
     // failed may answer now; left alone, both kept the pane on a state that had
     // stopped being true until restart.
     if (installsFailure !== null || unattributedMachine) reloadInstalls();
-    if (openTool !== null && (tools === null || tools.includes(openTool))) {
+    if (openClients !== null && (tools === null || openClients.some((c) => tools.includes(c)))) {
       toolActivity.reload();
       if (!toolEvents.paged) toolEvents.reload();
     }
+    if (openTool !== null && (tools === null || tools.includes(openTool))) modelFeed.reload();
   };
   // Latest-callback ref so the listener registers once: the hooks hand back a
   // fresh `reload` closure every render, so there is nothing stable to memoise
@@ -3298,9 +3332,10 @@ export function NewUiApp() {
           buckets={toolActivity.view?.buckets ?? []}
           // Pending while the installation list is still open too: until it
           // answers we do not know which machine this is, so there is nothing to
-          // read yet - and a skeleton is the honest account of that. A domain
-          // pane is never pending: its read will not fire (see `openDomain`),
-          // and a skeleton would promise an answer that is not coming.
+          // read yet - and a skeleton is the honest account of that. A pane
+          // with no reading is never pending: its read will not fire (see
+          // `noPaneReading`), and a skeleton would promise an answer that is
+          // not coming.
           //
           // Nor is an unattributed one, for exactly the same reason and by the
           // same mechanism: `toolActivity` is gated on `machineKnown`, so with
@@ -3312,7 +3347,7 @@ export function NewUiApp() {
           // A failed installation list is the same shape (no read will fire)
           // and is excluded for the same reason; its cause is in the banner.
           pending={
-            !openDomain &&
+            !noPaneReading &&
             !unattributedMachine &&
             installsFailure === null &&
             (!installsResolved ||
@@ -3322,7 +3357,7 @@ export function NewUiApp() {
           // card: see `GATE_MODEL_TOOLS` and `AppPane`'s `modelChoice`. That
           // list is not the rail's `coversAllProviders` - Hermes is
           // multi-provider there and still takes a Gate model set here.
-          // `openDomain` (where `openTool` is null) never gets the card, and for
+          // A pane where `openTool` is null never gets the card, and for
           // a stricter reason than the other tools left out: the choice could
           // not take effect at all. A Gate model choice is written into the
           // tool's own config, and a chat domain is a browser, which has no
@@ -3355,7 +3390,7 @@ export function NewUiApp() {
                     // tool cannot actually be served with: the catalogue says it
                     // exists and the balance says it is affordable, and the
                     // requests fail anyway.
-                    recent: toolEvents.view?.entries.slice(0, 5) ?? null,
+                    recent: modelRecent,
                   })?.message ?? null,
                 // R3: the user changed the model inside the app, so its config
                 // no longer holds a Gate model and the card moved to App
@@ -3428,7 +3463,7 @@ export function NewUiApp() {
           // feed read is gated on `machineKnown` too, so an unattributed machine
           // left this true indefinitely.
           eventsPending={
-            !openDomain &&
+            !noPaneReading &&
             !unattributedMachine &&
             installsFailure === null &&
             (!installsResolved ||
@@ -3442,8 +3477,8 @@ export function NewUiApp() {
           // reported as unreadable because the *chart* had not landed, which is
           // precisely the unread-versus-empty confusion these flags exist to
           // prevent. Two endpoints, two answers.
-          // `openDomain` is deliberately NOT folded in here any more. It is not
-          // a read that failed - no read is attempted for a domain - so
+          // `noPaneReading` is deliberately NOT folded in here any more. It is
+          // not a read that failed - no read is attempted for it - so
           // reporting it as one would be a fault report over a reading that
           // does not exist. It travels as `unattributed` instead, which the
           // cards draw ahead of this.
@@ -3461,15 +3496,7 @@ export function NewUiApp() {
               !unattributedMachine &&
               (installsFailure !== null || toolEvents.failure !== null),
           }}
-          unattributed={openDomain}
-          // A section spans surfaces the gateway attributes differently: its
-          // config tool sends a User-Agent `client_tool` recognises, its host
-          // surfaces do not. So the counters are the tool's, under a heading
-          // naming the whole app, and saying which is the difference between a
-          // measurement and a plausible number.
-          //
-          // Computed from the section rather than hardcoded, so it disappears
-          // per surface as attribution improves rather than needing a sweep.
+          unattributed={noPaneReading}
           alert={
             <>
               {/* First: the write the user just asked for did not happen, and
@@ -3537,9 +3564,9 @@ export function NewUiApp() {
                   {modelError}
                 </p>
               )}
-              {openDomain || unattributedMachine ? null : (
-                // A domain pane has no per-app reading (the gateway attributes
-                // requests to config tools only), and an unattributed machine
+              {noPaneReading || unattributedMachine ? null : (
+                // A pane with no sender to read has no per-app reading, and an
+                // unattributed machine
                 // has no per-machine one yet. Neither is a failure, so neither
                 // gets the failure notices below.
                 <>

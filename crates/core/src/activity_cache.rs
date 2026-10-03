@@ -33,7 +33,6 @@ use std::path::PathBuf;
 use crate::account::{self, AuthMode};
 use crate::env;
 use crate::primitives;
-use crate::registry::ToolId;
 
 /// The file's whole contents: the readings for **one** scope, keyed by tool.
 ///
@@ -93,12 +92,23 @@ static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// an installation id.
 const UNFILTERED: &str = "";
 
-/// `<installation>|<tool>`, either half possibly [`UNFILTERED`].
-fn key(install_id: Option<&str>, tool: Option<ToolId>) -> String {
+/// `<installation>|<tools>`, either half possibly [`UNFILTERED`].
+///
+/// The tool half is the client names sorted and comma-joined, so one set is one
+/// key whatever order it was asked in. A single name is just its slug, which is
+/// what [`load_tools`] hands the tray by row.
+fn key(install_id: Option<&str>, clients: &[&str]) -> String {
+    let mut clients = clients.to_vec();
+    clients.sort_unstable();
+    clients.dedup();
     format!(
         "{}|{}",
         install_id.unwrap_or(UNFILTERED),
-        tool.map(ToolId::slug).unwrap_or(UNFILTERED)
+        if clients.is_empty() {
+            UNFILTERED.to_owned()
+        } else {
+            clients.join(",")
+        }
     )
 }
 
@@ -168,7 +178,7 @@ fn held(scope: &str) -> Option<CacheFile> {
 
 /// Hold a reading that just landed. Best effort: a cache that cannot be written
 /// is not a failed fetch, and the caller has the real answer in hand either way.
-pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
+pub fn store(install_id: Option<&str>, clients: &[&str], body: &str) {
     let Some(scope) = scope() else {
         return;
     };
@@ -202,7 +212,7 @@ pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
     }
     entry
         .readings
-        .insert(key(install_id, tool), body.to_owned());
+        .insert(key(install_id, clients), body.to_owned());
     let Ok(path) = config_path() else {
         return;
     };
@@ -219,9 +229,9 @@ pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
 /// Infallible by design, like [`crate::preferences::load`]: every failure here -
 /// no file, unreadable, unparseable, a different org - means the same thing to
 /// the caller, which is that it has to wait for the network like it always did.
-pub fn load(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
+pub fn load(install_id: Option<&str>, clients: &[&str]) -> Option<String> {
     let want = scope()?;
-    held(&want)?.readings.remove(&key(install_id, tool))
+    held(&want)?.readings.remove(&key(install_id, clients))
 }
 
 /// Every per-tool reading held for this scope, keyed by slug.
@@ -234,6 +244,8 @@ pub fn load(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
 /// unfiltered reading is the Overview's, attributable to no row, and a caller
 /// iterating rows would have to know to skip a key that looks like every other
 /// one. Another machine's reading is not this machine's traffic at all.
+/// A section's reading - several names under one key - is the app pane's, and
+/// is left out for the same reason: no row is called `claude-code,claude-web`.
 pub fn load_tools(install_id: Option<&str>) -> BTreeMap<String, String> {
     let Some(want) = scope() else {
         return BTreeMap::new();
@@ -245,7 +257,9 @@ pub fn load_tools(install_id: Option<&str>) -> BTreeMap<String, String> {
     entry
         .readings
         .into_iter()
-        .filter(|(k, _)| key_install(k) == mine && key_tool(k) != UNFILTERED)
+        .filter(|(k, _)| {
+            key_install(k) == mine && key_tool(k) != UNFILTERED && !key_tool(k).contains(',')
+        })
         .map(|(k, body)| (key_tool(&k).to_owned(), body))
         .collect()
 }
@@ -304,21 +318,29 @@ mod tests {
     /// evicting each other on every store.
     #[test]
     fn the_installation_filter_is_part_of_the_key() {
-        assert_eq!(key(None, None), "|");
-        assert_eq!(key(Some("install-7"), None), "install-7|");
-        assert_eq!(key(None, Some(ToolId::Codex)), "|codex");
-        assert_eq!(
-            key(Some("install-7"), Some(ToolId::Codex)),
-            "install-7|codex"
-        );
-        assert_ne!(
-            key(None, Some(ToolId::Codex)),
-            key(Some("install-7"), Some(ToolId::Codex))
-        );
+        assert_eq!(key(None, &[]), "|");
+        assert_eq!(key(Some("install-7"), &[]), "install-7|");
+        assert_eq!(key(None, &["codex"]), "|codex");
+        assert_eq!(key(Some("install-7"), &["codex"]), "install-7|codex");
+        assert_ne!(key(None, &["codex"]), key(Some("install-7"), &["codex"]));
         assert_eq!(key_install("install-7|codex"), "install-7");
         assert_eq!(key_tool("install-7|codex"), "codex");
         assert_eq!(key_install("|codex"), UNFILTERED);
         assert_eq!(key_tool("install-7|"), UNFILTERED);
+        // A section's set is one key whatever order it was asked in, and not
+        // any one of its members' keys.
+        assert_eq!(
+            key(None, &["claude-web", "claude-code", "claude-desktop"]),
+            "|claude-code,claude-desktop,claude-web"
+        );
+        assert_eq!(
+            key(None, &["claude-code", "claude-desktop", "claude-web"]),
+            key(None, &["claude-web", "claude-desktop", "claude-code"])
+        );
+        assert_ne!(
+            key(None, &["claude-code", "claude-web"]),
+            key(None, &["claude-code"])
+        );
     }
 
     /// The same property for the tool dimension, which the map key carries now
@@ -333,10 +355,9 @@ mod tests {
         };
         let mine = Some("install-7");
         file.readings
-            .insert(key(mine, Some(ToolId::ClaudeCode)), "cc".into());
-        file.readings
-            .insert(key(mine, Some(ToolId::Codex)), "cx".into());
-        file.readings.insert(key(None, None), "org".into());
+            .insert(key(mine, &["claude-code"]), "cc".into());
+        file.readings.insert(key(mine, &["codex"]), "cx".into());
+        file.readings.insert(key(None, &[]), "org".into());
 
         assert_eq!(
             file.readings
@@ -419,25 +440,25 @@ mod tests {
         // One machine's per-tool readings, and the Overview's own org-wide one.
         // The tray writes the first kind, the Overview the second, and before the
         // installation became part of the key each store wiped the other's.
-        store(
-            Some("install-7"),
-            Some(ToolId::ClaudeCode),
-            r#"{"tool":"cc"}"#,
-        );
-        store(Some("install-7"), Some(ToolId::Codex), r#"{"tool":"cx"}"#);
-        store(None, None, r#"{"tool":"org"}"#);
+        store(Some("install-7"), &["claude-code"], r#"{"tool":"cc"}"#);
+        store(Some("install-7"), &["codex"], r#"{"tool":"cx"}"#);
+        store(None, &[], r#"{"tool":"org"}"#);
+        // And a section's reading, which the app pane writes under the set.
+        let claude = ["claude-code", "claude-desktop", "claude-web"];
+        store(Some("install-7"), &claude, r#"{"tool":"claude"}"#);
 
-        let cc = load(Some("install-7"), Some(ToolId::ClaudeCode));
-        let cx = load(Some("install-7"), Some(ToolId::Codex));
-        let org = load(None, None);
+        let section = load(Some("install-7"), &claude);
+        let cc = load(Some("install-7"), &["claude-code"]);
+        let cx = load(Some("install-7"), &["codex"]);
+        let org = load(None, &[]);
         let rows = load_tools(Some("install-7"));
         let other_machine = load_tools(None);
         // Browsing another machine in the picker. Its readings are not this
         // machine's traffic, so they replace them - but the Overview's own
         // reading belongs to no machine and has to survive.
-        store(Some("install-9"), Some(ToolId::Codex), r#"{"tool":"cx-9"}"#);
-        let after_other_machine = load(Some("install-7"), Some(ToolId::ClaudeCode));
-        let org_after = load(None, None);
+        store(Some("install-9"), &["codex"], r#"{"tool":"cx-9"}"#);
+        let after_other_machine = load(Some("install-7"), &["claude-code"]);
+        let org_after = load(None, &[]);
 
         let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
             Some(v) => std::env::set_var(k, v),
@@ -448,6 +469,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
 
         assert_eq!(cc.as_deref(), Some(r#"{"tool":"cc"}"#));
+        assert_eq!(
+            section.as_deref(),
+            Some(r#"{"tool":"claude"}"#),
+            "a section's set is its own key, beside its members' readings"
+        );
         assert_eq!(
             cx.as_deref(),
             Some(r#"{"tool":"cx"}"#),
@@ -463,7 +489,7 @@ mod tests {
             rows.keys().map(String::as_str).collect::<Vec<_>>(),
             vec!["claude-code", "codex"],
             "one machine's tool-filtered readings, and nothing else: an \
-             unfiltered reading is no row's"
+             unfiltered reading is no row's, and neither is a section's"
         );
         assert!(
             other_machine.is_empty(),

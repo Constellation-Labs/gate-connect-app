@@ -80,6 +80,9 @@ fn installations_endpoint(gateway_base_url: &str) -> String {
 /// `None` is the org-wide default. The gateway narrows every section or none, so
 /// the client never has to reason about a half-scoped payload.
 ///
+/// `clients` narrows it to those senders, one `tool` pair each; empty is every
+/// sender. Validate it with [`overview_clients`] first.
+///
 /// Every failure carries a [`FailureCode`]; see that type for why. The gateway's
 /// own error body is kept in the message rather than replaced by a generic
 /// failure, because it is the only place a 4xx explains itself.
@@ -88,17 +91,11 @@ fn installations_endpoint(gateway_base_url: &str) -> String {
 /// has something real to draw before this call returns. Nothing else changes:
 /// the caller still gets the fresh body, and a cache write that fails is not a
 /// failed fetch.
-pub fn overview_json(install_id: Option<&str>, tool: Option<ToolId>) -> Result<String, Failure> {
+pub fn overview_json(install_id: Option<&str>, clients: &[&str]) -> Result<String, Failure> {
     let install_id = install_id.filter(|s| !s.is_empty());
-    let mut query: Vec<(&str, &str)> = Vec::new();
-    if let Some(id) = install_id {
-        query.push(("installId", id));
-    }
-    if let Some(t) = tool {
-        query.push(("tool", t.slug()));
-    }
+    let query = scoped_query(install_id, clients, None);
     let body = get_json(Endpoint::Activity, &query)?;
-    crate::activity_cache::store(install_id, tool, &body);
+    crate::activity_cache::store(install_id, clients, &body);
     Ok(body)
 }
 
@@ -108,8 +105,8 @@ pub fn overview_json(install_id: Option<&str>, tool: Option<ToolId>) -> Result<S
 /// fresh one are different claims - one is what happened, the other is what is
 /// happening - and folding them into one return value would leave the pane
 /// unable to tell which it is showing. The caller asks for both and decides.
-pub fn cached_overview_json(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
-    crate::activity_cache::load(install_id.filter(|s| !s.is_empty()), tool)
+pub fn cached_overview_json(install_id: Option<&str>, clients: &[&str]) -> Option<String> {
+    crate::activity_cache::load(install_id.filter(|s| !s.is_empty()), clients)
 }
 
 /// Every held per-tool reading for this installation scope, keyed by slug.
@@ -130,32 +127,81 @@ pub fn cached_tool_overviews_json(
     crate::activity_cache::load_tools(install_id.filter(|s| !s.is_empty()))
 }
 
-/// Fetch one page of a tool's recent requests, as raw JSON (AG-574).
+/// Fetch one page of a section's recent requests, as raw JSON (AG-574).
 ///
-/// `tool` is a [`ToolId`] rather than a string so the closed set of slugs is
-/// enforced here, by the compiler, instead of by the gateway rejecting a value
-/// this side let through. The route requires it: the feed is always about one
-/// tool.
+/// `clients` is every sender the pane covers - the Claude pane asks for Claude
+/// Code, the desktop app and claude.ai at once - and goes out as one `tool`
+/// pair per name. Validate it with [`feed_clients`] first: the route requires
+/// at least one, and a name the engine cannot stamp would read back empty
+/// rather than fail.
 ///
 /// `cursor` is the previous page's `nextCursor`, passed back unchanged. It is
-/// opaque on purpose - the gateway owns its shape - so this only forwards it.
+/// opaque on purpose - the gateway owns its shape, and its keyset spans the
+/// whole set - so this only forwards it.
 ///
 /// Deliberately not cached. The held reading in [`crate::activity_cache`] is one
 /// slot, and spending it on a feed that changes every request would evict the
 /// overview it exists for.
 pub fn tool_events_json(
     install_id: Option<&str>,
-    tool: ToolId,
+    clients: &[&str],
     cursor: Option<&str>,
 ) -> Result<String, Failure> {
-    let mut query: Vec<(&str, &str)> = vec![("tool", tool.slug())];
-    if let Some(id) = install_id.filter(|s| !s.is_empty()) {
+    get_json(
+        Endpoint::ToolEvents,
+        &scoped_query(install_id.filter(|s| !s.is_empty()), clients, cursor),
+    )
+}
+
+/// The query both scoped reads send: one `tool` pair per client, then the
+/// installation and the cursor when there are any.
+fn scoped_query<'a>(
+    install_id: Option<&'a str>,
+    clients: &[&'a str],
+    cursor: Option<&'a str>,
+) -> Vec<(&'static str, &'a str)> {
+    let mut query: Vec<(&'static str, &'a str)> = clients.iter().map(|c| ("tool", *c)).collect();
+    if let Some(id) = install_id {
         query.push(("installId", id));
     }
     if let Some(c) = cursor.filter(|s| !s.is_empty()) {
         query.push(("cursor", c));
     }
-    get_json(Endpoint::ToolEvents, &query)
+    query
+}
+
+/// The feed's client names, checked against what the engine can stamp
+/// ([`crate::proxy::stamped_client`]).
+///
+/// An empty list is refused because the route requires a sender, and an
+/// unknown name because the two sides of this boundary share one vocabulary:
+/// a name that does not parse means they disagree, which is a bug worth
+/// surfacing rather than a request that quietly reads back nothing.
+pub fn feed_clients(names: &[String]) -> Result<Vec<&'static str>, String> {
+    if names.is_empty() {
+        return Err("at least one client name is required to read the feed".into());
+    }
+    names
+        .iter()
+        .map(|n| crate::proxy::stamped_client(n).ok_or_else(|| format!("unknown client {n:?}")))
+        .collect()
+}
+
+/// The overview's client names. Empty is allowed and means org-wide.
+///
+/// Wider than [`feed_clients`] by the [`ToolId`] slugs, which the tray's quick
+/// status already asks for one row at a time - `env-proxy` among them, which no
+/// request is ever stamped with. Refusing it would change what that row draws,
+/// and that is not this read's decision to make.
+pub fn overview_clients(names: &[String]) -> Result<Vec<&'static str>, String> {
+    names
+        .iter()
+        .map(|n| {
+            crate::proxy::stamped_client(n)
+                .or_else(|| ToolId::from_slug(n).map(ToolId::slug))
+                .ok_or_else(|| format!("unknown client {n:?}"))
+        })
+        .collect()
 }
 
 /// Fetch the installations this account has sent traffic from, as raw JSON.
@@ -198,4 +244,72 @@ fn get_json(which: Endpoint, query: &[(&str, &str)]) -> Result<String, Failure> 
         Endpoint::ToolEvents => tool_events_endpoint(&account.gateway_base_url),
     };
     gateway_api::call_json(gateway_api::Method::Get, url, query, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_feed_takes_the_stamped_set_and_nothing_else() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            feed_clients(&names(&["claude-code", "claude-desktop", "claude-web"])),
+            Ok(vec!["claude-code", "claude-desktop", "claude-web"])
+        );
+        assert_eq!(
+            feed_clients(&names(&["codex", "chatgpt", "chatgpt-web"])),
+            Ok(vec!["codex", "chatgpt", "chatgpt-web"])
+        );
+        assert!(feed_clients(&[]).is_err());
+        assert!(feed_clients(&names(&["claude-code", "claude"])).is_err());
+        // A row, not a sender; and the environment channel, which nothing stamps.
+        assert!(feed_clients(&names(&["any-app"])).is_err());
+        assert!(feed_clients(&names(&["env-proxy"])).is_err());
+    }
+
+    #[test]
+    fn the_overview_also_takes_tool_slugs_and_an_empty_list() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(overview_clients(&[]), Ok(vec![]));
+        assert_eq!(
+            overview_clients(&names(&["env-proxy"])),
+            Ok(vec!["env-proxy"])
+        );
+        assert_eq!(
+            overview_clients(&names(&["claude-web", "codex"])),
+            Ok(vec!["claude-web", "codex"])
+        );
+        assert!(overview_clients(&names(&["any-app"])).is_err());
+        assert!(overview_clients(&names(&["chatgpt", "nope"])).is_err());
+    }
+
+    #[test]
+    fn one_tool_pair_per_client_then_the_installation_and_the_cursor() {
+        assert_eq!(
+            scoped_query(
+                Some("install-7"),
+                &["claude-code", "claude-desktop", "claude-web"],
+                Some("c-2"),
+            ),
+            vec![
+                ("tool", "claude-code"),
+                ("tool", "claude-desktop"),
+                ("tool", "claude-web"),
+                ("installId", "install-7"),
+                ("cursor", "c-2"),
+            ]
+        );
+        // Page one: no cursor pair at all, and an empty one is page one too.
+        assert_eq!(
+            scoped_query(Some("install-7"), &["codex"], None),
+            vec![("tool", "codex"), ("installId", "install-7")]
+        );
+        assert_eq!(
+            scoped_query(None, &["codex"], Some("")),
+            vec![("tool", "codex")]
+        );
+        // The org-wide overview sends nothing.
+        assert!(scoped_query(None, &[], None).is_empty());
+    }
 }

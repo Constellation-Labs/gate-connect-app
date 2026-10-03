@@ -7,6 +7,7 @@ import {
   BROWSER_REMOVED_RESTART,
   BROWSER_RESTART,
   SECTIONS,
+  SECTION_CLIENTS,
   browserTrustRemovedAdvice,
   browserTrustRestartAdvice,
   buildGroups,
@@ -16,6 +17,7 @@ import {
   isProviderEndpoint,
   isSettingsManaged,
   notInstalledSections,
+  paneClients,
   sectionMemberKeys,
 } from "./groups";
 
@@ -1143,5 +1145,31 @@ describe("notInstalledSections", () => {
   it("lists nothing for a tool no section names, which gets no row either", () => {
     const tools = [tool("some-new-harness", "CLI", { kind: "not_installed" }, "opencode")];
     expect(notInstalledSections(tools, buildGroups(tools, [], ON))).toEqual([]);
+  });
+});
+
+/**
+ * Which senders an app pane reads. A key that is not a declared section would
+ * be a table nobody opens, and a section read by vendor would give the OpenAI
+ * API pane a feed its traffic cannot fill.
+ */
+describe("SECTION_CLIENTS", () => {
+  it("is keyed by declared sections only", () => {
+    for (const id of Object.keys(SECTION_CLIENTS)) {
+      expect(isDeclaredSection(id), id).toBe(true);
+    }
+  });
+
+  it("names each section's surfaces as the engine stamps them", () => {
+    expect(SECTION_CLIENTS.claude).toEqual(["claude-code", "claude-desktop", "claude-web"]);
+    expect(SECTION_CLIENTS.chatgpt).toEqual(["codex", "chatgpt", "chatgpt-web"]);
+    expect(SECTION_CLIENTS["openai-api"]).toBeUndefined();
+  });
+
+  it("falls back to the open config tool, then to nothing", () => {
+    expect(paneClients("claude", null)).toEqual(SECTION_CLIENTS.claude);
+    expect(paneClients("claude", "claude-code")).toEqual(SECTION_CLIENTS.claude);
+    expect(paneClients("opencode", "opencode")).toEqual(["opencode"]);
+    expect(paneClients("openai-api", null)).toBeNull();
   });
 });

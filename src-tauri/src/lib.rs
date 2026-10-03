@@ -810,6 +810,10 @@ fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
 /// gateway migration that added it - scoping by default would hide every
 /// earlier request from a total the user could already see.
 ///
+/// `tools` narrows it to those senders - a section's client names on an app
+/// pane, one slug per tray row - and omitted or empty is every sender. See
+/// `activity::overview_clients` for what it accepts.
+///
 /// The payload stays raw JSON while the gateway contract moves; `lib/activity.ts`
 /// is the only place that models it.
 ///
@@ -820,11 +824,12 @@ fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
 #[tauri::command]
 async fn activity_overview(
     install_id: Option<String>,
-    tool: Option<String>,
+    tools: Option<Vec<String>>,
 ) -> Result<String, String> {
-    let tool = parse_tool(tool)?;
+    let clients = gate_connect_core::activity::overview_clients(&tools.unwrap_or_default())?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::overview_json(install_id.as_deref(), tool).map_err(envelope)
+        gate_connect_core::activity::overview_json(install_id.as_deref(), &clients)
+            .map_err(envelope)
     })
     .await
     .map_err(|e| format!("activity overview join error: {e}"))?
@@ -855,11 +860,11 @@ fn parse_tool(tool: Option<String>) -> Result<Option<gate_connect_core::registry
 #[tauri::command]
 async fn activity_cached_overview(
     install_id: Option<String>,
-    tool: Option<String>,
+    tools: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
-    let tool = parse_tool(tool)?;
+    let clients = gate_connect_core::activity::overview_clients(&tools.unwrap_or_default())?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), tool)
+        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), &clients)
     })
     .await
     .map_err(|e| format!("cached activity join error: {e}"))
@@ -886,24 +891,23 @@ async fn activity_cached_tool_overviews(
     .map_err(|e| format!("cached tool activity join error: {e}"))
 }
 
-/// One page of a tool's recent requests, for the app pane's feed (AG-574).
+/// One page of a section's recent requests, for the app pane's feed (AG-574).
 ///
-/// `tool` is required here, unlike on the overview: the feed is always about one
-/// tool, and the gateway refuses a request that names none. Not cached - see
+/// `tools` is required and non-empty, unlike on the overview: the feed is always
+/// about named senders, and the gateway refuses a request that names none. Each
+/// must be a name the engine stamps (`activity::feed_clients`). Not cached - see
 /// `activity::tool_events_json` for why the held reading stays with the overview.
 #[tauri::command]
 async fn activity_tool_events(
     install_id: Option<String>,
-    tool: String,
+    tools: Vec<String>,
     cursor: Option<String>,
 ) -> Result<String, String> {
-    let Some(tool) = parse_tool(Some(tool))? else {
-        return Err("a tool slug is required to read a tool's events".into());
-    };
+    let clients = gate_connect_core::activity::feed_clients(&tools)?;
     tauri::async_runtime::spawn_blocking(move || {
         gate_connect_core::activity::tool_events_json(
             install_id.as_deref(),
-            tool,
+            &clients,
             cursor.as_deref(),
         )
         .map_err(envelope)

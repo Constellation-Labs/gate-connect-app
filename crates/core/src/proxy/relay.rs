@@ -1541,6 +1541,26 @@ mod tests {
         }
     }
 
+    /// Whatever the marker names is a name the activity reads accept: the
+    /// relay's half of `every_stamped_client_is_readable` in `proxy/mod.rs`.
+    #[test]
+    fn every_tool_the_marker_names_is_readable() {
+        use crate::registry::ToolId;
+        for id in [
+            ToolId::ClaudeCode,
+            ToolId::Codex,
+            ToolId::OpenCode,
+            ToolId::OpenClaw,
+            ToolId::Hermes,
+            ToolId::EnvProxy,
+        ] {
+            let path = format!("/__gate/t/{}/anthropic/v1/messages", id.slug());
+            if let Some(slug) = resolved(&path).expect("routes").tool {
+                assert_eq!(crate::proxy::stamped_client(slug), Some(slug));
+            }
+        }
+    }
+
     /// The forwarder serves relay requests itself once the engine is gone, from
     /// its own copy of the catalog's slugs and upstreams, because it cannot
     /// link this crate. A catalog entry missing from that copy would work while

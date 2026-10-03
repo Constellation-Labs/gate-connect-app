@@ -40,10 +40,10 @@ function body(orgName: string, messages: number) {
 }
 
 /** Renders the hook and records every value it returns. */
-function harness(props: { credential?: string } = {}) {
+function harness(props: { credential?: string; tools?: readonly string[] } = {}) {
   const seen: ReturnType<typeof useActivity>[] = [];
-  function Probe({ credential }: { credential?: string }) {
-    seen.push(useActivity(true, null, credential ?? "cred-a"));
+  function Probe({ credential, tools }: { credential?: string; tools?: readonly string[] }) {
+    seen.push(useActivity(true, null, credential ?? "cred-a", tools));
     return null;
   }
   const utils = render(<Probe {...props} />);
@@ -174,6 +174,35 @@ describe("useActivity", () => {
     rerender({ credential: "cred-b" });
 
     expect(seen.at(-1)?.view).toBeNull();
+  });
+
+  it("reads a section's senders in a stable order, and keys on them", async () => {
+    disk.mockResolvedValue(null);
+    net.mockResolvedValue(body("Org", 3));
+    const { rerender } = harness({ tools: ["claude-web", "claude-code"] });
+    await flush();
+
+    expect(net).toHaveBeenCalledTimes(1);
+    expect(net).toHaveBeenCalledWith(undefined, ["claude-code", "claude-web"]);
+    expect(disk).toHaveBeenCalledWith(undefined, ["claude-code", "claude-web"]);
+
+    // The same names in a fresh array: not a new scope, so no second read.
+    rerender({ tools: ["claude-code", "claude-web"] });
+    await flush();
+    expect(net).toHaveBeenCalledTimes(1);
+
+    // Another set is.
+    rerender({ tools: ["codex"] });
+    await flush();
+    expect(net).toHaveBeenLastCalledWith(undefined, ["codex"]);
+  });
+
+  it("sends no scope for every sender", async () => {
+    disk.mockResolvedValue(null);
+    net.mockResolvedValue(body("Org", 3));
+    harness();
+    await flush();
+    expect(net).toHaveBeenCalledWith(undefined, undefined);
   });
 
   it("survives an unreadable cache entry", async () => {

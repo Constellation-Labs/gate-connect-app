@@ -218,7 +218,7 @@ export function useToolMessages(
       // concurrent requests at a shared budget, and nobody is waiting on the
       // last row's figure to read the first one's.
       for (const slug of stale) {
-        const text = await activityOverview(installId, slug).catch(() => null);
+        const text = await activityOverview(installId, [slug]).catch(() => null);
         if (!current()) return;
         // Recorded even for a failure: a gateway that just refused is not worth
         // asking again on the next look a second later.

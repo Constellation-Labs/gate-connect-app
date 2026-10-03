@@ -314,7 +314,13 @@ export function labelEntries(entries: ActivityEntry[], labels: ModelLabels): Act
 }
 
 /**
- * Load one tool's feed, and pages of it on demand.
+ * Load a section's feed, and pages of it on demand.
+ *
+ * `tools` is every client name the pane covers (`paneClients` in `groups.ts`),
+ * read as one feed. The effects key on its sorted contents rather than on the
+ * array, so a caller handing in a fresh array each render neither refetches nor
+ * resets the pages already read, and the same set in another order is the same
+ * scope.
  *
  * Separate from `useActivity` rather than folded into it, which is the opposite
  * call to the one made for the tool *scope*: that shared a request shape and a
@@ -327,7 +333,7 @@ export function labelEntries(entries: ActivityEntry[], labels: ModelLabels): Act
  */
 export function useToolEvents(
   enabled: boolean,
-  tool: string | null,
+  tools: readonly string[] | null,
   installId: string | null = null,
   credential = "",
 ): {
@@ -349,16 +355,18 @@ export function useToolEvents(
   const [loading, setLoading] = useState(false);
   const [paged, setPaged] = useState(false);
   /** Which scope is current, so a page that arrives after the user has moved on
-   *  is dropped rather than appended to a different tool's feed. */
+   *  is dropped rather than appended to a different section's feed. */
   const attempt = useRef(0);
+  /** The scope by value. Empty means nothing to read. */
+  const scope = tools ? [...tools].sort().join(",") : "";
 
   const fetchPage = useCallback(
     (cursor: string | null) => {
-      if (!enabled || !tool) return;
+      if (!enabled || !scope) return;
       const mine = ++attempt.current;
       setLoading(true);
       setFailure(null);
-      activityToolEvents(tool, installId ?? undefined, cursor ?? undefined)
+      activityToolEvents(scope.split(","), installId ?? undefined, cursor ?? undefined)
         .then((text) => {
           if (mine !== attempt.current) return;
           const page = adaptEvents(JSON.parse(text) as RawToolEvents);
@@ -387,16 +395,16 @@ export function useToolEvents(
     // `exhaustive-deps` autofix would drop it as unused and silently stop the feed
     // re-reading when the user changes account, leaving one account's requests on
     // screen under another's.
-    [enabled, tool, installId, credential],
+    [enabled, scope, installId, credential],
   );
 
   // A feed belongs to the scope it was read for, so a scope change drops it
-  // rather than leaving one tool's requests under another tool's name.
+  // rather than leaving one section's requests under another section's name.
   useEffect(() => {
     setView(null);
     setFailure(null);
     setPaged(false);
-  }, [credential, installId, tool]);
+  }, [credential, installId, scope]);
 
   useEffect(() => {
     fetchPage(null);

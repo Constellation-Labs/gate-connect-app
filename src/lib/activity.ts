@@ -378,9 +378,9 @@ export function clockTime(taken: Date, now = new Date()): string {
  * Changing it refetches, because the gateway narrows every section server-side -
  * there is no client-side slice of a payload that only covered one machine.
  *
- * `tool` scopes it to one tool the same way, for the app pane (AG-574). One hook
- * rather than two: the generation guard, the cache-versus-network race and the
- * clear-on-scope-change effect all apply identically to a tool-scoped read, and a
+ * `tools` scopes it to a section's senders the same way, for the app pane
+ * (AG-574). One hook rather than two: the generation guard, the cache-versus-network
+ * race and the clear-on-scope-change effect all apply identically to a scoped read, and a
  * second copy of that race guard is the thing most likely to drift. Both call
  * sites keep their own state - hooks do not share any - so the Overview and an
  * app pane can be mounted at once without either seeing the other's reading.
@@ -457,7 +457,10 @@ export function useActivity(
   enabled: boolean,
   installId: string | null = null,
   credential = "",
-  tool?: string,
+  /** The senders to count: an app pane's whole section. Omitted or empty is
+   *  every sender. Compared by sorted contents, so a fresh array each render is
+   *  not a new scope. */
+  tools?: readonly string[],
 ): {
   view: ActivityView | null;
   failure: ActivityFailure | null;
@@ -471,9 +474,12 @@ export function useActivity(
    *  than applied, so a scope the user has already moved off cannot repaint the
    *  pane after the fact. */
   const attempt = useRef(0);
+  /** The scope by value. Empty is every sender. */
+  const scope = tools ? [...tools].sort().join(",") : "";
 
   const reload = useCallback(() => {
     if (!enabled) return;
+    const scoped = scope ? scope.split(",") : undefined;
     const mine = ++attempt.current;
     const current = () => mine === attempt.current;
     setLoading(true);
@@ -483,7 +489,7 @@ export function useActivity(
     // has nothing left to say.
     let answered = false;
 
-    void activityCachedOverview(installId ?? undefined, tool)
+    void activityCachedOverview(installId ?? undefined, scoped)
       .then((text) => {
         if (!current() || answered || !text) return;
         setView(adapt(JSON.parse(text) as RawOverview));
@@ -493,7 +499,7 @@ export function useActivity(
         // the network, which is what it did before this existed.
       });
 
-    activityOverview(installId ?? undefined, tool)
+    activityOverview(installId ?? undefined, scoped)
       .then((text) => {
         answered = true;
         if (!current()) return;
@@ -511,7 +517,7 @@ export function useActivity(
       .finally(() => {
         if (current()) setLoading(false);
       });
-  }, [enabled, installId, credential, tool]);
+  }, [enabled, installId, credential, scope]);
 
   // A reading belongs to the scope it was taken for, so a scope change drops it
   // rather than leaving it under the new label until the replacement lands.
@@ -520,7 +526,7 @@ export function useActivity(
   useEffect(() => {
     setView(null);
     setFailure(null);
-  }, [credential, installId, tool]);
+  }, [credential, installId, scope]);
 
   useEffect(reload, [reload]);
 
