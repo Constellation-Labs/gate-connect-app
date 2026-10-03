@@ -923,15 +923,15 @@ export function ModelPickerDialog({
         aria-checked={selected}
         disabled={blocked}
         onClick={() => choose(model.id)}
-        className={`flex h-10 shrink-0 items-center gap-2 rounded-control border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50 ${
+        className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50 ${
           // The frame marks the chosen row with the muted ground and a real
-          // border rather than a primary outline. It also drew the unchosen rows
-          // at a looser radius; design's card rule of 2026-09-04 overrides that,
-          // since these rows are inner cards and inner cards are 4px. The ground
-          // and the border still carry the selection on their own.
+          // border rather than a primary outline, at 4px; the unchosen rows
+          // draw at 8px (`1410:31859`). That contradicts the 2026-09-04 card
+          // rule (inner cards are 4px); the frame is enforced as drawn
+          // (2026-10-02), and the rule is the question for design.
           selected
-            ? "border-base-border bg-gray-50"
-            : "border-transparent enabled:hover:bg-gray-50"
+            ? "rounded-control border-base-border bg-gray-50"
+            : "rounded-md border-transparent enabled:hover:bg-gray-50"
         }`}
       >
         <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
@@ -999,16 +999,16 @@ export function ModelPickerDialog({
 
   return (
     <Modal
-      // `Icon / Boxes` (665:18403), not layers - the same glyph the App pane's
-      // App default radio and every empty model note draw, which is what makes
-      // the dialog read as the same subject they do.
-      icon="cube"
+      // `Icon / Boxes` (`1410:31859`): the three-box glyph, matching the Gate
+      // option on the App pane's card (2026-10-02).
+      icon="boxes"
       tile="lg"
-      // Singular in both modes, which `665:18405` draws and `665:18400` is the
-      // frame for this dialog. The conditional came from `665:19069`'s "Choose
-      // Gate models", read as the newer frame when the control became a
-      // multi-select; design pointed at this frame on 2026-09-16.
-      title="Choose a Gate model"
+      // Plural in the multiple mode, which the current picker frame
+      // (`1410:31859`) draws. Design pointed at the singular `665:18405` on
+      // 2026-09-16, when the control was a single choice; the frame has
+      // since been redrawn around the multi-select and is enforced as drawn
+      // (2026-10-02). The single mode keeps the singular.
+      title={multiple ? "Choose Gate models" : "Choose a Gate model"}
       subtitle={`${appName} will be able to use these models`}
       closeButton
       secondary={

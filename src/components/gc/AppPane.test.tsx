@@ -519,7 +519,7 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: "app", gateModel: model }));
     const card_ = card("Model selection");
 
-    expect(within(card_).queryByText(/^Gate models? in .*config/)).toBeNull();
+    expect(within(card_).queryByText(/^Current Gate models?$/)).toBeNull();
     expect(within(card_).queryByRole("button", { name: "Choose models" })).toBeNull();
     expect(within(card_).getByText(`Use ${model.ids[0]}`)).toBeTruthy();
   });
@@ -528,10 +528,10 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: "gate", gateModel: model }));
     const card_ = card("Model selection");
 
-    // What the app's own config holds, and when that takes effect: the write
-    // lands in the config, which the app reads when it starts.
+    // The frame's heading (`1410:28145`), singular over a single row. The
+    // "from its next session" wording it replaced is in the PR history.
     expect(
-      within(card_).getByText("Gate model in Claude Code's config, from its next session"),
+      within(card_).getByText("Current Gate model"),
     ).toBeTruthy();
     expect(within(card_).getByText(model.ids[0])).toBeTruthy();
   });
@@ -551,7 +551,7 @@ describe("AppPane model selection", () => {
 
     for (const id of ids) expect(within(card_).getByText(id)).toBeTruthy();
     expect(
-      within(card_).getByText("Gate models in Claude Code's config, from its next session"),
+      within(card_).getByText("Current Gate models"),
     ).toBeTruthy();
     // One action for the set, not one per row.
     expect(within(card_).getAllByRole("button", { name: "Choose models" })).toHaveLength(1);
