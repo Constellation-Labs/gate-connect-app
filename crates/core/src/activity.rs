@@ -130,30 +130,23 @@ pub fn cached_tool_overviews_json(
     crate::activity_cache::load_tools(install_id.filter(|s| !s.is_empty()))
 }
 
-/// Fetch one page of a tool's recent requests, as raw JSON (AG-574).
+/// Fetch the first page of a tool's recent requests, as raw JSON (AG-574).
 ///
 /// `tool` is a [`ToolId`] rather than a string so the closed set of slugs is
 /// enforced here, by the compiler, instead of by the gateway rejecting a value
 /// this side let through. The route requires it: the feed is always about one
 /// tool.
 ///
-/// `cursor` is the previous page's `nextCursor`, passed back unchanged. It is
-/// opaque on purpose - the gateway owns its shape - so this only forwards it.
+/// Only the first page: the app shows the newest rows and hands the rest of the
+/// list to the dashboard, so it never asks for a `cursor`.
 ///
 /// Deliberately not cached. The held reading in [`crate::activity_cache`] is one
 /// slot, and spending it on a feed that changes every request would evict the
 /// overview it exists for.
-pub fn tool_events_json(
-    install_id: Option<&str>,
-    tool: ToolId,
-    cursor: Option<&str>,
-) -> Result<String, Failure> {
+pub fn tool_events_json(install_id: Option<&str>, tool: ToolId) -> Result<String, Failure> {
     let mut query: Vec<(&str, &str)> = vec![("tool", tool.slug())];
     if let Some(id) = install_id.filter(|s| !s.is_empty()) {
         query.push(("installId", id));
-    }
-    if let Some(c) = cursor.filter(|s| !s.is_empty()) {
-        query.push(("cursor", c));
     }
     get_json(Endpoint::ToolEvents, &query)
 }

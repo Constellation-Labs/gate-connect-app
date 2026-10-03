@@ -20,6 +20,7 @@ const quietFeed: SecurityEventsProps = {
   unavailable: false,
   onRetry: () => {},
   onOpenInDashboard: () => {},
+  onViewActivity: () => {},
 };
 
 function pane(props: Partial<Parameters<typeof Overview>[0]> = {}) {

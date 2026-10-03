@@ -892,21 +892,12 @@ async fn activity_cached_tool_overviews(
 /// tool, and the gateway refuses a request that names none. Not cached - see
 /// `activity::tool_events_json` for why the held reading stays with the overview.
 #[tauri::command]
-async fn activity_tool_events(
-    install_id: Option<String>,
-    tool: String,
-    cursor: Option<String>,
-) -> Result<String, String> {
+async fn activity_tool_events(install_id: Option<String>, tool: String) -> Result<String, String> {
     let Some(tool) = parse_tool(Some(tool))? else {
         return Err("a tool slug is required to read a tool's events".into());
     };
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::tool_events_json(
-            install_id.as_deref(),
-            tool,
-            cursor.as_deref(),
-        )
-        .map_err(envelope)
+        gate_connect_core::activity::tool_events_json(install_id.as_deref(), tool).map_err(envelope)
     })
     .await
     .map_err(|e| format!("activity tool events join error: {e}"))?

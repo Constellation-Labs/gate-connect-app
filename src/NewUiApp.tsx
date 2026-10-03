@@ -80,7 +80,7 @@ import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
-import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
+import { NO_DASHBOARD, SECTION_SURFACE_CLIENTS, dashboardLinks } from "./lib/dashboard";
 import type { DashboardLinks } from "./lib/dashboard";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -724,9 +724,7 @@ export function NewUiApp() {
    * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
    * better information. The Overview's org-wide read refreshes on any of it;
    * the open pane's per-tool reads only when its tool is among the senders, so
-   * Codex traffic does not re-read the Claude pane. The feed is left alone
-   * once the user has paged into it: `reload` puts page one back, and taking
-   * pages away from someone reading them is worse than a stale first page.
+   * Codex traffic does not re-read the Claude pane.
    * Each hook's `reload` is a no-op while that hook is disabled.
    */
   const refreshActivity = (tools: (string | null)[] | null) => {
@@ -739,7 +737,7 @@ export function NewUiApp() {
     if (installsFailure !== null || unattributedMachine) reloadInstalls();
     if (openTool !== null && (tools === null || tools.includes(openTool))) {
       toolActivity.reload();
-      if (!toolEvents.paged) toolEvents.reload();
+      toolEvents.reload();
     }
   };
   // Latest-callback ref so the listener registers once: the hooks hand back a
@@ -3434,9 +3432,22 @@ export function NewUiApp() {
             (!installsResolved ||
               (toolEvents.view === null && toolEvents.failure === null))
           }
-          onLoadMore={
-            toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined
-          }
+          // The feed's own filters, so the dashboard opens on the rows this
+          // card was drawing and what came before them: this tool, this
+          // machine, the last 24h. Absent wherever the feed is not read (a
+          // domain pane, an unattributed machine), as the card then has no
+          // rows for the list to continue.
+          // A domain pane has no feed, but its traffic is still in the
+          // dashboard, stamped with the desktop app's and website's own names
+          // (`SECTION_SURFACE_CLIENTS`), so it links to those instead.
+          onViewActivity={(() => {
+            if (!machineKnown || view.kind !== "app") return undefined;
+            const apps =
+              openTool !== null ? [openTool] : SECTION_SURFACE_CLIENTS[view.slug];
+            if (!apps) return undefined;
+            return () =>
+              openDashboard((d) => d.messages({ apps, device: currentInstallId }));
+          })()}
           // Each half reports its own read. Deriving the feed's flag from the
           // overview's state let a feed that answered - and answered empty - be
           // reported as unreadable because the *chart* had not landed, which is
@@ -3598,6 +3609,11 @@ export function NewUiApp() {
             // helper already reports both failures the same way.
             onOpenInDashboard: (event) =>
               openDashboard((d) => d.message(event.requestId)),
+            // This installation's list, which is the scope the feed's stream
+            // is opened with. Org-wide when the gateway does not know the
+            // machine, rather than no button.
+            onViewActivity: () =>
+              openDashboard((d) => d.security({ device: currentInstallId })),
             modelLabels,
             toolNames,
           }}

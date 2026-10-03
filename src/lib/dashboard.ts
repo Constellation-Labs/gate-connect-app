@@ -79,6 +79,23 @@ export function dashboardOrigin(gatewayBaseUrl: string | null | undefined): stri
   return `https://app${first.slice("gateway".length)}${GATE_SUFFIX}`;
 }
 
+/**
+ * The `client_tool` names a section's desktop-app and website traffic is stored
+ * under, for the "View activity" link on a pane with no installed tool behind
+ * it (Claude without Claude Code, ChatGPT without Codex).
+ *
+ * These are what `client_tool` in `crates/core/src/proxy/mod.rs` stamps from the
+ * vendor's own headers: `anthropic-client-platform` for Claude's app and
+ * claude.ai, `originator` / `oai-*` on chatgpt.com. They are not `ToolId`s, so
+ * the app's own feed cannot read them back, but the dashboard filters on them
+ * like any other. A section with no entry here (OpenAI API, whose traffic names
+ * no app) gets no link: nothing it routes carries a name to filter on.
+ */
+export const SECTION_SURFACE_CLIENTS: Readonly<Record<string, readonly string[]>> = {
+  claude: ["claude-desktop", "claude-web"],
+  chatgpt: ["chatgpt", "chatgpt-web"],
+};
+
 /** Every dashboard destination the app links to, for one gateway. */
 export interface DashboardLinks {
   /** The dashboard itself. */
@@ -98,6 +115,19 @@ export interface DashboardLinks {
   support: string;
   /** One request's detail in the security feed, by request id. */
   message: (requestId: string) => string;
+  /**
+   * The Messages list, filtered to what a Recent activity card draws, for its
+   * "View activity" button.
+   *
+   * `apps` are `client_tool` slugs: what this app stamps on `x-gate-client`
+   * for every request it routes, and the values the card's own feed sends as
+   * `tool` to `/v1/me/tool-events`. `device` is the install id the feed is
+   * scoped by, and `timeRange=24h` is the feed's own window.
+   */
+  messages: (filter: { apps: readonly string[]; device?: string | null }) => string;
+  /** The Security list for one installation, for the Security events card's
+   *  "View activity" button. The feed behind that card is scoped by the same id. */
+  security: (filter: { device?: string | null }) => string;
 }
 
 /**
@@ -122,5 +152,14 @@ export function dashboardLinks(gatewayBaseUrl: string | null | undefined): Dashb
     savings: `${origin}/token-savings`,
     support: `${origin}/overview`,
     message: (requestId: string) => `${origin}/messages/${encodeURIComponent(requestId)}`,
+    messages: ({ apps, device }) => {
+      const params = new URLSearchParams();
+      if (apps.length > 0) params.set("app", apps.join(","));
+      if (device) params.set("device", device);
+      params.set("timeRange", "24h");
+      return `${origin}/messages?${params}`;
+    },
+    security: ({ device }) =>
+      device ? `${origin}/security?${new URLSearchParams({ device })}` : `${origin}/security`,
   };
 }
