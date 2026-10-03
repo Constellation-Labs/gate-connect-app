@@ -520,7 +520,9 @@ export function useRouting({
    */
   const setAppRouted = useCallback(
     async (slug: string, routed: boolean, force = false): Promise<boolean> => {
-      if (busy) {
+      // A cascade member is not a second write in flight: `busy` is the
+      // cascade's own, held across its members (`runCascade`).
+      if (busy && !cascading.current) {
         // Not a no-op worth passing over in silence: `busy` sticking on is what
         // makes every switch in the window stop responding, and without this
         // line the symptom is a click that does nothing, anywhere.
@@ -765,7 +767,7 @@ export function useRouting({
    */
   const setDomainRouted = useCallback(
     async (slug: string, routed: boolean): Promise<boolean> => {
-      if (busy) return false;
+      if (busy && !cascading.current) return false;
       setBusy(true);
       let changed = false;
       try {

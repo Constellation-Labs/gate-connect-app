@@ -905,6 +905,8 @@ export function NewUiApp() {
    * failed sweep paints is `paintPlan`'s decision.
    */
   const held = useRef<Held>({ tools: [], proxy: null, verdicts: new Map() });
+  /** A routing action is writing; it repaints when it settles. */
+  const routingInFlight = useRef(false);
   const paintSnapshot = useCallback(
     async (t: Tool[] | null, px: ProxyState | null) => {
       const plan = paintPlan(held.current, { tools: t, proxy: px }, await sweepVerdicts());
@@ -986,6 +988,7 @@ export function NewUiApp() {
     if (redetecting.current) return;
     redetecting.current = true;
     try {
+      const readDuringWrite = routingInFlight.current;
       const [t, px] = await Promise.all([
         listTools().catch(() => null),
         proxyStatus().catch(() => null),
@@ -1005,7 +1008,12 @@ export function NewUiApp() {
       // Painted with its verdicts, like every other reading: this is also the
       // echo of the app's own config write (`tools-changed`), and the tool's
       // new status on its own repainted the row before the sweep could.
-      if (changed) await paintSnapshot(toolsMoved ? t : null, proxyMoved ? px : null);
+      // Not while a routing action is writing: the echo of a section's first
+      // member would paint the section half-moved, and the action's own
+      // `settle` re-reads everything once it is done. Asked at both ends: a
+      // read taken mid-write and answered after the settle is older than it.
+      if (changed && !readDuringWrite && !routingInFlight.current)
+        await paintSnapshot(toolsMoved ? t : null, proxyMoved ? px : null);
     } finally {
       redetecting.current = false;
     }
@@ -1088,15 +1096,19 @@ export function NewUiApp() {
       void loadPreferences();
       void loadIdentity();
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
+      setTools(t ?? []);
       setProviders(p);
-      // Tools and engine land with their verdicts, so the first paint is not
-      // every row reading "Checking".
-      await paintSnapshot(t ?? [], px);
+      setProxy(px);
       setAccount(acct.account);
       setAccountUnread(acct.unread);
       setOAuth(oauthState);
       setVersion(v);
       setLoaded(true);
+      // Not awaited, and not through `paintSnapshot`: the sweep can reach the
+      // identity provider, and the window must not wait on it to draw. Rows
+      // read "Checking" until it lands, which is true; there is no earlier
+      // verdict for the new reading to disagree with.
+      void refreshVerdicts();
       // The per-launch counterpart of `app_first_launched`: without it a launch
       // of this window was invisible, and a funnel had no denominator for
       // returning users. Only the props the first read already answered; the
@@ -1331,6 +1343,9 @@ export function NewUiApp() {
     },
   });
   const routingBusy = routing.busy;
+  useEffect(() => {
+    routingInFlight.current = routingBusy;
+  }, [routingBusy]);
 
   /** Name the tools a teardown left on Gate, read back off their configs.
    *

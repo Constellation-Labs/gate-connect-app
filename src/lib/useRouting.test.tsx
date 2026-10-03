@@ -1280,6 +1280,39 @@ describe("useRouting: one paint per action", () => {
     expect(api.current!.busy).toBe(false);
   });
 
+  it("lets every member through when the caller reads the latest hook", async () => {
+    // The section switch got its later members past the `busy` guard only
+    // because it held the render from before the first member's write. Read
+    // the hook after `busy` has rendered on, as a latest-ref caller would, and
+    // the cascade must still write all of them.
+    (connectTool as Mock).mockResolvedValue({ kind: "connected" });
+    const { api } = harness(
+      [tool("codex", { kind: "detected" }), tool("hermes", { kind: "detected" })],
+      proxyState(),
+    );
+    let release!: () => void;
+    const between = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    let cascade!: Promise<void>;
+    await act(async () => {
+      cascade = api.current!.runCascade(async () => {
+        await api.current!.setAppRouted("codex", true);
+        await between;
+        await api.current!.setAppRouted("hermes", true);
+      });
+    });
+    expect(api.current!.busy).toBe(true);
+
+    await act(async () => {
+      release();
+      await cascade;
+    });
+    expect(connectTool).toHaveBeenCalledTimes(2);
+    expect(api.current!.busy).toBe(false);
+  });
+
   it("still re-reads and releases when a cascade member throws", async () => {
     (connectTool as Mock).mockResolvedValue({ kind: "connected" });
     const { api, onSnapshot } = harness([tool("codex", { kind: "detected" })], proxyState());
