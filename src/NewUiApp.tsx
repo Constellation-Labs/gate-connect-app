@@ -15,6 +15,8 @@ import type {
   Tool,
   Verdict,
 } from "./lib/api";
+import { paintPlan, serialSweeps } from "./lib/snapshotPaint";
+import type { Held } from "./lib/snapshotPaint";
 import {
   deviceName as fetchDeviceName,
   diagnostics as fetchDiagnostics,
@@ -886,10 +888,36 @@ export function NewUiApp() {
   /** The routing sweep, kept separate from {@link refresh} because it is the one
    * probe that costs network I/O and a process walk. Callers that changed a
    * tool's config re-run it; callers that only repainted do not have to. */
+  // One sweep at a time, in the order asked: see `serialSweeps`.
+  const sweepVerdicts = useRef(
+    serialSweeps(() => routingVerdicts().then(verdictsBySlug)),
+  ).current;
   const refreshVerdicts = useCallback(async () => {
-    const v = await routingVerdicts().catch(() => null);
-    if (v) setVerdicts(verdictsBySlug(v));
-  }, []);
+    const m = await sweepVerdicts();
+    if (m) setVerdicts(m);
+  }, [sweepVerdicts]);
+
+  /**
+   * Paint a fresh reading as one update: the tools, the engine, and the
+   * verdicts that describe them, set together once the sweep has answered.
+   *
+   * Set apart, they were seen apart. The config write lands first and the
+   * switch flipped on it, while the row, the pane and its banner still read
+   * the verdict from before the write: "Not routed", then "Not protected",
+   * then "Protected", on every turn-on. What was on screen stays until all
+   * three can move at once. `null` leaves that reading as it is. What a
+   * failed sweep paints is `paintPlan`'s decision.
+   */
+  const held = useRef<Held>({ tools: [], proxy: null, verdicts: new Map() });
+  const paintSnapshot = useCallback(
+    async (t: Tool[] | null, px: ProxyState | null) => {
+      const plan = paintPlan(held.current, { tools: t, proxy: px }, await sweepVerdicts());
+      if (plan.tools) setTools(plan.tools);
+      if (plan.proxy) setProxy(plan.proxy);
+      if (plan.verdicts) setVerdicts(plan.verdicts);
+    },
+    [sweepVerdicts],
+  );
 
   /**
    * Is any tool waiting to be reopened?
@@ -936,13 +964,10 @@ export function NewUiApp() {
     // the two, so a device Gate could not read rendered as a device with no AI
     // apps on it - the exact confusion AG-560 exists to remove.
     setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-    if (t) setTools(t);
-    if (px) setProxy(px);
     // The engine coming up or going down changes every verdict, since the relay
-    // health check is shared - so this follows the snapshot rather than waiting
-    // for something else to ask.
-    void refreshVerdicts();
-  }, [refreshVerdicts]);
+    // health check is shared - so the reading is painted with its verdicts.
+    await paintSnapshot(t, px);
+  }, [paintSnapshot]);
 
   /**
    * Re-read what is installed, without the routing sweep.
@@ -973,25 +998,22 @@ export function NewUiApp() {
       // card's evidence that something is still looking, and letting it go stale
       // while the reads continued would misdate a scan that did happen.
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-      let changed = false;
       // A failed read commits nothing, so it also reports nothing as changed -
       // the last good list stays on screen and the card says the scan failed.
-      if (t && detectionSignature(t) !== rendered.current.tools) {
-        setTools(t);
-        changed = true;
-      }
-      if (px && detectionSignature(px) !== rendered.current.proxy) {
-        setProxy(px);
-        changed = true;
-      }
+      const toolsMoved = !!t && detectionSignature(t) !== rendered.current.tools;
+      const proxyMoved = !!px && detectionSignature(px) !== rendered.current.proxy;
+      const changed = toolsMoved || proxyMoved;
       // Either one moving invalidates every verdict: a tool that just appeared
       // has none yet, and the engine coming up or going down changes all of
       // them, because the relay health check behind them is shared.
-      if (changed) void refreshVerdicts();
+      // Painted with its verdicts, like every other reading: this is also the
+      // echo of the app's own config write (`tools-changed`), and the tool's
+      // new status on its own repainted the row before the sweep could.
+      if (changed) await paintSnapshot(toolsMoved ? t : null, proxyMoved ? px : null);
     } finally {
       redetecting.current = false;
     }
-  }, [refreshVerdicts]);
+  }, [paintSnapshot]);
 
   /** Re-run detection because the user asked - the inventory card's control, for
    * a scan that failed and may not fail again. Same reads as the event-driven
@@ -1011,6 +1033,9 @@ export function NewUiApp() {
       proxy: detectionSignature(proxy),
     };
   }, [tools, proxy]);
+  useEffect(() => {
+    held.current = { tools, proxy, verdicts };
+  }, [tools, proxy, verdicts]);
 
   // Detection used to be the one reading the window could not be told about, so
   // this polled `list_tools` every five seconds. It is told now: the backend
@@ -1066,11 +1091,11 @@ export function NewUiApp() {
       void loadLaunchAtLogin();
       void loadPreferences();
       void loadIdentity();
-      setTools(t ?? []);
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-      void refreshVerdicts();
-        setProviders(p);
-      setProxy(px);
+      setProviders(p);
+      // Tools and engine land with their verdicts, so the first paint is not
+      // every row reading "Checking".
+      await paintSnapshot(t ?? [], px);
       setAccount(acct.account);
       setAccountUnread(acct.unread);
       setOAuth(oauthState);
@@ -1255,13 +1280,10 @@ export function NewUiApp() {
   const routing = useRouting({
     tools,
     proxy,
-    onSnapshot: ({ tools: t, proxy: px }) => {
-      setTools(t);
-      setProxy(px);
-      // A write landed, so the verdicts are stale: the tool may now need a
-      // reopen, and the relay may have been auto-enabled by the connect.
-      void refreshVerdicts();
-    },
+    // A write landed, so the verdicts are stale: the tool may now need a
+    // reopen, and the relay may have been auto-enabled by the connect. The
+    // snapshot waits for the sweep and lands with it.
+    onSnapshot: ({ tools: t, proxy: px }) => paintSnapshot(t, px),
     // The removal's own note, from what it recorded about the browser stores:
     // "removed, reopen your browsers" or "a browser kept it, here is how to
     // remove it". `ca_trusted` going false cannot say which, and also flips
@@ -1529,9 +1551,8 @@ export function NewUiApp() {
       listTools().catch(() => tools),
       proxyStatus().catch(() => proxy),
     ]);
-    setTools(t);
-    setProxy(px);
-  }, [tools, proxy]);
+    await paintSnapshot(t, px);
+  }, [tools, proxy, paintSnapshot]);
 
   const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
   const [noticePage, setNoticePage] = useState(0);

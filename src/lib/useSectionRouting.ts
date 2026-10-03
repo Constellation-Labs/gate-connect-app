@@ -84,13 +84,17 @@ export function useSectionRouting({
         // False means they declined, or trusting failed and has been reported.
         if (next && !(await routing.confirmCaTrusted())) return;
         const moved: GroupMember[] = [];
-        for (const m of targets) {
-          const wrote =
-            m.kind === "proxy"
-              ? await routing.setDomainRouted(m.key, next)
-              : await routing.setAppRouted(m.key, next);
-          if (wrote) moved.push(m);
-        }
+        // One re-read for the whole section, after its last member: see
+        // `useRouting.runCascade`.
+        await routing.runCascade(async () => {
+          for (const m of targets) {
+            const wrote =
+              m.kind === "proxy"
+                ? await routing.setDomainRouted(m.key, next)
+                : await routing.setAppRouted(m.key, next);
+            if (wrote) moved.push(m);
+          }
+        });
         // What actually wrote, not what was attempted. A member that failed or
         // whose gate was declined has not moved, and offering to close an app
         // whose config write did not land asks someone to restart a tool for
