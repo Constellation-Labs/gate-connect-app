@@ -15,6 +15,8 @@ import type {
   Tool,
   Verdict,
 } from "./lib/api";
+import { paintPlan, serialSweeps } from "./lib/snapshotPaint";
+import type { Held } from "./lib/snapshotPaint";
 import {
   deviceName as fetchDeviceName,
   diagnostics as fetchDiagnostics,
@@ -882,15 +884,10 @@ export function NewUiApp() {
   /** The routing sweep, kept separate from {@link refresh} because it is the one
    * probe that costs network I/O and a process walk. Callers that changed a
    * tool's config re-run it; callers that only repainted do not have to. */
-  const sweepQueue = useRef<Promise<unknown>>(Promise.resolve());
-  const sweepVerdicts = useCallback((): Promise<Map<string, Verdict> | null> => {
-    // One sweep at a time, in the order asked. Three callers ask for it, and
-    // two replies crossing meant an older reading could land last and stand
-    // until the next ask.
-    const run = sweepQueue.current.then(() => routingVerdicts().catch(() => null));
-    sweepQueue.current = run.catch(() => null);
-    return run.then((v) => (v ? verdictsBySlug(v) : null));
-  }, []);
+  // One sweep at a time, in the order asked: see `serialSweeps`.
+  const sweepVerdicts = useRef(
+    serialSweeps(() => routingVerdicts().then(verdictsBySlug)),
+  ).current;
   const refreshVerdicts = useCallback(async () => {
     const m = await sweepVerdicts();
     if (m) setVerdicts(m);
@@ -904,14 +901,16 @@ export function NewUiApp() {
    * switch flipped on it, while the row, the pane and its banner still read
    * the verdict from before the write: "Not routed", then "Not protected",
    * then "Protected", on every turn-on. What was on screen stays until all
-   * three can move at once. `null` leaves that reading as it is.
+   * three can move at once. `null` leaves that reading as it is. What a
+   * failed sweep paints is `paintPlan`'s decision.
    */
+  const held = useRef<Held>({ tools: [], proxy: null, verdicts: new Map() });
   const paintSnapshot = useCallback(
     async (t: Tool[] | null, px: ProxyState | null) => {
-      const m = await sweepVerdicts();
-      if (t) setTools(t);
-      if (px) setProxy(px);
-      if (m) setVerdicts(m);
+      const plan = paintPlan(held.current, { tools: t, proxy: px }, await sweepVerdicts());
+      if (plan.tools) setTools(plan.tools);
+      if (plan.proxy) setProxy(plan.proxy);
+      if (plan.verdicts) setVerdicts(plan.verdicts);
     },
     [sweepVerdicts],
   );
@@ -1030,6 +1029,9 @@ export function NewUiApp() {
       proxy: detectionSignature(proxy),
     };
   }, [tools, proxy]);
+  useEffect(() => {
+    held.current = { tools, proxy, verdicts };
+  }, [tools, proxy, verdicts]);
 
   // Detection used to be the one reading the window could not be told about, so
   // this polled `list_tools` every five seconds. It is told now: the backend
