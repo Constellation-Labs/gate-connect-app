@@ -221,6 +221,12 @@ impl RunningEngine {
         let _ = self.key_tx.send(Arc::from(api_key));
     }
 
+    /// The key and the bearer the engine would inject right now, for tests.
+    #[cfg(test)]
+    pub(crate) fn credentials(&self) -> (Arc<str>, Arc<str>) {
+        (self.key_tx.borrow().clone(), self.token_tx.borrow().clone())
+    }
+
     /// Push a refreshed OAuth access token to the live engine. Empty string
     /// clears it (reverting to the API key). Cheap - no restart; this is how
     /// a silent token refresh reaches in-flight routing.
@@ -539,6 +545,10 @@ struct GateHandler {
     /// different problem, with a different fix) and for everything we passed
     /// through untouched.
     injected_oauth: bool,
+    /// The bearer the rewrite put on this request, so a 401 on the way back
+    /// can name the token it refused (`record_refused_bearer`) rather than
+    /// whatever the watch holds by then.
+    sent_token: Option<Arc<str>>,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -899,6 +909,7 @@ impl HttpHandler for GateHandler {
         self.chatgpt_turn = None;
         // Likewise: only a successful OAuth-bearing rewrite below sets this.
         self.injected_oauth = false;
+        self.sent_token = None;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
         // website, which shares their host (see `BROWSER_ROUTED`).
         // Classify before `decide` and hand it a narrowed rule set, so the
@@ -1047,7 +1058,39 @@ impl HttpHandler for GateHandler {
                     }
                 } else {
                     let api_key = self.api_key.borrow().clone();
-                    let token = self.token.borrow().clone();
+                    let mut token = self.token.borrow().clone();
+                    // A bearer the gateway has refused, or one past its own
+                    // expiry, does not go out again: ask for the re-check and
+                    // wait (bounded) for the renewed token, exactly as the
+                    // relay does after its 401. The difference is the timing -
+                    // this path streams the body through and cannot replay the
+                    // request, so the wait happens before the send. A dead
+                    // session empties the watch, and the signed-out check
+                    // below then answers; no verdict within the wait sends
+                    // the token as it is, which is what happened before.
+                    //
+                    // Not in the Linux helper daemon: its observer only counts
+                    // refusals for the GUI to poll, so no verdict would come,
+                    // and asking would count a refusal for a request the
+                    // gateway has not seen. The GUI renews on its own tick
+                    // there, or on the 401 this request may get.
+                    if super::gate_auth_verdict_can_arrive()
+                        && super::bearer_needs_recovery(&token, now_unix())
+                    {
+                        let mut rx = self.token.clone();
+                        if let Some(fresh) = super::relay::recovered_token(
+                            &mut rx,
+                            &token,
+                            super::notify_gate_auth_observer,
+                            &super::GATE_AUTH_CHECK_DONE,
+                        )
+                        .await
+                        {
+                            token = fresh;
+                        } else {
+                            token = self.token.borrow().clone();
+                        }
+                    }
                     if super::lacks_gate_credential(req.headers(), &api_key, &token) {
                         // See `lacks_gate_credential`. The dead session itself
                         // was already raised by the refresh loop when it
@@ -1070,6 +1113,9 @@ impl HttpHandler for GateHandler {
                     ) {
                         Ok(injected_oauth) => {
                             action = "rewrite->gateway";
+                            if injected_oauth {
+                                self.sent_token = Some(Arc::clone(&token));
+                            }
                             // Remember that the gateway is answering *our*
                             // credential, so a 401 on the way back can be read as
                             // evidence about the session (see `handle_response`).
@@ -1308,6 +1354,32 @@ impl HttpHandler for GateHandler {
         // all - which is why the observer's job is to go and ask the gateway
         // directly rather than to conclude anything from here.
         if self.injected_oauth && res.status() == hudsucker::hyper::StatusCode::UNAUTHORIZED {
+            // Once per refused token, not per retry: the tool retries the same
+            // call under the same bearer, and the log needs the first refusal
+            // with the token's own expiry beside it, which says whether this
+            // is a bearer that aged out (the loop or the re-check renews it)
+            // or one the gateway refuses at any age (another pool, a mode the
+            // app left while the engine kept the bearer). Logged whether or
+            // not debug logging is on: it was the one failure in this family
+            // with no trace at all.
+            if let Some(sent) = self.sent_token.take() {
+                if crate::proxy::record_refused_bearer(&sent) {
+                    let now = now_unix();
+                    match crate::oauth::bearer_expires_at(&sent) {
+                        Some(exp) if exp <= now => eprintln!(
+                            "[gate-proxy] the gateway refused the injected bearer, which expired {}s ago; re-verifying the session",
+                            now - exp
+                        ),
+                        Some(exp) => eprintln!(
+                            "[gate-proxy] the gateway refused the injected bearer {}s before its own expiry; re-verifying the session",
+                            exp - now
+                        ),
+                        None => eprintln!(
+                            "[gate-proxy] the gateway refused the injected bearer (no readable expiry); re-verifying the session"
+                        ),
+                    }
+                }
+            }
             crate::proxy::notify_gate_auth_observer();
         }
         if debug_log() {
@@ -2463,6 +2535,7 @@ where
         cf_clearance: cf_clearance_rx,
         chatgpt_turn: None,
         injected_oauth: false,
+        sent_token: None,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
@@ -2684,6 +2757,16 @@ where
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
         Err(_) => anyhow::bail!("proxy engine did not signal readiness within 10s"),
     }
+}
+
+/// Wall-clock seconds, for the bearer's own `exp`. The claim is a wall-clock
+/// reading, so this comparison is the one that must use the wall clock rather
+/// than the monotonic one the refresh loop prefers.
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

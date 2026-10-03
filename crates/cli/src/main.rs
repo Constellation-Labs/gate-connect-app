@@ -214,12 +214,13 @@ fn cmd_login(
     // (the relay reads the mode via `access_token_for_injection`).
     account::set_auth_mode(account::AuthMode::ApiKey)?;
     // The proxy engine lives in whichever process enabled it (usually the
-    // desktop app) - this process can't push the new key into it.
+    // desktop app) - this process can't push the new key into it. The app's
+    // refresh loop does, on its next tick, for an account not in OAuth mode.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         if proxy::engine_likely_running() {
             println!(
-                "note: the Gate proxy appears to be enabled in another process (likely the Gate Connect app); it keeps using the previous key until routing is restarted there."
+                "note: the Gate proxy appears to be enabled in another process (likely the Gate Connect app). A running Gate Connect app switches it to this key within about 30 seconds; otherwise it keeps the previous credential until routing is restarted there."
             );
         }
     }

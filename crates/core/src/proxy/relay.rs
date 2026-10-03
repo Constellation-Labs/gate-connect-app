@@ -809,7 +809,7 @@ fn rewrite_headers(
 /// token, or the empty token the shell pushes for a dead session), or at its
 /// end without one. So this bounds only a check that is itself slow - an
 /// identity provider or gateway that neither answers nor fails.
-const RECOVERED_TOKEN_WAIT: Duration = Duration::from_secs(10);
+pub(crate) const RECOVERED_TOKEN_WAIT: Duration = Duration::from_secs(10);
 
 /// A replacement for `sent`, the bearer the gateway has just refused, if the
 /// session re-check produces one in time.
@@ -844,7 +844,7 @@ const RECOVERED_TOKEN_WAIT: Duration = Duration::from_secs(10);
 /// No wait at all when `notify` says no verdict is coming: the Linux helper
 /// daemon's observer answers so, since the GUI's re-check reaches its relay one
 /// or two ticks later.
-async fn recovered_token(
+pub(crate) async fn recovered_token(
     token_rx: &mut watch::Receiver<Arc<str>>,
     sent: &str,
     notify: impl FnOnce() -> bool,

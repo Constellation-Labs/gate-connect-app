@@ -64,7 +64,7 @@ static GATE_AUTH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// its push arrives one or two ticks later, so a relay request refused here
 /// has nothing to wait for, and the relay passes the 401 on at once.
 fn register_gate_auth_counter() {
-    crate::proxy::set_gate_auth_observer(|| {
+    crate::proxy::set_gate_auth_counter(|| {
         let _release = crate::proxy::GateAuthCheck;
         count_gate_auth_refusal();
         false
