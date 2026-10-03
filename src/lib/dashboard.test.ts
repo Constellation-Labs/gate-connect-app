@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dashboardLinks, dashboardOrigin } from "./dashboard";
+import { SECTION_SURFACE_CLIENTS, dashboardLinks, dashboardOrigin } from "./dashboard";
+import { isDeclaredSection } from "./groups";
 
 describe("dashboardOrigin", () => {
   it("maps the production gateway to the production dashboard", () => {
@@ -70,15 +71,12 @@ describe("dashboardLinks", () => {
     );
   });
 
-  it("filters Messages to the apps, websites and installation a card draws", () => {
-    // The contract the dashboard reads: comma lists, ORed between `app` and
-    // `website`, ANDed with `device`, over the feed's own 24h window.
-    const url = new URL(
-      links.messages({ apps: ["claude-code"], websites: ["claude.ai", "chatgpt.com"], device: "inst 1" }),
-    );
+  it("filters Messages to the apps and installation a card draws", () => {
+    // The contract the dashboard reads: a comma list of `client_tool` names,
+    // ANDed with `device`, over the feed's own 24h window.
+    const url = new URL(links.messages({ apps: ["claude-desktop", "claude-web"], device: "inst 1" }));
     expect(url.pathname).toBe("/messages");
-    expect(url.searchParams.get("app")).toBe("claude-code");
-    expect(url.searchParams.get("website")).toBe("claude.ai,chatgpt.com");
+    expect(url.searchParams.get("app")).toBe("claude-desktop,claude-web");
     expect(url.searchParams.get("device")).toBe("inst 1");
     expect(url.searchParams.get("timeRange")).toBe("24h");
   });
@@ -100,7 +98,7 @@ describe("dashboardLinks", () => {
     // `glob::Pattern` matches `https://*.constellationgate.ai/*` against the raw
     // string, and a bare origin has no `/` for the literal separator. A link
     // that fails this is a button that silently does nothing.
-    const every = [links.root, links.apiKeys, links.policies, links.savings, links.support, links.message("x"), links.messages({}), links.security({})];
+    const every = [links.root, links.apiKeys, links.policies, links.savings, links.support, links.message("x"), links.messages({ apps: [] }), links.security({})];
     for (const url of every) {
       expect(new URL(url).pathname.length, url).toBeGreaterThan(0);
       expect(url.startsWith("https://app-staging.constellationgate.ai/"), url).toBe(true);
@@ -109,5 +107,14 @@ describe("dashboardLinks", () => {
 
   it("is null for a gateway with no dashboard, so callers must handle it", () => {
     expect(dashboardLinks("http://localhost:3000")).toBeNull();
+  });
+});
+
+describe("SECTION_SURFACE_CLIENTS", () => {
+  it("is keyed by sections the rail declares", () => {
+    // A renamed section would silently drop its pane's View activity link.
+    for (const id of Object.keys(SECTION_SURFACE_CLIENTS)) {
+      expect(isDeclaredSection(id), id).toBe(true);
+    }
   });
 });

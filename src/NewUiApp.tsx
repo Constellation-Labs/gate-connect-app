@@ -80,7 +80,7 @@ import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
-import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
+import { NO_DASHBOARD, SECTION_SURFACE_CLIENTS, dashboardLinks } from "./lib/dashboard";
 import type { DashboardLinks } from "./lib/dashboard";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -3438,31 +3438,16 @@ export function NewUiApp() {
           // domain pane, an unattributed machine), as the card then has no
           // rows for the list to continue.
           // A domain pane has no feed, but its traffic is still in the
-          // dashboard: the gateway records an intercepted request's provider as
-          // the bare host it was sent to, which is the catalog's `hosts`. So it
-          // links to those hosts on this machine instead.
-          onViewActivity={
-            !machineKnown || view.kind !== "app"
-              ? undefined
-              : openTool !== null
-                ? () =>
-                    openDashboard((d) =>
-                      d.messages({ apps: [openTool], device: currentInstallId }),
-                    )
-                : () => {
-                    const members = sectionMemberKeys(view.slug);
-                    const websites = [
-                      ...new Set(
-                        (proxy?.domains ?? [])
-                          .filter((dom) => members.includes(dom.slug))
-                          .flatMap((dom) => dom.hosts),
-                      ),
-                    ];
-                    openDashboard((d) =>
-                      d.messages({ websites, device: currentInstallId }),
-                    );
-                  }
-          }
+          // dashboard, stamped with the desktop app's and website's own names
+          // (`SECTION_SURFACE_CLIENTS`), so it links to those instead.
+          onViewActivity={(() => {
+            if (!machineKnown || view.kind !== "app") return undefined;
+            const apps =
+              openTool !== null ? [openTool] : SECTION_SURFACE_CLIENTS[view.slug];
+            if (!apps) return undefined;
+            return () =>
+              openDashboard((d) => d.messages({ apps, device: currentInstallId }));
+          })()}
           // Each half reports its own read. Deriving the feed's flag from the
           // overview's state let a feed that answered - and answered empty - be
           // reported as unreadable because the *chart* had not landed, which is
