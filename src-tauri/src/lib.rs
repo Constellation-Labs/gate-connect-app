@@ -3846,32 +3846,128 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
     (closed, still_running)
 }
 
-/// Refresh Codex's app-server daemon, if it is stale and no Codex session is
+/// How often a pending Codex daemon refresh looks for the last session to
+/// close. Short, because a user who quits Codex to pick up a change reopens it
+/// straight away, and a reopen that beats the refresh lands on the old daemon.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const CODEX_IDLE_POLL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a pending refresh waits for Codex to go idle before giving up. A
+/// bound on the cost of a session that never ends, or of a process the walk
+/// keeps counting as a session (an empty argv on Windows would make the daemon
+/// itself look like one); the next change owes it again.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const CODEX_IDLE_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+
+/// A pending Codex daemon refresh, and whether a worker is waiting on it. One
+/// lock for both, so a refresh owed while the worker is deciding to stop is
+/// never lost (review on #398).
+#[derive(Default)]
+struct CodexIdleRefresh {
+    /// Why it is owed: the trigger, for the log line.
+    owed: Option<&'static str>,
+    worker: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static CODEX_IDLE_REFRESH: std::sync::Mutex<CodexIdleRefresh> =
+    std::sync::Mutex::new(CodexIdleRefresh {
+        owed: None,
+        worker: false,
+    });
+
+/// Refresh Codex's app-server daemon once it is stale and no Codex session is
 /// open. The one rule for it, shared by every path that changes what Codex
 /// should load: a model save, the restart notice's Close, and routing coming
 /// up (startup or the toggle), which reconnects Codex and can rewrite its
 /// config (review on #382).
 ///
-/// Stale is `codex::refresh_app_server_daemon`'s test: the daemon started
-/// before Gate last changed Codex's config. An open session is left alone,
-/// because the restart would end it; the restart notice asks the user to close
-/// it, and its Close comes back here. A session that outlived that close still
-/// counts as open, so it is not cut off either.
+/// Stale is `codex::app_server_daemon_is_stale`: the daemon started before Gate
+/// last changed Codex's config. A current or absent daemon owes nothing, so
+/// nothing waits. An open session is left alone, because the restart would end
+/// it: the refresh waits for the last session to close, however it closes. It
+/// used to be dropped, so a user who quit Codex themselves rather than through
+/// the restart notice reopened it on the old daemon, whose model list predated
+/// the change, and only a terminal command fixed it (staging QA on alpha.12,
+/// 2026-10-01).
 ///
-/// On a thread of its own: the restart can take seconds, and the callers are a
-/// save the user is watching, a close, and the startup thread.
+/// On a thread of its own: the staleness check walks the process table and the
+/// restart can take seconds, and the callers are a save the user is watching, a
+/// close, and the startup thread.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn refresh_codex_daemon_when_idle(why: &'static str) {
     std::thread::spawn(move || {
-        let mut open_sessions = 0u32;
-        for_each_agent_process(&["codex"], |_| open_sessions += 1);
-        if open_sessions > 0 {
+        if !gate_connect_core::integrations::codex::app_server_daemon_is_stale() {
             return;
         }
-        if let Err(e) = gate_connect_core::integrations::codex::refresh_app_server_daemon() {
-            eprintln!("[gate] {why}: could not refresh the Codex app server: {e:#}");
+        if owe_codex_refresh(&CODEX_IDLE_REFRESH, why) {
+            wait_for_codex_idle(
+                &CODEX_IDLE_REFRESH,
+                codex_sessions_open,
+                |why| {
+                    if let Err(e) =
+                        gate_connect_core::integrations::codex::refresh_app_server_daemon()
+                    {
+                        eprintln!("[gate] {why}: could not refresh the Codex app server: {e:#}");
+                    }
+                },
+                CODEX_IDLE_POLL,
+                CODEX_IDLE_WAIT_CAP,
+            );
         }
     });
+}
+
+/// Record a refresh as owed. Returns whether the caller must run the worker:
+/// `false` when one is already waiting, which will pick this up.
+fn owe_codex_refresh(state: &std::sync::Mutex<CodexIdleRefresh>, why: &'static str) -> bool {
+    let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+    st.owed = Some(why);
+    !std::mem::replace(&mut st.worker, true)
+}
+
+/// The worker: refresh as soon as no session is open, checking first and then
+/// every `poll`, until nothing is owed or `cap` has passed. A refresh owed
+/// again while one runs is made after it. Generic over the session check and
+/// the refresh so the hand-off can be tested without processes.
+fn wait_for_codex_idle(
+    state: &std::sync::Mutex<CodexIdleRefresh>,
+    sessions_open: impl Fn() -> bool,
+    refresh: impl Fn(&'static str),
+    poll: std::time::Duration,
+    cap: std::time::Duration,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        let why = {
+            let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+            match st.owed {
+                Some(why) if started.elapsed() < cap => why,
+                Some(why) => {
+                    eprintln!("[gate] {why}: Codex stayed open, gave up waiting to refresh its app server");
+                    *st = CodexIdleRefresh::default();
+                    return;
+                }
+                None => {
+                    st.worker = false;
+                    return;
+                }
+            }
+        };
+        if sessions_open() {
+            std::thread::sleep(poll);
+            continue;
+        }
+        state.lock().unwrap_or_else(|p| p.into_inner()).owed = None;
+        refresh(why);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn codex_sessions_open() -> bool {
+    let mut open = false;
+    for_each_agent_process(&["codex"], |_| open = true);
+    open
 }
 
 /// Close running agents so their next launch picks up the routing change, and
@@ -6938,6 +7034,105 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 
 #[cfg(test)]
 mod tests {
+
+    mod codex_idle_refresh {
+        use super::super::{owe_codex_refresh, wait_for_codex_idle, CodexIdleRefresh};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        const POLL: Duration = Duration::from_millis(1);
+        const CAP: Duration = Duration::from_secs(60);
+
+        #[test]
+        fn refreshes_once_the_last_session_closes() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let checks = AtomicUsize::new(0);
+            let refreshed = Mutex::new(Vec::new());
+            wait_for_codex_idle(
+                &state,
+                || checks.fetch_add(1, Ordering::SeqCst) < 3,
+                |why| refreshed.lock().unwrap().push(why),
+                POLL,
+                CAP,
+            );
+            assert_eq!(*refreshed.lock().unwrap(), vec!["set model"]);
+            let st = state.lock().unwrap();
+            assert!(
+                st.owed.is_none() && !st.worker,
+                "the worker ends and frees the slot"
+            );
+        }
+
+        #[test]
+        fn a_second_owe_joins_the_waiting_worker_and_refreshes_once() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            assert!(
+                !owe_codex_refresh(&state, "close agents"),
+                "a worker is already waiting, so no second one starts"
+            );
+            let refreshes = AtomicUsize::new(0);
+            wait_for_codex_idle(
+                &state,
+                || false,
+                |_| {
+                    refreshes.fetch_add(1, Ordering::SeqCst);
+                },
+                POLL,
+                CAP,
+            );
+            assert_eq!(
+                refreshes.load(Ordering::SeqCst),
+                1,
+                "never two restarts for one owe"
+            );
+        }
+
+        #[test]
+        fn a_refresh_owed_during_a_refresh_is_made_after_it() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let calls = Mutex::new(Vec::new());
+            wait_for_codex_idle(
+                &state,
+                || false,
+                |why| {
+                    let first = calls.lock().unwrap().is_empty();
+                    calls.lock().unwrap().push(why);
+                    if first {
+                        // Another save lands while the first restart runs.
+                        assert!(!owe_codex_refresh(&state, "routing on"));
+                    }
+                },
+                POLL,
+                CAP,
+            );
+            assert_eq!(*calls.lock().unwrap(), vec!["set model", "routing on"]);
+        }
+
+        #[test]
+        fn gives_up_after_the_cap_and_frees_the_slot() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let refreshes = AtomicUsize::new(0);
+            wait_for_codex_idle(
+                &state,
+                || true,
+                |_| {
+                    refreshes.fetch_add(1, Ordering::SeqCst);
+                },
+                POLL,
+                Duration::from_millis(20),
+            );
+            assert_eq!(refreshes.load(Ordering::SeqCst), 0);
+            assert!(
+                owe_codex_refresh(&state, "next change"),
+                "a later owe starts a new worker"
+            );
+        }
+    }
 
     #[test]
     fn a_dead_session_sends_the_tray_to_the_main_window() {
