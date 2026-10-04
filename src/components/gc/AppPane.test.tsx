@@ -353,8 +353,8 @@ describe("AppPane recent activity", () => {
   });
 
   it("offers View activity on a domain pane, whose card has no feed", () => {
-    // Its rows are in the dashboard under the hosts it routes, even though the
-    // card itself can only say they show in the Overview.
+    // Its rows are in the dashboard under the desktop app's and website's
+    // names, even though the card itself can only say they show in the Overview.
     const onViewActivity = vi.fn();
     render(pane({ activity: [], unattributed: true, onViewActivity }));
     expect(screen.getAllByText("Shows in the Overview, not per app").length).toBeGreaterThan(0);

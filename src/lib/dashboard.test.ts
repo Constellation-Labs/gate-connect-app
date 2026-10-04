@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SECTION_SURFACE_CLIENTS, dashboardLinks, dashboardOrigin } from "./dashboard";
+import { SECTION_SURFACE_CLIENTS, dashboardLinks, dashboardOrigin, viewActivityApps } from "./dashboard";
 import { isDeclaredSection } from "./groups";
 
 describe("dashboardOrigin", () => {
@@ -116,5 +116,33 @@ describe("SECTION_SURFACE_CLIENTS", () => {
     for (const id of Object.keys(SECTION_SURFACE_CLIENTS)) {
       expect(isDeclaredSection(id), id).toBe(true);
     }
+  });
+});
+
+describe("viewActivityApps", () => {
+  it("links a tool pane to the tool its feed is read with", () => {
+    expect(viewActivityApps({ machineKnown: true, section: "claude", tool: "claude-code" })).toEqual([
+      "claude-code",
+    ]);
+  });
+
+  it("links a pane with no tool to its desktop app and website", () => {
+    expect(viewActivityApps({ machineKnown: true, section: "claude", tool: null })).toEqual([
+      "claude-desktop",
+      "claude-web",
+    ]);
+    expect(viewActivityApps({ machineKnown: true, section: "chatgpt", tool: null })).toEqual([
+      "chatgpt",
+      "chatgpt-web",
+    ]);
+  });
+
+  it("has nothing for a section whose traffic names no app", () => {
+    expect(viewActivityApps({ machineKnown: true, section: "openai-api", tool: null })).toBeNull();
+  });
+
+  it("has nothing while the gateway does not know this machine", () => {
+    // The link is scoped to the install; without one it would be org-wide.
+    expect(viewActivityApps({ machineKnown: false, section: "claude", tool: "claude-code" })).toBeNull();
   });
 });

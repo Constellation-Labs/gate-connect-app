@@ -195,9 +195,9 @@ export function AppPane({
   eventsPending?: boolean;
   /** Open the dashboard's Messages list for this app on this machine, for the
    *  Recent activity header's "View activity" (`1410:28168`): the feed's own
-   *  filters on a tool pane, the section's hosts on a domain pane, whose card
-   *  has no feed. Absent while the gateway does not know this machine, which
-   *  removes the button rather than opening a list scoped to nothing. */
+   *  filters on a tool pane, the desktop app's and website's names on a domain
+   *  pane, whose card has no feed. Absent when there is nothing to filter on
+   *  (see `viewActivityApps`), which removes the button. */
   onViewActivity?: () => void;
   /** Which sections have no reading behind them.
    *
@@ -852,7 +852,7 @@ function RecentActivity({
   unavailable?: boolean;
   /** No feed can exist for this surface; see `AppPane`. */
   unattributed?: boolean;
-  /** Absent when there is no feed to continue; see `AppPane`. */
+  /** Absent when there is nothing to link to; see `AppPane`. */
   onViewActivity?: () => void;
   /** See `AppPane`. */
 }) {

@@ -80,7 +80,7 @@ import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
-import { NO_DASHBOARD, SECTION_SURFACE_CLIENTS, dashboardLinks } from "./lib/dashboard";
+import { NO_DASHBOARD, dashboardLinks, viewActivityApps } from "./lib/dashboard";
 import type { DashboardLinks } from "./lib/dashboard";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -3432,18 +3432,12 @@ export function NewUiApp() {
             (!installsResolved ||
               (toolEvents.view === null && toolEvents.failure === null))
           }
-          // The feed's own filters, so the dashboard opens on the rows this
-          // card was drawing and what came before them: this tool, this
-          // machine, the last 24h. Absent wherever the feed is not read (a
-          // domain pane, an unattributed machine), as the card then has no
-          // rows for the list to continue.
-          // A domain pane has no feed, but its traffic is still in the
-          // dashboard, stamped with the desktop app's and website's own names
-          // (`SECTION_SURFACE_CLIENTS`), so it links to those instead.
+          // This app's traffic on this machine over the last 24h: the feed's
+          // own filters on a tool pane, the desktop app's and website's names
+          // on a domain pane. See `viewActivityApps` for when there is none.
           onViewActivity={(() => {
-            if (!machineKnown || view.kind !== "app") return undefined;
-            const apps =
-              openTool !== null ? [openTool] : SECTION_SURFACE_CLIENTS[view.slug];
+            if (view.kind !== "app") return undefined;
+            const apps = viewActivityApps({ machineKnown, section: view.slug, tool: openTool });
             if (!apps) return undefined;
             return () =>
               openDashboard((d) => d.messages({ apps, device: currentInstallId }));

@@ -96,6 +96,32 @@ export const SECTION_SURFACE_CLIENTS: Readonly<Record<string, readonly string[]>
   chatgpt: ["chatgpt", "chatgpt-web"],
 };
 
+/**
+ * The `client_tool` names an app pane's "View activity" filters Messages by, or
+ * `null` when the pane gets no button.
+ *
+ * A pane with an installed tool links to that tool, which is the slug its own
+ * feed is read with. A pane without one links to its section's
+ * {@link SECTION_SURFACE_CLIENTS}, and a section with no entry there has no
+ * name to filter on. None at all while the gateway does not know this machine:
+ * the link is scoped to it, and an unscoped list would be the whole org's.
+ */
+export function viewActivityApps({
+  machineKnown,
+  section,
+  tool,
+}: {
+  machineKnown: boolean;
+  /** The open pane's section id. */
+  section: string;
+  /** The section's installed config tool, or null. */
+  tool: string | null;
+}): readonly string[] | null {
+  if (!machineKnown) return null;
+  if (tool !== null) return [tool];
+  return SECTION_SURFACE_CLIENTS[section] ?? null;
+}
+
 /** Every dashboard destination the app links to, for one gateway. */
 export interface DashboardLinks {
   /** The dashboard itself. */

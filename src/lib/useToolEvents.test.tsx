@@ -16,7 +16,7 @@ import { activityToolEvents } from "./api";
  */
 const mockCall = activityToolEvents as unknown as ReturnType<typeof vi.fn>;
 
-function page(ids: string[], nextCursor: string | null) {
+function page(ids: string[]) {
   return JSON.stringify({
     generatedAt: "2026-08-19T04:20:00.000Z",
     window: { from: "2026-08-18T04:20:00.000Z", to: "2026-08-19T04:20:00.000Z" },
@@ -30,7 +30,6 @@ function page(ids: string[], nextCursor: string | null) {
       model: "claude-opus-4",
       sessionRef: "cnv_824bd2c0",
     })),
-    nextCursor,
   });
 }
 
@@ -52,7 +51,7 @@ afterEach(cleanup);
 
 describe("useToolEvents", () => {
   it("reads the first page for the tool it was given", async () => {
-    mockCall.mockResolvedValue(page(["a", "b"], null));
+    mockCall.mockResolvedValue(page(["a", "b"]));
     const { seen } = harness({ tool: "claude-code", installId: "m-1" });
     await flush();
 
@@ -69,11 +68,11 @@ describe("useToolEvents", () => {
     await flush();
 
     // Switch tools while the first read is still open, then let it land.
-    mockCall.mockResolvedValueOnce(page(["codex-1"], null));
+    mockCall.mockResolvedValueOnce(page(["codex-1"]));
     rerender({ tool: "codex" });
     await flush();
     await act(async () => {
-      releaseFirst?.(page(["claude-1"], null));
+      releaseFirst?.(page(["claude-1"]));
       await Promise.resolve();
     });
 
@@ -82,7 +81,7 @@ describe("useToolEvents", () => {
   });
 
   it("blanks the feed when the tool changes, rather than showing the previous one", async () => {
-    mockCall.mockResolvedValueOnce(page(["a"], null));
+    mockCall.mockResolvedValueOnce(page(["a"]));
     const { seen, rerender } = harness({ tool: "claude-code" });
     await flush();
     expect(seen.at(-1)?.view).not.toBeNull();

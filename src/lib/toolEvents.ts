@@ -70,7 +70,6 @@ interface RawToolEvents {
   toolScope: { tool: string };
   installation?: { installId: string | null };
   events?: RawEvent[];
-  nextCursor?: string | null;
 }
 
 /**

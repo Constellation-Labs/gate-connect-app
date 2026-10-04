@@ -25,13 +25,12 @@ function raw(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function envelope(events: ReturnType<typeof raw>[], nextCursor: string | null = null) {
+function envelope(events: ReturnType<typeof raw>[]) {
   return {
     generatedAt: "2026-08-19T04:20:00.000Z",
     window: { from: "2026-08-18T04:20:00.000Z", to: "2026-08-19T04:20:00.000Z" },
     toolScope: { tool: "claude-code" },
     events,
-    nextCursor,
   };
 }
 
