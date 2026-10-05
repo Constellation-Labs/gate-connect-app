@@ -15,8 +15,8 @@ Terraform consumes its id through the `cognito_desktop_client_id` variable:
 - each env's tfvars supplies the value (see `staging.tfvars.example`)
 
 This runbook is the source of truth for creating and re-creating that client per
-environment. Run it once per environment (staging, production), and again if the
-client is ever rebuilt.
+environment. Run it once per environment (staging, production, dev), and again if
+the client is ever rebuilt.
 
 ## Why out-of-band and not a Terraform resource
 
@@ -47,12 +47,21 @@ takes the client id as an input.
 
 ## Reference values
 
-| Item | Staging value |
-|---|---|
-| Region | `us-east-1` |
-| User pool id | `us-east-1_GPcJkAGzM` |
-| Hosted domain | `swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com` |
-| Domain prefix | `swarm-deck-staging-ue1` |
+| Item | Staging value | Dev value |
+|---|---|---|
+| AWS account | `177697910306` | `177697910306` (shared with staging) |
+| Region | `us-east-1` | `us-east-1` |
+| User pool id | `us-east-1_GPcJkAGzM` | resolve with step 1 |
+| Hosted domain | `swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com` | `swarm-deck-dev-ue1.auth.us-east-1.amazoncognito.com` |
+| Domain prefix | `swarm-deck-staging-ue1` | `swarm-deck-dev-ue1` |
+| Connect client id | `63aafqa8oc0lo631v4cho4lmmv` | `7jr537ea8g5i8os72nt3312g7f` |
+| Gateway | `gateway-staging.constellationgate.ai` | `gateway-dev.constellationgate.ai` |
+
+The dev client was created on 2026-10-05, and the dev Hosted UI accepts it on all
+three loopback callbacks. Gate's `dev.tfvars` trusts it from
+Constellation-Labs/gate#1139, and the gateway rejects its tokens until that is
+applied. The repo Variables `GATE_COGNITO_HOSTED_DOMAIN_DEV` and
+`GATE_COGNITO_CLIENT_ID_DEV` are set.
 
 App-side constants (from `crates/core/src/oauth.rs`):
 
