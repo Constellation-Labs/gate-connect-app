@@ -80,12 +80,13 @@ const EXPIRY_SKEW_SECS: i64 = 60;
 pub const REFRESH_INTERVAL_SECS: u64 = 30;
 
 /// OAuth client configuration, resolved for the **currently selected
-/// gateway**. Both the production and staging Cognito pools are baked in at
-/// build time; [`OAuthConfig::from_build_env`] picks the pair matching the
-/// active gateway host (see [`crate::account::gateway_is_staging`]). Set
-/// `GATE_COGNITO_HOSTED_DOMAIN` / `GATE_COGNITO_CLIENT_ID` /
-/// `GATE_COGNITO_SCOPES` (and their `_STAGING` variants) at build time, or
-/// override any of them via the process env at runtime.
+/// gateway**. The production, staging and dev Cognito pools are baked in at
+/// build time; [`OAuthConfig::for_gateway`] picks the pair matching the gateway
+/// host (see [`crate::account::STAGING_GATEWAY_HOST`] and
+/// [`crate::account::DEV_GATEWAY_HOST`]). Set `GATE_COGNITO_HOSTED_DOMAIN` /
+/// `GATE_COGNITO_CLIENT_ID` / `GATE_COGNITO_SCOPES` (and their `_STAGING` and
+/// `_DEV` variants) at build time, or, in a debug build only, override any of
+/// them via the process env at runtime.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     /// Cognito Hosted UI domain - e.g. `auth.constellationgate.ai` or
@@ -97,28 +98,63 @@ pub struct OAuthConfig {
     pub scopes: Vec<String>,
 }
 
-/// One build-time OAuth config value: the process env wins at runtime, else
-/// the value baked in at build time. Empty env values are ignored so an
-/// exported-but-blank var doesn't blank out a baked default.
+/// One build-time OAuth config value: in a debug build the process env wins at
+/// runtime, else the value baked in at build time. Blank values (empty or
+/// whitespace) are ignored on both sides. `release.yml` passes every Cognito
+/// variable, so one whose repo Variable is unset is baked as `Some("")`, and
+/// that has to read as absent: an empty hosted domain is a sign-in that opens
+/// `https:///oauth2/authorize`, and blank scopes request none.
+///
+/// A release build ignores the override. The hosted domain names the token
+/// endpoint, which receives the auth code, the PKCE verifier and every refresh
+/// token, so a process able to set this one's environment could otherwise
+/// collect the refresh token without touching the keychain. The CLI tests and
+/// the e2e harness that rely on the override all run debug builds.
 fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| baked.map(str::to_string))
+    runtime_override(name).or_else(|| baked.filter(|s| !s.trim().is_empty()).map(str::to_string))
+}
+
+/// The process-env half of [`config_value`]: honoured in a debug build,
+/// ignored in a release one. The ignore is reported once per process rather
+/// than on every resolve, which the 30s refresh loop would otherwise turn into
+/// a line every tick, and it names what was ignored in words a person who
+/// followed the runbook's local-testing step would recognise.
+fn runtime_override(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok().filter(|s| !s.trim().is_empty())?;
+    if cfg!(debug_assertions) {
+        return Some(value);
+    }
+    static IGNORED: std::sync::Once = std::sync::Once::new();
+    IGNORED.call_once(|| {
+        eprintln!(
+            "[gate] ignoring GATE_COGNITO_* from the environment: release builds use the Cognito config baked in at build time"
+        )
+    });
+    None
 }
 
 impl OAuthConfig {
-    /// Resolve the OAuth client config for the gateway currently on disk. The
-    /// active gateway host (`account.json`) selects the production or staging
-    /// Cognito pool; within the chosen pool each value comes from the process
-    /// env at runtime if set (dev/staging override, and the CLI's hermetic
-    /// tests), otherwise the value baked in at build time via `option_env!`.
-    /// Returns `None` when neither supplies the domain/client id, so callers
-    /// can fall back to the legacy API-key flow with a clear message instead
-    /// of panicking. All values are public client config (no secret), so a
-    /// runtime override is safe.
+    /// Resolve the OAuth client config for the gateway currently on disk
+    /// (`account.json`, no keychain touch). See [`OAuthConfig::for_gateway`].
     pub fn from_build_env() -> Option<Self> {
-        let (hosted_domain, client_id, scopes_raw) = if crate::account::gateway_is_staging() {
+        let base_url = crate::account::load_base_url().ok().flatten();
+        Self::for_gateway(base_url.as_deref())
+    }
+
+    /// Resolve the OAuth client config for a gateway base URL, which need not
+    /// be on disk yet: the CLI's `login --oauth` resolves the pool for the
+    /// gateway it is about to save, not the one it is replacing. The host
+    /// selects the production, staging or dev Cognito pool; a missing or
+    /// unparseable URL gets production. Within the chosen pool each value comes
+    /// from [`config_value`]. Returns `None` when the pool has no domain or
+    /// client id, so callers can fall back to the legacy API-key flow with a
+    /// clear message instead of panicking.
+    pub fn for_gateway(gateway_base_url: Option<&str>) -> Option<Self> {
+        let host = gateway_base_url
+            .and_then(|u| reqwest::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_owned));
+        let is = |h: &str| host.as_deref() == Some(h);
+        let (hosted_domain, client_id, scopes_raw) = if is(crate::account::STAGING_GATEWAY_HOST) {
             (
                 config_value(
                     "GATE_COGNITO_HOSTED_DOMAIN_STAGING",
@@ -131,6 +167,21 @@ impl OAuthConfig {
                 config_value(
                     "GATE_COGNITO_SCOPES_STAGING",
                     option_env!("GATE_COGNITO_SCOPES_STAGING"),
+                ),
+            )
+        } else if is(crate::account::DEV_GATEWAY_HOST) {
+            (
+                config_value(
+                    "GATE_COGNITO_HOSTED_DOMAIN_DEV",
+                    option_env!("GATE_COGNITO_HOSTED_DOMAIN_DEV"),
+                )?,
+                config_value(
+                    "GATE_COGNITO_CLIENT_ID_DEV",
+                    option_env!("GATE_COGNITO_CLIENT_ID_DEV"),
+                )?,
+                config_value(
+                    "GATE_COGNITO_SCOPES_DEV",
+                    option_env!("GATE_COGNITO_SCOPES_DEV"),
                 ),
             )
         } else {
@@ -295,11 +346,34 @@ impl OAuthTokens {
 
     fn id_claim(&self, name: &str) -> Option<String> {
         let id = self.id_token.as_deref()?;
-        let payload_b64 = id.split('.').nth(1)?;
-        let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
-        let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-        claims.get(name)?.as_str().map(str::to_string)
+        jwt_payload(id)?.get(name)?.as_str().map(str::to_string)
     }
+}
+
+/// The unverified payload of a JWT, for reading claims the gateway will
+/// verify for itself. `None` when the string is not three dot-separated parts
+/// of base64url JSON.
+fn jwt_payload(jwt: &str) -> Option<serde_json::Value> {
+    let payload_b64 = jwt.split('.').nth(1)?;
+    let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    serde_json::from_slice(&payload).ok()
+}
+
+/// When an access token's own `exp` claim says it ends, as a Unix timestamp.
+///
+/// Read without a signature check: this is a local hint that the gateway is
+/// about to refuse the bearer, used to renew it *before* a request goes out
+/// under it, never a reason to trust it. `None` for a token that carries no
+/// readable `exp`, which the caller treats as "not known to be expired".
+pub fn bearer_expires_at(access_token: &str) -> Option<i64> {
+    jwt_payload(access_token)?.get("exp")?.as_i64()
+}
+
+/// Whether a bearer is past its own `exp`, under the same skew margin as
+/// [`OAuthTokens::is_expired`], so a token the loop would already be renewing
+/// is also one a request should not leave under.
+pub fn bearer_is_expired(access_token: &str, now_unix: i64) -> bool {
+    bearer_expires_at(access_token).is_some_and(|exp| now_unix + EXPIRY_SKEW_SECS >= exp)
 }
 
 /// Shape of Cognito's `/oauth2/token` JSON response.
@@ -1095,6 +1169,21 @@ where
 mod tests {
     use super::*;
 
+    /// A Cognito variable whose repo Variable is unset is baked as `Some("")`,
+    /// and has to read as absent so `from_build_env` returns `None` (the
+    /// API-key fallback) rather than a config with an empty hosted domain.
+    #[test]
+    fn config_value_treats_a_blank_bake_as_absent() {
+        let name = "GATE_COGNITO_TEST_UNSET_FOR_BLANK_BAKE";
+        assert_eq!(config_value(name, Some("")), None);
+        assert_eq!(config_value(name, Some("  ")), None);
+        assert_eq!(config_value(name, None), None);
+        assert_eq!(
+            config_value(name, Some("auth.example")).as_deref(),
+            Some("auth.example")
+        );
+    }
+
     /// One interactive login at a time, which is what the product has and what
     /// `cancel_login` means by "the current attempt".
     ///
@@ -1289,6 +1378,24 @@ mod tests {
         assert!(!t.is_expired(900)); // 900 + 60 < 1000
         assert!(t.is_expired(950)); // 950 + 60 >= 1000, within skew
         assert!(t.is_expired(1_000));
+    }
+
+    #[test]
+    fn exp_read_from_an_access_token_payload() {
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"u","exp":1700000000}"#);
+        let jwt = format!("h.{payload}.s");
+        assert_eq!(bearer_expires_at(&jwt), Some(1_700_000_000));
+        // Expired once `now` is within the skew of `exp`, not only past it.
+        assert!(bearer_is_expired(&jwt, 1_700_000_000 - EXPIRY_SKEW_SECS));
+        assert!(!bearer_is_expired(
+            &jwt,
+            1_700_000_000 - EXPIRY_SKEW_SECS - 1
+        ));
+        // Not a JWT, or no `exp`: never "known expired".
+        assert_eq!(bearer_expires_at("opaque"), None);
+        assert!(!bearer_is_expired("opaque", i64::MAX));
+        let bare = format!("h.{}.s", URL_SAFE_NO_PAD.encode(br#"{"sub":"u"}"#));
+        assert!(!bearer_is_expired(&bare, i64::MAX));
     }
 
     #[test]
