@@ -1541,6 +1541,26 @@ mod tests {
         }
     }
 
+    /// Whatever the marker names is a name the activity reads accept: the
+    /// relay's half of `every_stamped_client_is_readable` in `proxy/mod.rs`.
+    #[test]
+    fn every_tool_the_marker_names_is_readable() {
+        use crate::registry::ToolId;
+        let marked = |id: ToolId| {
+            let path = format!("/__gate/t/{}/anthropic/v1/messages", id.slug());
+            resolved(&path).expect("routes").tool
+        };
+        // Every registered tool, so a new one is covered without editing this.
+        for id in crate::registry::registry().iter().map(|i| i.id()) {
+            if id == ToolId::EnvProxy {
+                assert_eq!(marked(id), None, "the environment channel is not a tool");
+                continue;
+            }
+            assert_eq!(marked(id), Some(id.slug()), "the marker names {id}");
+            assert_eq!(crate::proxy::stamped_client(id.slug()), Some(id.slug()));
+        }
+    }
+
     /// The forwarder serves relay requests itself once the engine is gone, from
     /// its own copy of the catalog's slugs and upstreams, because it cannot
     /// link this crate. A catalog entry missing from that copy would work while

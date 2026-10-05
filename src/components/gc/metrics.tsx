@@ -268,8 +268,9 @@ export function MessagesChart({
   /** No series can exist for this surface, and none was asked for. A third
    *  state, not a flavour of `unavailable`: that one reports a read that should
    *  have worked and didn't, which is a fault the user might retry. This one is
-   *  the permanent shape of the data - chat-domain traffic arrives unattributed
-   *  on purpose (see `NewUiApp`'s `openDomain`), so there is nothing to fail.
+   *  the permanent shape of the data - a pane with no sender to read, such as
+   *  the OpenAI API, whose traffic carries no app name (see `NewUiApp`'s
+   *  `noPaneReading`), so there is nothing to fail.
    *  Folding the two put "couldn't be read" over a reading that does not
    *  exist. Takes precedence over `unavailable`, which is only ever
    *  incidentally true here. */

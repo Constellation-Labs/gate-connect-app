@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityToolEvents } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
+import { clientScopeKey } from "./groups";
 import type { ActivityEntry } from "./toolEventRow";
 import type { ModelLabels } from "./toolModels";
 import type { IconName } from "../components/gc/Icon";
@@ -67,7 +68,10 @@ interface RawEvent {
 interface RawToolEvents {
   generatedAt: string;
   window: { from: string; to: string };
-  toolScope: { tool: string };
+  /** `tool` is null whenever more than one sender was asked for, which is every
+   *  section feed; `tools` lists them. Neither is read: the request already
+   *  says what was asked. */
+  toolScope: { tool: string | null; tools?: string[] };
   installation?: { installId: string | null };
   events?: RawEvent[];
   nextCursor?: string | null;
@@ -314,7 +318,13 @@ export function labelEntries(entries: ActivityEntry[], labels: ModelLabels): Act
 }
 
 /**
- * Load one tool's feed, and pages of it on demand.
+ * Load a section's feed, and pages of it on demand.
+ *
+ * `tools` is every client name the pane covers (`paneClients` in `groups.ts`),
+ * read as one feed. The effects key on its sorted contents rather than on the
+ * array, so a caller handing in a fresh array each render neither refetches nor
+ * resets the pages already read, and the same set in another order is the same
+ * scope.
  *
  * Separate from `useActivity` rather than folded into it, which is the opposite
  * call to the one made for the tool *scope*: that shared a request shape and a
@@ -327,7 +337,7 @@ export function labelEntries(entries: ActivityEntry[], labels: ModelLabels): Act
  */
 export function useToolEvents(
   enabled: boolean,
-  tool: string | null,
+  tools: readonly string[] | null,
   installId: string | null = null,
   credential = "",
 ): {
@@ -349,16 +359,18 @@ export function useToolEvents(
   const [loading, setLoading] = useState(false);
   const [paged, setPaged] = useState(false);
   /** Which scope is current, so a page that arrives after the user has moved on
-   *  is dropped rather than appended to a different tool's feed. */
+   *  is dropped rather than appended to a different section's feed. */
   const attempt = useRef(0);
+  /** The scope by value. Empty means nothing to read. */
+  const scope = tools ? clientScopeKey(tools) : "";
 
   const fetchPage = useCallback(
     (cursor: string | null) => {
-      if (!enabled || !tool) return;
+      if (!enabled || !scope) return;
       const mine = ++attempt.current;
       setLoading(true);
       setFailure(null);
-      activityToolEvents(tool, installId ?? undefined, cursor ?? undefined)
+      activityToolEvents(scope.split(","), installId ?? undefined, cursor ?? undefined)
         .then((text) => {
           if (mine !== attempt.current) return;
           const page = adaptEvents(JSON.parse(text) as RawToolEvents);
@@ -387,16 +399,28 @@ export function useToolEvents(
     // `exhaustive-deps` autofix would drop it as unused and silently stop the feed
     // re-reading when the user changes account, leaving one account's requests on
     // screen under another's.
-    [enabled, tool, installId, credential],
+    [enabled, scope, installId, credential],
   );
 
   // A feed belongs to the scope it was read for, so a scope change drops it
-  // rather than leaving one tool's requests under another tool's name.
+  // rather than leaving one section's requests under another section's name.
+  // Being disabled drops it too: a hook switched off and on again must not
+  // answer from the page it held before, and a read still in flight from
+  // before the switch is superseded here, since a disabled `fetchPage` never
+  // bumps the generation itself.
+  //
+  // Unlike `useActivity`, which keeps its reading through a disable. The rows
+  // here feed the Gate model warning, which is built from the newest few: a
+  // page read before the tool left Gate models and came back is not evidence
+  // about the choice in force now. Every way the section feed itself is
+  // disabled also changes its scope or credential, which cleared it already.
   useEffect(() => {
+    attempt.current += 1;
     setView(null);
     setFailure(null);
     setPaged(false);
-  }, [credential, installId, tool]);
+    setLoading(false);
+  }, [enabled, credential, installId, scope]);
 
   useEffect(() => {
     fetchPage(null);
