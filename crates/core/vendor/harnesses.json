@@ -1,0 +1,1423 @@
+{
+  "schema_version": 1,
+  "generated_note": "Every surface that carries a harness — the marketing strip, the docs guides and their sidebar, the dashboard connect tabs, the Gate Connect docs lists and the published supported-harnesses page — is either generated from this file or checked against it by scripts/harnesses/ in CI. Edit this file first, then run `node scripts/harnesses/validate.mjs`.",
+  "samples": {
+    "2026-07-23-turn-storage-mining": {
+      "window": "staging + prod turn storage",
+      "date": "2026-07-23"
+    },
+    "2026-07-27-corpus-replay": {
+      "window": "Claude Code traffic, 5 days, prod + staging",
+      "date": "2026-07-27"
+    },
+    "2026-07-28-turn-mining": {
+      "window": "prod + staging turn mining",
+      "date": "2026-07-28"
+    },
+    "2026-08-13-body-mining": {
+      "window": "prod 30 d + staging 60 d, 451 request bodies",
+      "date": "2026-08-13"
+    },
+    "2026-09-21-staging-audit": {
+      "window": "staging, 2026-08-22 → 2026-09-21, the weekly harness tool audit (scripts/harness-tool-audit.ts, Actions run 35569208632): 6,716 raw request bodies read from S3, capped at 2000 requests per harness. `calls` here counts tool RESULTS in sampled request prefixes — a session replays its prefix on every request — so these numbers are not comparable with the body-mining counts above, only with each other.",
+      "date": "2026-09-21"
+    }
+  },
+  "shared_tool_names": [
+    {
+      "name": "read_file",
+      "lane": "reader",
+      "evidence": "seen",
+      "sample": "2026-07-23-turn-storage-mining",
+      "origin": "mcp-filesystem"
+    },
+    {
+      "name": "read_file_content",
+      "lane": "reader",
+      "evidence": "seen",
+      "sample": "2026-07-23-turn-storage-mining",
+      "origin": "mcp-filesystem"
+    },
+    {
+      "name": "read_text_file",
+      "lane": "reader",
+      "evidence": "seen",
+      "sample": "2026-07-23-turn-storage-mining",
+      "origin": "mcp-filesystem"
+    },
+    {
+      "name": "get_file_contents",
+      "lane": "reader",
+      "evidence": "seen",
+      "sample": "2026-07-23-turn-storage-mining",
+      "origin": "mcp-filesystem"
+    },
+    {
+      "name": "bash",
+      "lane": "command",
+      "evidence": "seen",
+      "sample": "2026-07-28-turn-mining",
+      "origin": "mcp-shell"
+    },
+    {
+      "name": "web_fetch",
+      "lane": "command",
+      "evidence": "seen",
+      "calls": 387,
+      "sample": "2026-07-27-corpus-replay",
+      "origin": "mcp-web"
+    }
+  ],
+  "harnesses": [
+    {
+      "id": "claude-code",
+      "display_name": "Claude Code",
+      "vendor": "Anthropic",
+      "category": "cli",
+      "tier": "certified",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": null,
+        "gate_models": true
+      },
+      "surfaces": {
+        "detector": "claude-code",
+        "connect": {
+          "mechanism": "proxy-engine",
+          "source": "crates/core/src/integrations/claude_code.rs"
+        },
+        "client_tool_slug": "claude-code",
+        "docs_guide": "docs/guides/claude-code.md",
+        "dashboard_tab": "claude-code",
+        "ci_e2e": "e2e-real-tools",
+        "gauntlet_journey": "docs-gauntlet/claude-code",
+        "landing_strip": true,
+        "landing_home_logo": true
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "Read",
+            "lane": "reader",
+            "evidence": "seen",
+            "calls": 13359,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "Bash",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 125790,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "Grep",
+            "lane": "command",
+            "evidence": "seen",
+            "sample": "2026-07-27-corpus-replay"
+          },
+          {
+            "name": "Glob",
+            "lane": "command",
+            "evidence": "seen",
+            "sample": "2026-07-27-corpus-replay"
+          },
+          {
+            "name": "WebFetch",
+            "lane": "command",
+            "evidence": "seen",
+            "sample": "2026-07-27-corpus-replay"
+          },
+          {
+            "name": "WebSearch",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 475,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "PowerShell",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 369,
+            "sample": "2026-07-27-corpus-replay"
+          }
+        ]
+      },
+      "exceptions": [],
+      "last_verified": "2026-09-09",
+      "notes": "Gate Connect's default route is the proxy engine: it writes HTTPS_PROXY and NODE_EXTRA_CA_CERTS into settings.json and keeps the canonical Anthropic base URL, because a custom ANTHROPIC_BASE_URL makes Claude Code treat the endpoint as non-first-party and mis-select its context window and auto-compaction (moved off the relay in gate-connect-app #196, 2026-08-24). On Gate models it points the base URL at the relay's Gate models route instead (gate-connect-app #382)."
+    },
+    {
+      "id": "codex",
+      "display_name": "OpenAI Codex CLI",
+      "landing_names": ["Codex"],
+      "vendor": "OpenAI",
+      "category": "cli",
+      "tier": "certified",
+      "routing": {
+        "mechanism": "relay",
+        "proxy_domain": null,
+        "gate_models": true
+      },
+      "surfaces": {
+        "detector": "codex",
+        "connect": {
+          "mechanism": "relay",
+          "source": "crates/core/src/integrations/codex.rs"
+        },
+        "client_tool_slug": "codex",
+        "docs_guide": "docs/guides/codex.md",
+        "dashboard_tab": "codex",
+        "ci_e2e": "e2e-real-tools",
+        "gauntlet_journey": "docs-gauntlet/codex",
+        "landing_strip": true,
+        "landing_home_logo": true
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "exec",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 6879,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "shell",
+            "lane": "command",
+            "evidence": "seen",
+            "sample": "2026-07-28-turn-mining"
+          },
+          {
+            "name": "shell_command",
+            "lane": "command",
+            "evidence": "seen",
+            "sample": "2026-07-28-turn-mining"
+          },
+          {
+            "name": "exec_command",
+            "lane": "command",
+            "evidence": "seen",
+            "sample": "2026-07-28-turn-mining"
+          },
+          {
+            "name": "wait",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 151,
+            "sample": "2026-09-21-staging-audit"
+          }
+        ]
+      },
+      "exceptions": [],
+      "last_verified": "2026-09-09",
+      "notes": "The landing strip and the home logo row both label it \"Codex\"; the dashboard uses the registry label."
+    },
+    {
+      "id": "opencode",
+      "display_name": "OpenCode",
+      "vendor": "sst",
+      "category": "cli",
+      "tier": "certified",
+      "routing": {
+        "mechanism": "relay",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "opencode",
+        "connect": {
+          "mechanism": "relay",
+          "source": "crates/core/src/integrations/opencode.rs"
+        },
+        "client_tool_slug": "opencode",
+        "docs_guide": "docs/guides/opencode.md",
+        "dashboard_tab": "opencode",
+        "ci_e2e": "e2e-real-tools",
+        "gauntlet_journey": null,
+        "landing_strip": true,
+        "landing_home_logo": true
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "bash",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 40667,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "read",
+            "lane": "reader",
+            "evidence": "seen",
+            "calls": 7735,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "grep",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 1562,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "glob",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 590,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "webfetch",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 1160,
+            "sample": "2026-09-21-staging-audit"
+          }
+        ]
+      },
+      "exceptions": [
+        {
+          "rule": "surfaces.gauntlet_journey",
+          "reason": "We have not yet written the end-to-end walkthrough that follows OpenCode's setup guide on a clean machine, so that one check is recorded as pending rather than claimed as done."
+        }
+      ],
+      "last_verified": "2026-09-09",
+      "notes": "Certified on the strength of the Gate Connect relay integration and the e2e-real-tools run against a real install. The setup guide and the dashboard connect tab have both landed; the one remaining exception is the docs-gauntlet journey, which lives in a separate writing workspace no local repo can host."
+    },
+    {
+      "id": "openclaw",
+      "display_name": "OpenClaw",
+      "vendor": "Constellation",
+      "category": "chat",
+      "tier": "certified",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "openclaw",
+        "connect": {
+          "mechanism": "proxy-engine",
+          "source": "crates/core/src/integrations/openclaw.rs"
+        },
+        "client_tool_slug": "openclaw",
+        "docs_guide": "docs/guides/openclaw.md",
+        "dashboard_tab": "openclaw",
+        "ci_e2e": "e2e-real-tools",
+        "gauntlet_journey": "docs-gauntlet/openclaw",
+        "landing_strip": true,
+        "landing_home_logo": true
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "Bash",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 30472,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "Read",
+            "lane": "reader",
+            "evidence": "seen",
+            "calls": 209,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "read",
+            "lane": "reader",
+            "evidence": "seen",
+            "sample": "2026-08-13-body-mining"
+          },
+          {
+            "name": "exec",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 21,
+            "sample": "2026-08-13-body-mining"
+          },
+          {
+            "name": "web_search",
+            "lane": "command",
+            "evidence": "documented"
+          }
+        ]
+      },
+      "exceptions": [
+        {
+          "rule": "compression.names.web_search",
+          "reason": "OpenClaw lists a web_search tool of its own, but every call of that name we have seen came from Anthropic's SDK, never from a request OpenClaw sent. Certified everywhere else, so the one unconfirmed tool name is published rather than hidden."
+        }
+      ],
+      "last_verified": "2026-09-09",
+      "notes": "Routed by the proxy engine rather than the relay: the integration writes a proxy block into OpenClaw's own config, so it has no catalog domain of its own. Exception compression.names.web_search: every observed web_search call belongs to anthropic-sdk traffic, so the name is documentation-only under an OpenClaw name."
+    },
+    {
+      "id": "hermes",
+      "display_name": "Hermes",
+      "vendor": "Nous Research",
+      "category": "cli",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": null,
+        "gate_models": true
+      },
+      "surfaces": {
+        "detector": "hermes",
+        "connect": {
+          "mechanism": "proxy-engine",
+          "source": "crates/core/src/integrations/hermes.rs"
+        },
+        "client_tool_slug": "hermes",
+        "docs_guide": "docs/guides/hermes.md",
+        "dashboard_tab": "hermes",
+        "ci_e2e": "e2e-real-tools",
+        "gauntlet_journey": null,
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "read_file",
+            "lane": "reader",
+            "evidence": "documented"
+          },
+          {
+            "name": "terminal",
+            "lane": "command",
+            "evidence": "documented"
+          }
+        ]
+      },
+      "exceptions": [
+        {
+          "rule": "compression.evidence",
+          "reason": "Hermes's tool names for compression come from its own documentation: we confirmed them on traffic from Anthropic's SDK, never on a request we could attribute to Hermes."
+        },
+        {
+          "rule": "surfaces.ci_e2e",
+          "reason": "Our test suite does not cover Hermes on Windows, so the Certified bar — every platform Gate ships to — is not met."
+        }
+      ],
+      "checked": [
+        "Pointing Hermes at Gate as a custom endpoint provider works in both billing modes: paying through Gate, and bringing your own provider keys.",
+        "Gate Connect can set Hermes up for you, and our test suite drives a real Hermes install on macOS and Linux."
+      ],
+      "not_checked": [
+        "Windows: our test suite does not cover Hermes there.",
+        "Attribution on a real install: Gate Connect names Hermes by writing a header into its config, and nothing in our suite has yet driven a real Hermes and seen that header arrive. Until it has, treat naming as designed rather than demonstrated.",
+        "Attribution off the OpenAI wire: the header Hermes sends is documented as applying to OpenAI-compatible endpoints only, so a native-Anthropic or Bedrock setup routes through Gate exactly as before but is recorded without a name.",
+        "Compression: Hermes's tool names come from its own documentation; we have never seen them on traffic we could attribute to Hermes."
+      ],
+      "last_verified": null,
+      "notes": "D2 — Works, not Certified, by Julian's decision: no detector, documentation-only compression names, and an e2e suite that skips Windows. AG-670 adds the detector; Hermes is promoted to Certified when it lands. The e2e-real-tools job drives a real install on macOS and Linux and skips Windows. Gate Connect's proxy-engine integration writes ~/.hermes/.env; the Custom endpoint provider the checked list refers to lives in ~/.hermes/config.yaml. Hermes also reaches Gate by hand through the base_url in config.yaml that its guide documents; routing records the mechanism Gate Connect ships."
+    },
+    {
+      "id": "claude-desktop",
+      "display_name": "Claude for Desktop",
+      "landing_names": ["Claude Desktop / Cowork"],
+      "vendor": "Anthropic",
+      "category": "desktop",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": "anthropic"
+      },
+      "surfaces": {
+        "detector": "claude-desktop",
+        "connect": {
+          "na": "Routed by the proxy engine's domain catalog, not by a per-harness Gate Connect integration."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no per-tool integration for it: the `anthropic` domain toggle carries it."
+        },
+        "docs_guide": {
+          "na": "Nothing to configure by hand: enabling the domain is the whole setup."
+        },
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: there is no config file to edit."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No guide to follow, so no journey."
+        },
+        "landing_strip": true,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": [
+        "With the `anthropic` domain turned on in Gate Connect, the app's traffic to Anthropic goes through Gate — confirmed against a real Cowork generation.",
+        "Gate recognises the traffic as Claude for Desktop in your dashboard."
+      ],
+      "not_checked": [
+        "There is no command line for us to drive, so there is no release-by-release run against a real install.",
+        "Anthropic's telemetry host, a-api.anthropic.com, is passed through untouched and never inspected."
+      ],
+      "last_verified": null,
+      "notes": "The catalog names this domain \"Claude Desktop / Cowork\" after the apps it intercepts, not after the vendor: Claude Code shares the host but routes by config instead."
+    },
+    {
+      "id": "claude-web",
+      "display_name": "Claude for Web",
+      "vendor": "Anthropic",
+      "category": "chat",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": "claude-web"
+      },
+      "surfaces": {
+        "detector": "claude-web",
+        "connect": {
+          "na": "Routed by the proxy engine's domain catalog, not by a per-harness Gate Connect integration."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no per-tool integration for it: the `claude-web` domain toggle carries it."
+        },
+        "docs_guide": {
+          "na": "Nothing to configure by hand: enabling the domain is the whole setup."
+        },
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: there is no config file to edit."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": [
+        "With the `claude-web` domain turned on in Gate Connect, claude.ai traffic goes through Gate.",
+        "Gate recognises the traffic as Claude for Web in your dashboard."
+      ],
+      "not_checked": [
+        "No key brokering: claude.ai carries no API key at all, so Gate treats it as inspection and audit rather than routing.",
+        "No automated run on every release: there is no command line for us to drive."
+      ],
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "chatgpt-desktop",
+      "display_name": "ChatGPT Desktop",
+      "landing_names": ["ChatGPT"],
+      "vendor": "OpenAI",
+      "category": "desktop",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": "chatgpt-apps"
+      },
+      "surfaces": {
+        "detector": "chatgpt-desktop",
+        "connect": {
+          "na": "Routed by the proxy engine's domain catalog, not by a per-harness Gate Connect integration."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no per-tool integration for it: the `chatgpt-apps` domain toggle carries it."
+        },
+        "docs_guide": {
+          "na": "Nothing to configure by hand: enabling the domain is the whole setup."
+        },
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: there is no config file to edit."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No guide to follow, so no journey."
+        },
+        "landing_strip": true,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": [
+        "With the `chatgpt-apps` domain turned on in Gate Connect, the ChatGPT app's chat traffic goes through Gate.",
+        "Gate recognises the traffic as ChatGPT Desktop in your dashboard."
+      ],
+      "not_checked": [
+        "Codex Desktop's model calls ride the same host but come from an embedded agent that ignores your machine's proxy setting; they are not captured.",
+        "No automated run on every release: there is no command line for us to drive."
+      ],
+      "last_verified": null,
+      "notes": "This is the entry the marketing strip's \"ChatGPT\" logo maps to: the desktop app is what Gate Connect can intercept on a person's machine."
+    },
+    {
+      "id": "chatgpt-web",
+      "display_name": "ChatGPT for Web",
+      "vendor": "OpenAI",
+      "category": "chat",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": "chatgpt"
+      },
+      "surfaces": {
+        "detector": "chatgpt-web",
+        "connect": {
+          "na": "Routed by the proxy engine's domain catalog, not by a per-harness Gate Connect integration."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no per-tool integration for it: the `chatgpt` domain toggle carries it."
+        },
+        "docs_guide": {
+          "na": "Nothing to configure by hand: enabling the domain is the whole setup."
+        },
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: there is no config file to edit."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": [
+        "Gate recognises the traffic as ChatGPT for Web in your dashboard.",
+        "Gate Connect offers a `chatgpt` domain you can turn on."
+      ],
+      "not_checked": [
+        "No automated run on every release: there is no command line for us to drive.",
+        "Gate Connect describes that domain as the route for a ChatGPT subscription used through Codex rather than for the browser, so pairing it with the web app is our claim, not the app's."
+      ],
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "openai-apps",
+      "display_name": "OpenAI apps",
+      "vendor": "OpenAI",
+      "category": "sdk",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": "openai"
+      },
+      "surfaces": {
+        "detector": {
+          "na": "Not one app: the `openai` domain covers any system-proxy-honoring client of api.openai.com, so there is no single client to fingerprint."
+        },
+        "connect": {
+          "na": "Routed by the proxy engine's domain catalog, not by a per-harness Gate Connect integration."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no per-tool integration for it: the `openai` domain toggle carries it."
+        },
+        "docs_guide": {
+          "na": "Nothing to configure by hand: enabling the domain is the whole setup."
+        },
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: there is no config file to edit."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": ["With the `openai` domain turned on in Gate Connect, calls to OpenAI's inference paths on api.openai.com /v1/ go through Gate."],
+      "not_checked": [
+        "Which app sent the request: the domain covers any client that honours your machine's proxy setting, so traffic is recorded under the SDK it speaks rather than under an app.",
+        "Codex is explicitly not covered: Gate Connect sets it up directly instead, and its embedded agent ignores your machine's proxy setting.",
+        "No automated run on every release: there is no command line for us to drive."
+      ],
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "openrouter-apps",
+      "display_name": "OpenRouter apps",
+      "landing_names": ["OpenRouter"],
+      "vendor": "OpenRouter",
+      "category": "sdk",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": "openrouter"
+      },
+      "surfaces": {
+        "detector": {
+          "na": "Not one app: the `openrouter` domain covers any system-proxy-honoring client of openrouter.ai."
+        },
+        "connect": {
+          "na": "Routed by the proxy engine's domain catalog, not by a per-harness Gate Connect integration."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no per-tool integration for it: the `openrouter` domain toggle carries it."
+        },
+        "docs_guide": {
+          "na": "Nothing to configure by hand: enabling the domain is the whole setup."
+        },
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: there is no config file to edit."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No guide to follow, so no journey."
+        },
+        "landing_strip": true,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": ["With the `openrouter` domain turned on in Gate Connect, calls to openrouter.ai/api/v1/* go through Gate."],
+      "not_checked": [
+        "Which app sent the request: the domain covers any OpenRouter client that honours your machine's proxy setting.",
+        "No automated run on every release: there is no command line for us to drive."
+      ],
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "opencode-zen",
+      "display_name": "OpenCode Zen / Go",
+      "vendor": "sst",
+      "category": "sdk",
+      "tier": "works",
+      "routing": {
+        "mechanism": "proxy-engine",
+        "proxy_domain": "opencode"
+      },
+      "surfaces": {
+        "detector": {
+          "na": "Attributed to the opencode detector: Zen and Go are OpenCode's own model endpoints, not a separate harness."
+        },
+        "connect": {
+          "na": "Routed by the proxy engine's domain catalog, not by a per-harness Gate Connect integration."
+        },
+        "client_tool_slug": {
+          "na": "Carried by OpenCode's own client tool slug; there is no second integration."
+        },
+        "docs_guide": {
+          "na": "Nothing to configure by hand: enabling the domain is the whole setup."
+        },
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: there is no config file to edit."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI beyond OpenCode's own e2e-real-tools run."
+        },
+        "gauntlet_journey": {
+          "na": "No guide of its own, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": [
+        "With the `opencode` domain turned on in Gate Connect, OpenCode's own Zen and Go endpoints on opencode.ai /zen/v1/* and /zen/go/v1/* go through Gate.",
+        "Gate records the traffic under OpenCode in your dashboard."
+      ],
+      "not_checked": [
+        "Zen and Go are not told apart: they share one host, one upstream and one entry in your dashboard.",
+        "No automated run of their own on every release, beyond the one that drives OpenCode itself."
+      ],
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "anthropic-sdk",
+      "display_name": "Anthropic SDK",
+      "vendor": "Anthropic",
+      "category": "sdk",
+      "tier": "works",
+      "routing": {
+        "mechanism": "manual",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "anthropic-sdk",
+        "connect": {
+          "na": "Gate Connect writes no config for a library: the caller sets the base URL."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no integration for a library."
+        },
+        "docs_guide": null,
+        "dashboard_tab": {
+          "na": "Nothing to paste on the connect card: the caller sets the base URL in its own code."
+        },
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No guide of its own, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "terminal",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 1245,
+            "sample": "2026-08-13-body-mining"
+          },
+          {
+            "name": "web_search",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 247,
+            "sample": "2026-08-13-body-mining"
+          },
+          {
+            "name": "search_files",
+            "lane": "command",
+            "evidence": "documented"
+          },
+          {
+            "name": "read_terminal",
+            "lane": "command",
+            "evidence": "documented"
+          },
+          {
+            "name": "execute_code",
+            "lane": "command",
+            "evidence": "documented"
+          },
+          {
+            "name": "process",
+            "lane": "command",
+            "evidence": "documented"
+          }
+        ]
+      },
+      "exceptions": [],
+      "checked": [
+        "Pointing the SDK's base URL at Gate's /v1 endpoint reaches the gateway on Anthropic's own /v1/messages wire.",
+        "Gate records the traffic as Anthropic SDK in your dashboard."
+      ],
+      "not_checked": [
+        "No setup guide of its own: the wiring is the one the Claude Code guide documents.",
+        "No automated run on every release: a library is not an install we can drive."
+      ],
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "openai-sdk",
+      "display_name": "OpenAI SDK",
+      "vendor": "OpenAI",
+      "category": "sdk",
+      "tier": "works",
+      "routing": {
+        "mechanism": "manual",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "openai-sdk",
+        "connect": {
+          "na": "Gate Connect writes no config for a library: the caller sets the base URL."
+        },
+        "client_tool_slug": {
+          "na": "Gate Connect ships no integration for a library."
+        },
+        "docs_guide": "docs/guides/openai-sdk.mdx",
+        "dashboard_tab": "openai-sdk",
+        "ci_e2e": {
+          "na": "No CLI to drive in CI (Works)."
+        },
+        "gauntlet_journey": {
+          "na": "No CLI to drive, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "checked": [
+        "The OpenAI SDK setup guide and the dashboard's connect tab carry the wiring for both billing modes.",
+        "Gate records the traffic as OpenAI SDK in your dashboard."
+      ],
+      "not_checked": [
+        "No automated run on every release: a library is not an install we can drive.",
+        "Traffic from apps Gate cannot recognise by name is recorded under this name. Hermes used to be the standing example and no longer is: Gate Connect now writes a header into its config that names it."
+      ],
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "cursor",
+      "display_name": "Cursor",
+      "vendor": "Anysphere",
+      "category": "ide",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "cursor",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "Read",
+            "lane": "reader",
+            "evidence": "seen",
+            "calls": 7,
+            "sample": "2026-08-13-body-mining"
+          },
+          {
+            "name": "Shell",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 9,
+            "sample": "2026-08-13-body-mining"
+          },
+          {
+            "name": "ReadFile",
+            "lane": "reader",
+            "evidence": "documented"
+          },
+          {
+            "name": "AwaitShell",
+            "lane": "command",
+            "evidence": "documented"
+          },
+          {
+            "name": "rg",
+            "lane": "command",
+            "evidence": "documented"
+          }
+        ]
+      },
+      "exceptions": [],
+      "unsupported_reason": "The work to route Cursor was never completed and certificate pinning may rule it out entirely. Gate still recognises Cursor traffic that reaches it by some other route.",
+      "last_verified": null,
+      "notes": "Was on the Gate Connect marketing strip until AG-667 removed it (2026-09-09), because Gate cannot route it. The routing spike was never run on a real macOS machine and AG-504 was canceled; the cursor detector still names traffic that arrives."
+    },
+    {
+      "id": "gemini",
+      "display_name": "Gemini",
+      "vendor": "Google",
+      "category": "cli",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": {
+          "na": "Gemini's detector was added in PR #6 and removed in PR #73; no rule names its traffic today."
+        },
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Gemini support was added early on and then removed again, with no return scheduled. Gate can neither route Gemini traffic nor recognise it.",
+      "last_verified": null,
+      "notes": "Was on the Gate Connect marketing strip and in three routing-screen alt texts until AG-667 removed it from both (2026-09-09). Added to the platform registry in PR #6 and removed in PR #73; the detector went with it."
+    },
+    {
+      "id": "codex-desktop",
+      "display_name": "Codex Desktop",
+      "vendor": "OpenAI",
+      "category": "desktop",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "codex-desktop",
+        "connect": {
+          "na": "Unsupported: the embedded agent ignores the system proxy, so no catalog domain can intercept it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": [
+          {
+            "name": "exec",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 10,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "write_stdin",
+            "lane": "command",
+            "evidence": "documented"
+          }
+        ]
+      },
+      "exceptions": [],
+      "unsupported_reason": "Nothing can route it: its model calls come from an embedded agent that ignores your machine's proxy setting. Route Codex through its command line instead, which Gate Connect sets up for you.",
+      "last_verified": null,
+      "notes": "D6 — Unsupported because nothing routes it, even though the codex-desktop detector names its tool traffic."
+    },
+    {
+      "id": "antigravity",
+      "display_name": "Antigravity",
+      "vendor": "Google",
+      "category": "ide",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "antigravity",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "cline",
+      "display_name": "Cline",
+      "vendor": "Cline",
+      "category": "ide",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "cline",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "roo-code",
+      "display_name": "Roo Code",
+      "vendor": "Roo Code",
+      "category": "ide",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "roo-code",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "aider",
+      "display_name": "Aider",
+      "vendor": "Paul Gauthier",
+      "category": "cli",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "aider",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "continue",
+      "display_name": "Continue",
+      "vendor": "Continue Dev",
+      "category": "ide",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "continue",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "openhands",
+      "display_name": "OpenHands",
+      "vendor": "All Hands AI",
+      "category": "cli",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "openhands",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "goose",
+      "display_name": "Goose",
+      "vendor": "Block",
+      "category": "cli",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "goose",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "cody",
+      "display_name": "Cody",
+      "vendor": "Sourcegraph",
+      "category": "ide",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "cody",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    },
+    {
+      "id": "plandex",
+      "display_name": "Plandex",
+      "vendor": "Plandex",
+      "category": "cli",
+      "tier": "unsupported",
+      "routing": {
+        "mechanism": "none",
+        "proxy_domain": null
+      },
+      "surfaces": {
+        "detector": "plandex",
+        "connect": {
+          "na": "Unsupported: Gate Connect ships no integration and no catalog domain routes it."
+        },
+        "client_tool_slug": {
+          "na": "Unsupported: Gate Connect ships no integration for it."
+        },
+        "docs_guide": {
+          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
+        },
+        "dashboard_tab": {
+          "na": "Unsupported: nothing to paste on the connect card."
+        },
+        "ci_e2e": {
+          "na": "Unsupported: no CI run."
+        },
+        "gauntlet_journey": {
+          "na": "Unsupported: no guide to follow, so no journey."
+        },
+        "landing_strip": false,
+        "landing_home_logo": false
+      },
+      "compression": {
+        "names": []
+      },
+      "exceptions": [],
+      "unsupported_reason": "Detected in traffic only: nothing routes it, no guide, no test.",
+      "last_verified": null,
+      "notes": null
+    }
+  ]
+}
