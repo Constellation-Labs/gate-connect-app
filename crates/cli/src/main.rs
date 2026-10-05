@@ -273,8 +273,8 @@ fn cmd_login(
 /// bundle lands in the secret store; the relay / MITM engine inject it live, so
 /// no credential is written to disk here.
 fn cmd_login_oauth(base_url: String, org: Option<String>) -> Result<()> {
-    let cfg = oauth::OAuthConfig::from_build_env().context(
-        "OAuth is not configured in this build (GATE_COGNITO_HOSTED_DOMAIN / GATE_COGNITO_CLIENT_ID unset)",
+    let cfg = oauth::OAuthConfig::for_gateway(Some(&base_url)).context(
+        "OAuth is not configured in this build for this gateway (GATE_COGNITO_HOSTED_DOMAIN / GATE_COGNITO_CLIENT_ID unset, or their _STAGING / _DEV variants for the staging and dev gateways)",
     )?;
     account::save(&base_url, None)?;
     let tokens = oauth::login(&cfg, oauth::REDIRECT_PORTS, |url| {

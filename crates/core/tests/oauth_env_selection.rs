@@ -1,5 +1,5 @@
-//! `OAuthConfig::from_build_env` resolves the production vs staging Cognito
-//! pool from the currently-selected gateway host. Exercises the real
+//! `OAuthConfig::from_build_env` resolves the production, staging or dev
+//! Cognito pool from the currently-selected gateway host. Exercises the real
 //! `account.json` read against a throwaway data dir (via the
 //! `GATE_CONNECT_TEST_HOME` seam), in its own test binary so the process-global
 //! data-dir + env-var overrides can't leak into other tests.
@@ -58,12 +58,30 @@ fn resolves_pool_from_gateway_host() {
     std::env::set_var("GATE_COGNITO_CLIENT_ID", "prod-client");
     std::env::set_var("GATE_COGNITO_HOSTED_DOMAIN_STAGING", "staging.auth.test");
     std::env::set_var("GATE_COGNITO_CLIENT_ID_STAGING", "staging-client");
+    std::env::set_var("GATE_COGNITO_HOSTED_DOMAIN_DEV", "dev.auth.test");
+    std::env::set_var("GATE_COGNITO_CLIENT_ID_DEV", "dev-client");
 
     // Staging gateway → staging pool.
-    account::save("https://gateway-staging.constellationgate.ai", None).unwrap();
+    account::save(&format!("https://{}", account::STAGING_GATEWAY_HOST), None).unwrap();
     let cfg = OAuthConfig::from_build_env().expect("config resolves for staging gateway");
     assert_eq!(cfg.hosted_domain, "staging.auth.test");
     assert_eq!(cfg.client_id, "staging-client");
+
+    // Dev gateway → dev pool.
+    account::switch_gateway(&format!("https://{}", account::DEV_GATEWAY_HOST)).unwrap();
+    let cfg = OAuthConfig::from_build_env().expect("config resolves for dev gateway");
+    assert_eq!(cfg.hosted_domain, "dev.auth.test");
+    assert_eq!(cfg.client_id, "dev-client");
+
+    // An explicit gateway wins over the one on disk, which is what lets the
+    // CLI resolve the pool for the gateway it is about to save rather than the
+    // one it replaces: the disk says dev here, and each URL gets its own pool.
+    let staging = format!("https://{}", account::STAGING_GATEWAY_HOST);
+    let cfg = OAuthConfig::for_gateway(Some(&staging)).expect("config resolves for staging url");
+    assert_eq!(cfg.client_id, "staging-client");
+    let cfg = OAuthConfig::for_gateway(Some("https://gateway.constellationgate.ai"))
+        .expect("config resolves for prod url");
+    assert_eq!(cfg.client_id, "prod-client");
 
     // Production gateway → prod pool.
     account::switch_gateway("https://gateway.constellationgate.ai").unwrap();
@@ -76,4 +94,15 @@ fn resolves_pool_from_gateway_host() {
     let cfg = OAuthConfig::from_build_env().expect("config resolves for unknown gateway");
     assert_eq!(cfg.hosted_domain, "prod.auth.test");
     assert_eq!(cfg.client_id, "prod-client");
+
+    // Dev gateway with no dev pool configured → no config at all, never the
+    // prod pool. Signing in to production's Cognito for a dev gateway would
+    // hand it a token its own pool cannot verify.
+    std::env::remove_var("GATE_COGNITO_HOSTED_DOMAIN_DEV");
+    std::env::remove_var("GATE_COGNITO_CLIENT_ID_DEV");
+    account::switch_gateway(&format!("https://{}", account::DEV_GATEWAY_HOST)).unwrap();
+    assert!(
+        OAuthConfig::from_build_env().is_none(),
+        "a dev gateway without dev config must not fall through to the prod pool"
+    );
 }

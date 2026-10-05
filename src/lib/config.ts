@@ -22,15 +22,33 @@ export const POSTHOG_KEY_VALUE = POSTHOG_KEY?.trim() || "";
 /** US Cloud ingestion host (see tauri.conf.json connect-src allowlist). */
 export const POSTHOG_HOST = "https://us.i.posthog.com";
 
-/** Gateway servers selectable from Settings → Dev mode. */
+/** Gateway servers offered by the first-run picker and by Settings → Gateway →
+ * Change server. */
 export interface GatewayServer {
   label: string;
   url: string;
 }
 
+/**
+ * Whether this bundle is a pre-release (`v1.0.0-alpha.12`, `v0.3.2-rc.0`):
+ * `release.yml` sets it from the tag, which is a pre-release exactly when it
+ * carries a `-` suffix. Unset in every other build, so a stable release and a
+ * plain `pnpm build` both read false.
+ */
+const PRERELEASE = (import.meta.env.VITE_GATE_PRERELEASE as string | undefined) === "true";
+
 export const GATEWAY_SERVERS: GatewayServer[] = [
   { label: "Production", url: "https://gateway.constellationgate.ai" },
-  { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+  // Staging and dev are for testers, so they are offered only in pre-releases
+  // and dev builds. A stable release lists production alone, and a user cannot
+  // be talked into repointing every routed tool at an environment that is less
+  // hardened than the one they installed.
+  ...(import.meta.env.DEV || PRERELEASE
+    ? [
+        { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+        { label: "Dev", url: "https://gateway-dev.constellationgate.ai" },
+      ]
+    : []),
   // A gateway running on this machine, for development only (AG-572)
   // (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
   //
@@ -44,12 +62,32 @@ export const GATEWAY_SERVERS: GatewayServer[] = [
     : []),
 ];
 
+/** Whether this build offers a choice of gateway at all. A stable release lists
+ * production alone, so it shows neither the first-run picker nor "Change
+ * server". */
+export const OFFERS_GATEWAY_CHOICE = GATEWAY_SERVERS.length > 1;
+
+/** Whether `url` is one of `GATEWAY_SERVERS`, compared by origin rather than as
+ * a string, so a stored `https://Gateway.constellationgate.ai/` still matches.
+ * The Rust side picks environments by host, and the two should not disagree. */
+export function isListedGateway(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const origin = (u: string) => {
+    try {
+      return new URL(u).origin;
+    } catch {
+      return u;
+    }
+  };
+  return GATEWAY_SERVERS.some((s) => origin(s.url) === origin(url));
+}
+
 /** Every dashboard URL is DERIVED, not constant - see `lib/dashboard.ts`.
  *
  * `GATE_DASHBOARD_URL`, `GATE_API_KEYS_URL`, `GATE_POLICIES_URL` and
  * `GATE_SAVINGS_URL` used to live here, hardcoded to
  * `app.constellationgate.ai`, while the gateway above is switchable at build
- * time AND at runtime through Settings -> Dev mode. So every one of them was
+ * time AND at runtime through Settings -> Gateway. So every one of them was
  * wrong for anybody not on production, and `pnpm app:local` defaults to
  * staging. `dashboardLinks(account.gateway_base_url)` replaced them on
  * 2026-09-07; the trailing-slash discipline they documented moved with them and
