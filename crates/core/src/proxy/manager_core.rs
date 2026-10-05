@@ -890,6 +890,24 @@ impl<O: DesktopOps> DesktopManager<O> {
         }
     }
 
+    /// Put the running engine, if any, on `api_key` and drop any OAuth bearer:
+    /// what an account that left OAuth needs. Clearing the bearer alone is not
+    /// enough, because an engine started under OAuth holds no key
+    /// (`account::load` gives an OAuth account none), and with neither it
+    /// refuses every routed request as signed out. The key goes first, so no
+    /// request lands between the two with neither.
+    pub fn use_api_key(&self, api_key: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_api_key(api_key);
+            running.update_token("");
+        }
+    }
+
     /// Push a refreshed OAuth access token into the running engine, if any.
     /// Empty string means no live session: the engine falls back to the API
     /// key in legacy mode, and refuses routed requests as signed out on an
@@ -2056,6 +2074,31 @@ mod tests {
         assert!(mgr.ops.0.lock().unwrap().persisted_snapshot.is_none());
     }
 
+    /// An account that left OAuth needs the engine on its key, not only rid
+    /// of the bearer: an engine started under OAuth holds no key, and with
+    /// neither it refuses every routed request as signed out.
+    #[test]
+    fn use_api_key_sets_the_key_and_drops_the_bearer() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+        mgr.enable().expect("enable");
+        mgr.refresh_api_key("");
+        mgr.refresh_token("oauth-bearer");
+
+        mgr.use_api_key("sk-gw-pasted");
+
+        let (key, token) = mgr
+            .engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("engine running")
+            .credentials();
+        assert_eq!(key.as_ref(), "sk-gw-pasted");
+        assert_eq!(token.as_ref(), "", "the bearer would outrank the key");
+        mgr.shutdown_engine().expect("shutdown");
+    }
+
     /// The remaining surface, exercised once so its wiring can't silently rot:
     /// these paths are thin (lock, delegate, status) and their platform side
     /// is covered by the OS wiring, but nothing else on a non-desktop test
@@ -2084,6 +2127,7 @@ mod tests {
         assert!(mgr.is_running());
         mgr.refresh_api_key("sk-gw-rotated");
         mgr.refresh_token("fresh-token");
+        mgr.use_api_key("sk-gw-pasted");
         mgr.refresh_org("org-uuid-2");
         mgr.refresh_mode();
         mgr.refresh_cf_clearance("cf-clearance-cookie");
