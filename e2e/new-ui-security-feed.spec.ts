@@ -189,7 +189,8 @@ test.describe("new UI security feed", () => {
     // journey and there is no summary to keep up.
     const app = await boot({ securityFeed: { state: "live", events: [blocked] } });
 
-    await feed(app.page).getByRole("button", { name: /View/ }).click();
+    // Exact: the header's "View activity" would match a pattern too.
+    await feed(app.page).getByRole("button", { name: "View", exact: true }).click();
 
     await expect
       .poll(() => app.lastCall("plugin:opener|open_url"))
@@ -200,7 +201,7 @@ test.describe("new UI security feed", () => {
     await expect(app.page.getByRole("heading", { name: "Blocked request" })).toHaveCount(0);
   });
 
-  test("a long-running window keeps a bounded feed", async ({ boot }) => {
+  test("a long-running window shows the newest ten", async ({ boot }) => {
     // A window stays open for days. Without a cap the array grows for as long as
     // the app runs and every render walks it. 200 matches the backend buffer, so
     // this window shows the same depth of history as one opened a moment ago.
@@ -221,17 +222,11 @@ test.describe("new UI security feed", () => {
     await expect.poll(() => feed(app.page).getByText("cat-204").count()).toBe(1);
     await expect(feed(app.page).getByText("cat-5", { exact: true })).toHaveCount(0);
 
-    // Reveal the whole buffer, ten at a time, which is the only way to see how
-    // deep it goes now - and exercises the control 19 times while it is here.
-    for (let i = 0; i < 19; i++) {
-      await feed(app.page).getByRole("button", { name: "Load more" }).click();
-    }
-
-    // The oldest five fell off rather than accumulating, which is what this
-    // test has always been about.
-    expect(await feed(app.page).getByText("cat-0", { exact: true }).count()).toBe(0);
-    expect(await feed(app.page).getByText("cat-5", { exact: true }).count()).toBe(1);
-    // And the control is gone, because 200 is all there is.
+    // Ten and no more: "Load more" went on 2026-10-02 for the header's
+    // "View activity", so the depth of the buffer is no longer on screen. The
+    // 200 cap itself is pinned in `securityFeed.test.tsx`.
+    expect(await feed(app.page).getByText("cat-195", { exact: true }).count()).toBe(1);
+    expect(await feed(app.page).getByText("cat-194", { exact: true }).count()).toBe(0);
     await expect(feed(app.page).getByRole("button", { name: "Load more" })).toHaveCount(0);
   });
 
