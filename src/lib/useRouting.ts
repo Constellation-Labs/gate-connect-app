@@ -144,8 +144,10 @@ export function useRouting({
 }: {
   tools: Tool[];
   proxy: ProxyState | null;
-  /** Fresh backend truth after any action, successful or not. */
-  onSnapshot: (next: RoutingSnapshot) => void;
+  /** Fresh backend truth after any action, successful or not. Awaited when it
+   * returns a promise: the caller paints the snapshot together with the
+   * verdicts that describe it, and `busy` holds until that paint lands. */
+  onSnapshot: (next: RoutingSnapshot) => void | Promise<void>;
   /** A failure the user should see, already classified by the caller.
    *  `slug` names the one tool a failed `connect`/`disconnect` was for, so the
    *  caller can draw it on that tool's pane rather than across the window. */
@@ -229,7 +231,7 @@ export function useRouting({
       proxyStatus().catch(() => latestProxy.current),
     ]);
     latestProxy.current = freshProxy;
-    onSnapshot({ tools: freshTools, proxy: freshProxy });
+    await onSnapshot({ tools: freshTools, proxy: freshProxy });
     return freshProxy;
   }, [tools, proxy, onSnapshot]);
 
@@ -248,14 +250,44 @@ export function useRouting({
    * instead of the ability to click anything, and the resync's own failure is
    * reported rather than thrown into the void.
    */
+  const cascading = useRef(false);
   const settle = useCallback(async () => {
-    setBusy(false);
+    // Inside a cascade the members do not settle one by one: each re-read
+    // repainted the section through its in-between states ("Blocked",
+    // "Partly protected") on the way to the one the user asked for. The
+    // cascade settles once, at its end (`runCascade`).
+    if (cascading.current) return;
     try {
       await resync();
     } catch (e) {
       trackError(e, "resync");
+    } finally {
+      // After the re-read, not before it: released first, the switch came
+      // back clickable in its old position for the length of the read. The
+      // `finally` keeps what releasing first was for - a throw in the resync
+      // can no longer leave `busy` stuck on.
+      setBusy(false);
     }
   }, [resync]);
+
+  /**
+   * Run several writes as one action: `busy` holds across them and the
+   * re-read happens once, after the last. The section switch moves up to
+   * three members, and a re-read between two of them paints a state nobody
+   * asked for.
+   */
+  const runCascade = useCallback(
+    async <T,>(action: () => Promise<T>): Promise<T> => {
+      cascading.current = true;
+      try {
+        return await action();
+      } finally {
+        cascading.current = false;
+        await settle();
+      }
+    },
+    [settle],
+  );
 
   /** Trust the CA if it is not trusted yet, asking first.
    *
@@ -488,7 +520,9 @@ export function useRouting({
    */
   const setAppRouted = useCallback(
     async (slug: string, routed: boolean, force = false): Promise<boolean> => {
-      if (busy) {
+      // A cascade member is not a second write in flight: `busy` is the
+      // cascade's own, held across its members (`runCascade`).
+      if (busy && !cascading.current) {
         // Not a no-op worth passing over in silence: `busy` sticking on is what
         // makes every switch in the window stop responding, and without this
         // line the symptom is a click that does nothing, anywhere.
@@ -733,7 +767,7 @@ export function useRouting({
    */
   const setDomainRouted = useCallback(
     async (slug: string, routed: boolean): Promise<boolean> => {
-      if (busy) return false;
+      if (busy && !cascading.current) return false;
       setBusy(true);
       let changed = false;
       try {
@@ -820,5 +854,6 @@ export function useRouting({
     setEnvExport,
     untrustCa,
     writeFailures,
+    runCascade,
   };
 }
