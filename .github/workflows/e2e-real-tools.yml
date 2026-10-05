@@ -56,9 +56,21 @@ jobs:
       # Every CLI now talks to the relay over plaintext loopback, so codex no
       # longer needs the OS trust store for a custom CA (the old macOS blocker,
       # openai/codex#9526); install it on all platforms.
+      #
+      # Pinned to exact versions so a third-party release cannot turn this check
+      # red (or green) on a PR that did not change. Each pin is the newest
+      # release published before the last green run they were taken from
+      # (2026-10-01). Bump them in their own PR, where a red run is the
+      # upstream's doing and says so. Models stay unpinned on purpose: run.sh
+      # resolves them at runtime because pinned model ids get retired.
       - name: Install AI CLIs
         shell: bash
-        run: npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai openclaw
+        run: >-
+          npm install -g
+          @anthropic-ai/claude-code@2.1.286
+          @openai/codex@0.159.3
+          opencode-ai@1.18.34
+          openclaw@2026.9.7
 
       # Hermes is a Python agent installed via the bash install.sh, which
       # symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops the
@@ -67,15 +79,22 @@ jobs:
       # so it always runs an unbounded Playwright/Chromium install that stalls
       # the runner. Hermes is cross-platform and fully exercised on Linux+macOS;
       # run.sh's `command -v hermes` guard skips it cleanly on Windows.
-      # --commit pins hermes-agent: install.sh otherwise clones the tip of its
-      # main, so an upstream break turns this job red on PRs that touch nothing
-      # here (96c64b45 did on 2026-10-06). Bump the SHA deliberately, after a
-      # newer commit is seen to install cleanly.
+      #
+      # Pinned twice, like the npm CLIs above: the installer script is fetched
+      # from the repo at one commit rather than from the vendor's site, and
+      # `--commit` makes it check out that same commit (it refuses one that is
+      # not on main). Unpinned, install.sh clones the tip of main, so an
+      # upstream break turns this job red on PRs that touch nothing here
+      # (96c64b45 did on 2026-10-06). Bump the SHA deliberately, after a newer
+      # commit is seen to install cleanly.
       - name: Install Hermes (Linux/macOS)
         if: matrix.os != 'windows-latest'
         shell: bash
+        env:
+          HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser --commit 80cf5183f8ed812e8814b244e3ea6e72661d228a
+          curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_COMMIT/scripts/install.sh" \
+            | bash -s -- --skip-browser --commit "$HERMES_COMMIT"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).

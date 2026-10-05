@@ -166,6 +166,9 @@ export GATE_PROXY_DEBUG=1
 
 PASS=0
 FAIL=0
+# Every `run_tool` that passed, as `label/mode`. Read by the must-have-run check
+# at the end of the script, which is what makes a skip a failure.
+RAN=""
 
 # Launch a tool (output to a file, never the step's pipe) and poll the capture
 # until the expected request shows up or we time out. We deliberately do NOT
@@ -1115,6 +1118,7 @@ run_tool() {
       "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context" "$expected_client"; then
       echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
+      RAN="$RAN $label/$mode"
     else
       echo "FAIL: $label did not reach the gateway as expected ($mode)"
       FAIL=$((FAIL + 1))
@@ -1380,6 +1384,33 @@ else
   sed 's/^/    /' "$AUDIT_LOG" 2>/dev/null || true
   FAIL=$((FAIL + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# Must-have-run: every harness this OS is expected to cover has to have PASSED,
+# in both auth modes. Each tool above guards itself (CLI not installed, no model
+# in the catalog, engine not up) and skips with a notice, which is right for a
+# diagnosis and wrong for a required check: a PR that kept the engine from
+# starting would skip claude-code, openclaw and hermes and stay green. Here a
+# skip becomes a FAIL naming the tool.
+#
+# The one declared absence is Hermes on Windows, which the workflow does not
+# install (install.ps1 has no browser-skip switch); the gateway manifest
+# publishes the same gap as an exception. A new absence goes here, with its
+# reason, or it fails.
+# ---------------------------------------------------------------------------
+EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw hermes"
+[ "$OS" = "Windows" ] && EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw"
+for mode in api-key oauth; do
+  for tool in $EXPECTED_TOOLS; do
+    case " $RAN " in
+      *" $tool/$mode "*) ;;
+      *)
+        echo "FAIL: $tool never passed in $mode mode on $OS (skipped or not run)"
+        FAIL=$((FAIL + 1))
+        ;;
+    esac
+  done
+done
 
 ckpt "all phases finished; reached end of script"
 echo "----------------------------------------"
