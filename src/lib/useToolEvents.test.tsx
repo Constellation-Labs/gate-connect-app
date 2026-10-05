@@ -21,7 +21,7 @@ function page(ids: string[], nextCursor: string | null) {
   return JSON.stringify({
     generatedAt: "2026-08-19T04:20:00.000Z",
     window: { from: "2026-08-18T04:20:00.000Z", to: "2026-08-19T04:20:00.000Z" },
-    toolScope: { tools: ["claude-code"] },
+    toolScope: { tool: "claude-code", tools: ["claude-code"] },
     events: ids.map((id) => ({
       requestId: id,
       at: "2026-08-19T04:14:00.000Z",
@@ -36,10 +36,15 @@ function page(ids: string[], nextCursor: string | null) {
 }
 
 /** Drives the hook from a component, exposing its latest value to the test. */
-function harness(props: { tools: readonly string[] | null; installId?: string | null }) {
+type HarnessProps = {
+  tools: readonly string[] | null;
+  installId?: string | null;
+  enabled?: boolean;
+};
+function harness(props: HarnessProps) {
   const seen: ReturnType<typeof useToolEvents>[] = [];
-  function Probe({ tools, installId }: { tools: readonly string[] | null; installId?: string | null }) {
-    seen.push(useToolEvents(true, tools, installId ?? null, "cred"));
+  function Probe({ tools, installId, enabled }: HarnessProps) {
+    seen.push(useToolEvents(enabled ?? true, tools, installId ?? null, "cred"));
     return null;
   }
   const utils = render(<Probe {...props} />);
@@ -211,6 +216,38 @@ describe("useToolEvents", () => {
 
     expect(seen.at(-1)?.view).toBeNull();
     expect(mockCall).toHaveBeenLastCalledWith(["claude-code", "claude-web"], undefined, undefined);
+  });
+
+  it("drops its page when disabled, so re-enabling never answers from it", async () => {
+    mockCall.mockResolvedValueOnce(page(["old"], null));
+    const { seen, rerender } = harness({ tools: ["claude-code"] });
+    await flush();
+    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["old"]);
+
+    rerender({ tools: ["claude-code"], enabled: false });
+    await flush();
+    expect(seen.at(-1)?.view).toBeNull();
+
+    mockCall.mockImplementationOnce(() => new Promise<string>(() => {}));
+    rerender({ tools: ["claude-code"], enabled: true });
+    await flush();
+    expect(seen.at(-1)?.view).toBeNull();
+  });
+
+  it("drops a read still in flight when it is disabled", async () => {
+    let land: (text: string) => void = () => {};
+    mockCall.mockImplementationOnce(() => new Promise<string>((r) => (land = r)));
+    const { seen, rerender } = harness({ tools: ["claude-code"] });
+    await flush();
+
+    rerender({ tools: ["claude-code"], enabled: false });
+    await act(async () => {
+      land(page(["late"], null));
+      await Promise.resolve();
+    });
+
+    expect(seen.at(-1)?.view).toBeNull();
+    expect(seen.at(-1)?.loading).toBe(false);
   });
 
   it("does not read for an empty set", async () => {

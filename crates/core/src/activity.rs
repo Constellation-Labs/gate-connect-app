@@ -48,7 +48,7 @@ fn activity_endpoint(gateway_base_url: &str) -> String {
     format!("{}/v1/me/activity", gateway_base_url.trim_end_matches('/'))
 }
 
-/// One tool's recent-request feed, with its own test seam (debug only, via
+/// The app pane's recent-request feed, with its own test seam (debug only, via
 /// [`crate::env::test_seam`]). `<gateway_base_url>/v1/me/tool-events` in real
 /// builds.
 fn tool_events_endpoint(gateway_base_url: &str) -> String {
@@ -184,7 +184,17 @@ pub fn feed_clients(names: &[String]) -> Result<Vec<&'static str>, String> {
     names
         .iter()
         .map(|n| crate::proxy::stamped_client(n).ok_or_else(|| format!("unknown client {n:?}")))
-        .collect()
+        .collect::<Result<_, _>>()
+        .map(dedup)
+}
+
+/// Once each, in first-seen order. The set is closed, so this also bounds the
+/// query to its size - well under the gateway's twenty `tool` pairs, past which
+/// it refuses the request - and the query agrees with the cache key, which
+/// dedups too.
+fn dedup(names: Vec<&'static str>) -> Vec<&'static str> {
+    let mut seen = std::collections::BTreeSet::new();
+    names.into_iter().filter(|n| seen.insert(*n)).collect()
 }
 
 /// The overview's client names. Empty is allowed and means org-wide.
@@ -201,7 +211,8 @@ pub fn overview_clients(names: &[String]) -> Result<Vec<&'static str>, String> {
                 .or_else(|| ToolId::from_slug(n).map(ToolId::slug))
                 .ok_or_else(|| format!("unknown client {n:?}"))
         })
-        .collect()
+        .collect::<Result<_, _>>()
+        .map(dedup)
 }
 
 /// Fetch the installations this account has sent traffic from, as raw JSON.
@@ -250,9 +261,12 @@ fn get_json(which: Endpoint, query: &[(&str, &str)]) -> Result<String, Failure> 
 mod tests {
     use super::*;
 
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn the_feed_takes_the_stamped_set_and_nothing_else() {
-        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
             feed_clients(&names(&["claude-code", "claude-desktop", "claude-web"])),
             Ok(vec!["claude-code", "claude-desktop", "claude-web"])
@@ -266,11 +280,17 @@ mod tests {
         // A row, not a sender; and the environment channel, which nothing stamps.
         assert!(feed_clients(&names(&["any-app"])).is_err());
         assert!(feed_clients(&names(&["env-proxy"])).is_err());
+        // Repeats go out once: twenty-one of them would otherwise be refused
+        // by the gateway outright.
+        assert_eq!(feed_clients(&names(&["codex"; 25])), Ok(vec!["codex"]));
+        assert_eq!(
+            overview_clients(&names(&["claude-web", "codex", "claude-web"])),
+            Ok(vec!["claude-web", "codex"])
+        );
     }
 
     #[test]
     fn the_overview_also_takes_tool_slugs_and_an_empty_list() {
-        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(overview_clients(&[]), Ok(vec![]));
         assert_eq!(
             overview_clients(&names(&["env-proxy"])),

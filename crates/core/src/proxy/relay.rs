@@ -1546,19 +1546,21 @@ mod tests {
     #[test]
     fn every_tool_the_marker_names_is_readable() {
         use crate::registry::ToolId;
+        let marked = |id: ToolId| {
+            let path = format!("/__gate/t/{}/anthropic/v1/messages", id.slug());
+            resolved(&path).expect("routes").tool
+        };
         for id in [
             ToolId::ClaudeCode,
             ToolId::Codex,
             ToolId::OpenCode,
             ToolId::OpenClaw,
             ToolId::Hermes,
-            ToolId::EnvProxy,
         ] {
-            let path = format!("/__gate/t/{}/anthropic/v1/messages", id.slug());
-            if let Some(slug) = resolved(&path).expect("routes").tool {
-                assert_eq!(crate::proxy::stamped_client(slug), Some(slug));
-            }
+            assert_eq!(marked(id), Some(id.slug()), "the marker names {id}");
+            assert_eq!(crate::proxy::stamped_client(id.slug()), Some(id.slug()));
         }
+        assert_eq!(marked(ToolId::EnvProxy), None);
     }
 
     /// The forwarder serves relay requests itself once the engine is gone, from

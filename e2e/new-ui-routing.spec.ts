@@ -898,7 +898,10 @@ test.describe("new UI sidebar rail", () => {
     });
 
     await app.openApp("Claude");
-    await expect(app.page.getByText("Messages", { exact: true }).first()).toBeVisible();
+    // The fixture's machine is one the gateway has not seen yet, so the feed's
+    // empty state is what a pane with a reading draws here. The caveat would
+    // have been drawn in its place.
+    await expect(app.page.getByText("No recent messages")).toBeVisible();
     await expect(app.page.getByText("Shows in the Overview, not per app")).toHaveCount(0);
   });
 

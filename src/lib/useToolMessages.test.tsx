@@ -187,6 +187,20 @@ describe("useToolMessages", () => {
     expect(peak).toBe(1);
   });
 
+  it("reads a section's scope key as its set of names, and files it under the key", async () => {
+    net.mockResolvedValue(body(9));
+    const h = harness({ slugs: ["claude-code,claude-desktop,claude-web", "opencode"] });
+    await flush();
+
+    expect(net).toHaveBeenCalledWith("install-7", [
+      "claude-code",
+      "claude-desktop",
+      "claude-web",
+    ]);
+    expect(net).toHaveBeenCalledWith("install-7", ["opencode"]);
+    expect(h.last().byTool.get("claude-code,claude-desktop,claude-web")?.messages).toBe(9);
+  });
+
   it("has no figure for a declined section, rather than a zero", async () => {
     net.mockResolvedValue(body(null));
     const h = harness({ slugs: ["claude-code"] });

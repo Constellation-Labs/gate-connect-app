@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityCachedOverview, activityInstallations, activityOverview } from "./api";
+import { clientScopeKey } from "./groups";
 import type { MessagesBucket, UsageStats } from "../components/gc/metrics";
 import type { Policy, Saving } from "../components/gc/Overview";
 import type { IconName } from "../components/gc/Icon";
@@ -96,7 +97,7 @@ interface RawOverview {
   installation?: { installId: string | null };
   /** The tool scope the gateway applied, echoed back. Same optionality, same
    *  reason. */
-  toolScope?: { tool: string | null };
+  toolScope?: { tool: string | null; tools?: string[] };
 }
 
 interface RawRow {
@@ -157,9 +158,10 @@ export interface ActivityView {
    *  disagree the numbers belong to the gateway's answer, and a label taken from
    *  the request would mislabel them. */
   installId: string | null;
-  /** Which tool this reading covers, as the gateway echoed it, or `null` for
-   *  every tool. Read from the response rather than the request, for the reason
-   *  `installId` gives. */
+  /** Which tool this reading covers, as the gateway echoed it. `null` for every
+   *  tool, and also for any reading of more than one - every app pane's section
+   *  reading - because the gateway names a single tool only. Read from the
+   *  response rather than the request, for the reason `installId` gives. */
   toolId: string | null;
 }
 
@@ -379,9 +381,9 @@ export function clockTime(taken: Date, now = new Date()): string {
  * there is no client-side slice of a payload that only covered one machine.
  *
  * `tools` scopes it to a section's senders the same way, for the app pane
- * (AG-574). One hook rather than two: the generation guard, the cache-versus-network
- * race and the clear-on-scope-change effect all apply identically to a scoped read, and a
- * second copy of that race guard is the thing most likely to drift. Both call
+ * (AG-574). One hook rather than two: the generation guard, the
+ * cache-versus-network race and the clear-on-scope-change effect all apply
+ * identically to a scoped read, and a second copy of that race guard is the thing most likely to drift. Both call
  * sites keep their own state - hooks do not share any - so the Overview and an
  * app pane can be mounted at once without either seeing the other's reading.
  *
@@ -475,7 +477,7 @@ export function useActivity(
    *  pane after the fact. */
   const attempt = useRef(0);
   /** The scope by value. Empty is every sender. */
-  const scope = tools ? [...tools].sort().join(",") : "";
+  const scope = tools ? clientScopeKey(tools) : "";
 
   const reload = useCallback(() => {
     if (!enabled) return;
@@ -523,10 +525,15 @@ export function useActivity(
   // rather than leaving it under the new label until the replacement lands.
   // Separate from `reload` on purpose: the retry button re-reads without
   // blanking numbers that are still the best answer available.
+  // Being disabled drops it as well, and supersedes a read still in flight: a
+  // disabled `reload` returns before bumping the generation, so a pane switched
+  // to one with no reading would otherwise take the previous pane's reply.
   useEffect(() => {
+    attempt.current += 1;
     setView(null);
     setFailure(null);
-  }, [credential, installId, scope]);
+    setLoading(false);
+  }, [enabled, credential, installId, scope]);
 
   useEffect(reload, [reload]);
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityToolEvents } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
+import { clientScopeKey } from "./groups";
 import type { ActivityEntry } from "./toolEventRow";
 import type { ModelLabels } from "./toolModels";
 import type { IconName } from "../components/gc/Icon";
@@ -67,7 +68,10 @@ interface RawEvent {
 interface RawToolEvents {
   generatedAt: string;
   window: { from: string; to: string };
-  toolScope: { tool: string };
+  /** `tool` is null whenever more than one sender was asked for, which is every
+   *  section feed; `tools` lists them. Neither is read: the request already
+   *  says what was asked. */
+  toolScope: { tool: string | null; tools?: string[] };
   installation?: { installId: string | null };
   events?: RawEvent[];
   nextCursor?: string | null;
@@ -358,7 +362,7 @@ export function useToolEvents(
    *  is dropped rather than appended to a different section's feed. */
   const attempt = useRef(0);
   /** The scope by value. Empty means nothing to read. */
-  const scope = tools ? [...tools].sort().join(",") : "";
+  const scope = tools ? clientScopeKey(tools) : "";
 
   const fetchPage = useCallback(
     (cursor: string | null) => {
@@ -400,11 +404,17 @@ export function useToolEvents(
 
   // A feed belongs to the scope it was read for, so a scope change drops it
   // rather than leaving one section's requests under another section's name.
+  // Being disabled drops it too: a hook switched off and on again must not
+  // answer from the page it held before, and a read still in flight from
+  // before the switch is superseded here, since a disabled `fetchPage` never
+  // bumps the generation itself.
   useEffect(() => {
+    attempt.current += 1;
     setView(null);
     setFailure(null);
     setPaged(false);
-  }, [credential, installId, scope]);
+    setLoading(false);
+  }, [enabled, credential, installId, scope]);
 
   useEffect(() => {
     fetchPage(null);

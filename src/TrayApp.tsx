@@ -28,7 +28,9 @@ import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
 import {
   BAND_LABELS,
+  SECTION_CLIENTS,
   buildGroups,
+  clientScopeKey,
   hintForMember,
   isSettingsManaged,
   sectionHint,
@@ -597,14 +599,23 @@ export function TrayApp() {
   /**
    * The messages figure per row, off the held readings and refreshed on each look.
    *
-   * The rows are the config tools only. A chat domain's traffic arrives at the
-   * gateway unattributed on purpose, so there is no per-tool reading to ask for -
-   * the same reason its alert count is absent rather than zero.
+   * A section in `SECTION_CLIENTS` reads its whole set, the same reading the
+   * window's pane takes, so the Claude row and the Claude pane count the same
+   * traffic. Its config tool is not read on its own as well: that row is the
+   * section's, and a second read per open is the fan-out `useToolMessages`
+   * exists to avoid. Every other installed tool reads its own slug. A section
+   * with no sender to name (the OpenAI API) has nothing to read.
    */
-  const messageSlugs = useMemo(
-    () => tools.filter((t) => t.status.kind !== "not_installed").map((t) => t.slug),
-    [tools],
-  );
+  const messageSlugs = useMemo(() => {
+    const drawn = groups.filter((g) => SECTION_CLIENTS[g.id]);
+    const covered = new Set(drawn.flatMap((g) => sectionMemberKeys(g.id)));
+    return [
+      ...drawn.map((g) => clientScopeKey(SECTION_CLIENTS[g.id])),
+      ...tools
+        .filter((t) => t.status.kind !== "not_installed" && !covered.has(t.slug))
+        .map((t) => t.slug),
+    ];
+  }, [groups, tools]);
   // Destructured, not held as the view object. The hook returns a fresh literal
   // every render, so depending on it made `apps` - and `trayGroups` below it -
   // recompute on every render. `alertCounts` above depends on `securityFeed`'s
@@ -626,9 +637,10 @@ export function TrayApp() {
    *
    * Keyed on the event's `tool`, the only attribution the feed carries, so an
    * unattributed event is counted against nobody rather than against a guessed
-   * slug. The chat domains are therefore permanently without one, which is why
-   * `alerts` is optional rather than defaulted: their rows keep the two-line
-   * shape instead of claiming a quiet day over traffic Gate cannot see.
+   * slug. A section row sums its `SECTION_CLIENTS` names. A row with no name to
+   * count under is permanently without one, which is why `alerts` is optional
+   * rather than defaulted: it keeps the two-line shape instead of claiming a
+   * quiet day over traffic Gate cannot see.
    *
    * Null is "no reading", and a row draws nothing for it. Four ways to get
    * there and they are one thing to the reader: the feed could not be read, it
@@ -735,10 +747,26 @@ export function TrayApp() {
     for (const g of groups) {
       const status = sectionStatus(g, bySlug);
       if (!status) continue;
-      // The section's config tool carries the figures: the gateway attributes
-      // per tool, and a host surface has nothing of its own to report.
+      // A section with a client set carries the set's figures: the messages
+      // reading for the whole set, and every alert the feed filed under any of
+      // its names. Any other section's config tool carries them, as before.
+      const clients = SECTION_CLIENTS[g.id];
       const tool = g.members.find((m) => m.kind === "config");
-      const figures = tool ? bySlug.get(tool.key) : undefined;
+      const figures = clients
+        ? {
+            messages: messageFigure(messagesByTool, messagesPending, clientScopeKey(clients)),
+            alerts: alertCounts
+              ? {
+                  kind: "count" as const,
+                  count: clients.reduce((n, c) => n + (alertCounts.get(c) ?? 0), 0),
+                }
+              : alertsPending
+                ? { kind: "pending" as const }
+                : undefined,
+          }
+        : tool
+          ? bySlug.get(tool.key)
+          : undefined;
       for (const m of g.members) bySlug.delete(m.key);
       if (g.band !== band) {
         band = g.band;
@@ -760,7 +788,7 @@ export function TrayApp() {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
     return grouped.filter((g) => g.apps.length > 0);
-  }, [groups, apps, routingBusy]);
+  }, [groups, apps, routingBusy, messagesByTool, messagesPending, alertCounts, alertsPending]);
 
   /**
    * The app switch, the same one the rail draws.

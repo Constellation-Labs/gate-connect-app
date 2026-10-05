@@ -67,6 +67,7 @@ import {
   sectionHint,
   notInstalledSections,
   paneClients,
+  SECTION_CLIENTS,
   sectionMemberKeys,
 } from "./lib/groups";
 import {
@@ -482,10 +483,10 @@ export function NewUiApp() {
    *
    * At most one, and that is a property of the sections rather than a
    * coincidence worth guarding: each app has a single thing Gate writes a
-   * config file for. It is what the per-tool activity read below is keyed on,
-   * which is the whole of "aggregate" - the section's other surfaces are hosts,
-   * and the gateway attributes nothing to a host, so there is no second reading
-   * to add in.
+   * config file for. It is what the model card, the credits and the Gate model
+   * warning are about. The activity reads are keyed on `openClients` instead,
+   * which is the whole section where the engine names its surfaces apart and
+   * this tool alone where it does not.
    *
    * Resolved from the section table rather than from the built ledger, which is
    * declared further down: this sits above it because the reads it gates have
@@ -719,11 +720,9 @@ export function NewUiApp() {
     credential,
   );
   /** Whether the pane's feed covers more than its config tool, so its rows are
-   *  not that tool's own. */
+   *  not that tool's own: the section reads a client set. */
   const sectionWide =
-    openTool !== null &&
-    openClients !== null &&
-    (openClients.length !== 1 || openClients[0] !== openTool);
+    openTool !== null && view.kind === "app" && SECTION_CLIENTS[view.slug] !== undefined;
   /**
    * The config tool's own newest requests, for the Gate model warning only.
    *
@@ -734,6 +733,11 @@ export function NewUiApp() {
    * warning over Claude Code, and its successes would hide Claude Code failing.
    * So this reads page one for the tool, and only while there is a Gate model to
    * warn about and the section feed is not already exactly this.
+   *
+   * A failed read leaves the warning to its other checks, the catalogue and the
+   * balance, with nothing said about the read itself: the card is about the
+   * model, and the section feed's own failure notice already covers a gateway
+   * that is not answering.
    */
   const modelFeed = useToolEvents(
     canRead &&
@@ -757,9 +761,10 @@ export function NewUiApp() {
    * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
    * better information. The Overview's org-wide read refreshes on any of it;
    * the open pane's reads only when one of its senders is among them, so Codex
-   * traffic does not re-read the Claude pane and claude.ai traffic does. The feed is left alone
-   * once the user has paged into it: `reload` puts page one back, and taking
-   * pages away from someone reading them is worse than a stale first page.
+   * traffic does not re-read the Claude pane and claude.ai traffic does. The
+   * feed is left alone once the user has paged into it: `reload` puts page one
+   * back, and taking pages away from someone reading them is worse than a
+   * stale first page.
    * Each hook's `reload` is a no-op while that hook is disabled.
    */
   const refreshActivity = (tools: (string | null)[] | null) => {
@@ -3566,9 +3571,8 @@ export function NewUiApp() {
               )}
               {noPaneReading || unattributedMachine ? null : (
                 // A pane with no sender to read has no per-app reading, and an
-                // unattributed machine
-                // has no per-machine one yet. Neither is a failure, so neither
-                // gets the failure notices below.
+                // unattributed machine has no per-machine one yet. Neither is a
+                // failure, so neither gets the failure notices below.
                 <>
                   {/* The same notices the Overview shows, from the same builder, so
                       the two panes cannot describe one gateway failure two

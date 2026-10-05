@@ -2147,11 +2147,16 @@ pub mod testing {
 /// An unknown slug yields `None` rather than being passed through, so the value
 /// that reaches the activity column is always one of ours. Same reasoning as the
 /// relay's marker: a request we cannot name is served unlabelled.
+///
+/// `env-proxy` is dropped with the unknown ones, as the relay's marker drops it:
+/// it is the environment channel rather than a program, so it is not a
+/// [`stamped_client`] name and no activity read could ask for its series.
 pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
     headers
         .get(GATE_TOOL_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(crate::registry::ToolId::from_slug)
+        .filter(|id| *id != crate::registry::ToolId::EnvProxy)
         .map(crate::registry::ToolId::slug)
 }
 
@@ -5496,6 +5501,33 @@ mod tests {
         assert_eq!(stamped_client("any-app"), None);
         assert_eq!(stamped_client("env-proxy"), None);
         assert_eq!(stamped_client(""), None);
+    }
+
+    /// The engine's config-header signal names only readable clients, the
+    /// header half of `every_stamped_client_is_readable`.
+    #[test]
+    fn every_tool_the_config_header_names_is_readable() {
+        use crate::registry::ToolId;
+        let named = |slug: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                HeaderName::from_static(GATE_TOOL_HEADER),
+                HeaderValue::from_static(slug),
+            );
+            header_tool(&h)
+        };
+        for id in [
+            ToolId::ClaudeCode,
+            ToolId::Codex,
+            ToolId::OpenCode,
+            ToolId::OpenClaw,
+            ToolId::Hermes,
+        ] {
+            assert_eq!(named(id.slug()), Some(id.slug()));
+            assert_eq!(stamped_client(id.slug()), Some(id.slug()));
+        }
+        assert_eq!(named(ToolId::EnvProxy.slug()), None);
+        assert_eq!(named("nope"), None);
     }
 
     /// The website is attributed too, and separately from the desktop app.

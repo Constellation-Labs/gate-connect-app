@@ -244,8 +244,9 @@ pub fn load(install_id: Option<&str>, clients: &[&str]) -> Option<String> {
 /// unfiltered reading is the Overview's, attributable to no row, and a caller
 /// iterating rows would have to know to skip a key that looks like every other
 /// one. Another machine's reading is not this machine's traffic at all.
-/// A section's reading - several names under one key - is the app pane's, and
-/// is left out for the same reason: no row is called `claude-code,claude-web`.
+/// A section's reading is handed out under its sorted, comma-joined names - the
+/// key the app pane stored it under, and the one the tray's section row asks
+/// for - so the two surfaces share one reading of one section.
 pub fn load_tools(install_id: Option<&str>) -> BTreeMap<String, String> {
     let Some(want) = scope() else {
         return BTreeMap::new();
@@ -257,9 +258,7 @@ pub fn load_tools(install_id: Option<&str>) -> BTreeMap<String, String> {
     entry
         .readings
         .into_iter()
-        .filter(|(k, _)| {
-            key_install(k) == mine && key_tool(k) != UNFILTERED && !key_tool(k).contains(',')
-        })
+        .filter(|(k, _)| key_install(k) == mine && key_tool(k) != UNFILTERED)
         .map(|(k, body)| (key_tool(&k).to_owned(), body))
         .collect()
 }
@@ -487,9 +486,13 @@ mod tests {
         );
         assert_eq!(
             rows.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["claude-code", "codex"],
+            vec![
+                "claude-code",
+                "claude-code,claude-desktop,claude-web",
+                "codex"
+            ],
             "one machine's tool-filtered readings, and nothing else: an \
-             unfiltered reading is no row's, and neither is a section's"
+             unfiltered reading is no row's, and a section's is under its set"
         );
         assert!(
             other_machine.is_empty(),

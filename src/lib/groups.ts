@@ -1012,6 +1012,14 @@ export const SECTION_CLIENTS: Readonly<Record<string, readonly string[]>> = {
   chatgpt: ["codex", "chatgpt", "chatgpt-web"],
 };
 
+/** One key for a set of client names: sorted and comma-joined, so the same set
+ *  in any order is one key. It is the backend's cache key too
+ *  (`activity_cache::key`), which is what lets the tray find a section's reading
+ *  the window's pane stored, and what the hooks key their effects on. */
+export function clientScopeKey(names: readonly string[]): string {
+  return [...new Set(names)].sort().join(",");
+}
+
 /** The client names an app pane reads its activity for: the section's table entry,
  *  else the one config tool it resolved, else none - and none means the pane has
  *  no per-app reading at all. */
@@ -1061,11 +1069,11 @@ export function notInstalledSections(
  * Is this section a provider endpoint - a destination other programs are
  * pointed at - rather than an app?
  *
- * Not the same question as `NewUiApp`'s `openDomain`, which it looks like:
- * that one is `openTool === null`, "this section has no INSTALLED config
- * tool". A section stays alive on its `domain:` members, so a Claude pane on a
- * machine without Claude Code is `openDomain` too - and Claude Desktop is one
- * app that nothing is pointed at.
+ * Not the same question as `NewUiApp`'s `noPaneReading`, which it looks like:
+ * that one is "this pane has no sender to read" - no `SECTION_CLIENTS` entry
+ * and no installed config tool. A Claude pane on a machine without Claude Code
+ * still reads its section, and Claude Desktop is one app that nothing is
+ * pointed at.
  *
  * Unknown ids answer false. A section this table does not name is a catalog
  * entry that has not been placed yet, and claiming it is an endpoint would

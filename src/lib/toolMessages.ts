@@ -117,8 +117,10 @@ function orgNameOf(text: string): string | null {
 
 export function useToolMessages(
   enabled: boolean,
-  /** The tools with rows to fill. Compared by contents rather than identity, so a
-   *  caller need not memoise it. */
+  /** The rows to fill, one scope key each: a tool's slug, or a section's names
+   *  through `clientScopeKey` - the key the backend holds that reading under, so
+   *  a section row and the window's pane share one. Compared by contents rather
+   *  than identity, so a caller need not memoise it. */
   slugs: string[],
   /** This machine, as the gateway named it. `null` means org-wide, which is a
    *  different question - see `machineKnown` in `NewUiApp` - so the caller must
@@ -182,7 +184,7 @@ export function useToolMessages(
     void (async () => {
       // Off disk first, in one read: a popover must paint before it asks
       // anything, and what landed here is what the window's own app-pane reads
-      // already fetched.
+      // already fetched - a section's under the same key its row asks for.
       const held = await activityCachedToolOverviews(installId).catch(
         () => ({}) as Record<string, string>,
       );
@@ -218,7 +220,7 @@ export function useToolMessages(
       // concurrent requests at a shared budget, and nobody is waiting on the
       // last row's figure to read the first one's.
       for (const slug of stale) {
-        const text = await activityOverview(installId, [slug]).catch(() => null);
+        const text = await activityOverview(installId, slug.split(",")).catch(() => null);
         if (!current()) return;
         // Recorded even for a failure: a gateway that just refused is not worth
         // asking again on the next look a second later.
