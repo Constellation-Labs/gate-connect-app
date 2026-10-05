@@ -62,7 +62,7 @@ fn resolves_pool_from_gateway_host() {
     std::env::set_var("GATE_COGNITO_CLIENT_ID_DEV", "dev-client");
 
     // Staging gateway → staging pool.
-    account::save("https://gateway-staging.constellationgate.ai", None).unwrap();
+    account::save(&format!("https://{}", account::STAGING_GATEWAY_HOST), None).unwrap();
     let cfg = OAuthConfig::from_build_env().expect("config resolves for staging gateway");
     assert_eq!(cfg.hosted_domain, "staging.auth.test");
     assert_eq!(cfg.client_id, "staging-client");
@@ -72,6 +72,16 @@ fn resolves_pool_from_gateway_host() {
     let cfg = OAuthConfig::from_build_env().expect("config resolves for dev gateway");
     assert_eq!(cfg.hosted_domain, "dev.auth.test");
     assert_eq!(cfg.client_id, "dev-client");
+
+    // An explicit gateway wins over the one on disk, which is what lets the
+    // CLI resolve the pool for the gateway it is about to save rather than the
+    // one it replaces: the disk says dev here, and each URL gets its own pool.
+    let staging = format!("https://{}", account::STAGING_GATEWAY_HOST);
+    let cfg = OAuthConfig::for_gateway(Some(&staging)).expect("config resolves for staging url");
+    assert_eq!(cfg.client_id, "staging-client");
+    let cfg = OAuthConfig::for_gateway(Some("https://gateway.constellationgate.ai"))
+        .expect("config resolves for prod url");
+    assert_eq!(cfg.client_id, "prod-client");
 
     // Production gateway → prod pool.
     account::switch_gateway("https://gateway.constellationgate.ai").unwrap();

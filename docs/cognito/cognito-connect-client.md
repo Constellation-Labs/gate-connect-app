@@ -49,7 +49,6 @@ takes the client id as an input.
 
 | Item | Staging value | Dev value |
 |---|---|---|
-| AWS account | `177697910306` | `177697910306` (shared with staging) |
 | Region | `us-east-1` | `us-east-1` |
 | User pool id | `us-east-1_GPcJkAGzM` | resolve with step 1 |
 | Hosted domain | `swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com` | `swarm-deck-dev-ue1.auth.us-east-1.amazoncognito.com` |
@@ -58,9 +57,10 @@ takes the client id as an input.
 | Gateway | `gateway-staging.constellationgate.ai` | `gateway-dev.constellationgate.ai` |
 
 The dev client was created on 2026-10-05, and the dev Hosted UI accepts it on all
-three loopback callbacks. Gate's `dev.tfvars` trusts it from
-Constellation-Labs/gate#1139, and the gateway rejects its tokens until that is
-applied. The repo Variables `GATE_COGNITO_HOSTED_DOMAIN_DEV` and
+three loopback callbacks. Gate's `dev.tfvars` gains it in
+Constellation-Labs/gate#1139; until that is merged and applied, the dev gateway
+rejects its tokens, so a dev sign-in succeeds and the org picker then 401s. The
+repo Variables `GATE_COGNITO_HOSTED_DOMAIN_DEV` and
 `GATE_COGNITO_CLIENT_ID_DEV` are set.
 
 App-side constants (from `crates/core/src/oauth.rs`):
@@ -281,19 +281,20 @@ Variables), consumed by `.github/workflows/release.yml`:
 `crates/core/build.rs` declares `rerun-if-env-changed` for all nine so a cached
 `target/` cannot ship a stale value.
 
-Local testing (no rebuild needed, runtime env wins over the baked value). Set
-the pair matching the gateway you'll select in Settings → Dev mode:
+Local testing (no rebuild needed: in a debug build such as `pnpm tauri dev`, the
+runtime env wins over the baked value; a release build ignores it). Set
+the pair matching the gateway you'll select in Settings → Gateway → Change server:
 
 ```bash
 # Production gateway (default):
 export GATE_COGNITO_HOSTED_DOMAIN=<PROD_HOSTED_DOMAIN>
 export GATE_COGNITO_CLIENT_ID=<PROD_CONNECT_CLIENT_ID>
 
-# Staging gateway (select "Staging" in Settings → Dev mode):
+# Staging gateway (select "Staging" in Settings → Gateway → Change server):
 export GATE_COGNITO_HOSTED_DOMAIN_STAGING=swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com
 export GATE_COGNITO_CLIENT_ID_STAGING=<STAGING_CONNECT_CLIENT_ID>
 
-# Dev gateway (select "Dev" in Settings → Dev mode):
+# Dev gateway (select "Dev" in Settings → Gateway → Change server):
 export GATE_COGNITO_HOSTED_DOMAIN_DEV=<DEV_HOSTED_DOMAIN>
 export GATE_COGNITO_CLIENT_ID_DEV=<DEV_CONNECT_CLIENT_ID>
 
@@ -328,14 +329,16 @@ full command and flag rationale.
 - [ ] **Release variables.** Set the GitHub Actions repo Variables
   `GATE_COGNITO_CLIENT_ID` (prod client id) and `GATE_COGNITO_HOSTED_DOMAIN`
   (prod hosted domain, no scheme); leave `GATE_COGNITO_SCOPES` unset unless
-  hardening. The `_STAGING` variables stay as they are. (Step 5)
+  hardening. The `_STAGING` and `_DEV` variables stay as they are. (Step 5)
 - [ ] **Cut a release** so the new values are baked into the binary
   (`build.rs` re-runs on env change, so no stale cache).
 - [ ] **Verify end to end.** Fresh install pointing at the production gateway:
   sign in via the branded Hosted UI, org picker loads (`GET /v1/me/orgs`
-  returns 200), a proxied tool call succeeds. Then flip Settings → Dev mode to
-  Staging and confirm staging login still works (the runtime pool selection
-  picks the `_STAGING` pair only for `gateway-staging.constellationgate.ai`).
+  returns 200), a proxied tool call succeeds. Then, in a pre-release build, switch
+  to Staging and to Dev (Settings → Gateway → Change server) and confirm both
+  logins still work (the runtime pool selection picks the `_STAGING` pair only
+  for `gateway-staging.constellationgate.ai`, and `_DEV` only for
+  `gateway-dev.constellationgate.ai`). A stable build lists production alone.
 
 ## Gotchas
 

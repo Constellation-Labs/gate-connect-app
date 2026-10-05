@@ -83,7 +83,12 @@ import {
 import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
-import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
+import {
+  GATEWAY_SERVERS,
+  GATE_DOCS_URL,
+  OFFERS_GATEWAY_CHOICE,
+  isListedGateway,
+} from "./lib/config";
 import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
 import type { DashboardLinks } from "./lib/dashboard";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
@@ -2254,8 +2259,7 @@ export function NewUiApp() {
         // install hand-pointed at staging per POSTINSTALL.md), which needs a
         // way back.
         onChangeGateway:
-          GATEWAY_SERVERS.length > 1 ||
-          !GATEWAY_SERVERS.some((s) => s.url === account?.gateway_base_url)
+          OFFERS_GATEWAY_CHOICE || !isListedGateway(account?.gateway_base_url)
             ? settings.openSwitchGateway
             : undefined,
         onCopyInstallId: installId
@@ -2780,10 +2784,16 @@ export function NewUiApp() {
   }
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
-    // Wherever the build lists a choice: dev builds and pre-releases, so a
-    // tester can sign in straight to staging or dev. A stable release lists
-    // production alone and gets no picker.
-    const gatewayPicker = GATEWAY_SERVERS.length < 2 ? undefined : (
+    // Wherever the build lists a choice (dev builds and pre-releases), so a
+    // tester can sign in straight to staging or dev, and only on a first run.
+    // The picker saves through `save_account`, which writes the URL and
+    // nothing else; an account that has been signed in before may have tools
+    // connected, a running engine and an org from the old environment, and
+    // moving it takes `switch_gateway` (Settings -> Gateway -> Change server).
+    // A first attempt that failed partway has saved a URL but none of those, so
+    // it keeps the picker.
+    const establishedAccount = account?.auth_mode === "oauth" || Boolean(account?.org_id);
+    const gatewayPicker = !OFFERS_GATEWAY_CHOICE || establishedAccount ? undefined : (
       <GatewayPicker
         value={setup.gateway}
         servers={GATEWAY_SERVERS}

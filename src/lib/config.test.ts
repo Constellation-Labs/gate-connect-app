@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // is the wrong trade. vite/client already declares `*?raw` as a string.
 import capabilitiesRaw from "../../src-tauri/capabilities/default.json?raw";
 import trayCapabilitiesRaw from "../../src-tauri/capabilities/tray.json?raw";
-import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./config";
+import { GATEWAY_SERVERS, GATE_DOCS_URL, isListedGateway } from "./config";
 import { dashboardLinks } from "./dashboard";
 
 /** Translate a `glob::Pattern` (what tauri-plugin-opener matches with) into a
@@ -201,12 +201,13 @@ describe("the tray popover's opener ACL covers what its menu opens", () => {
 describe("which gateways a build offers", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
-    vi.resetModules();
   });
 
   async function labelsFor(env: { DEV: boolean; prerelease?: string }) {
     vi.stubEnv("DEV", env.DEV);
-    if (env.prerelease !== undefined) vi.stubEnv("VITE_GATE_PRERELEASE", env.prerelease);
+    // Stubbed even when absent, so the case does not read whatever the shell
+    // running the suite happens to export.
+    vi.stubEnv("VITE_GATE_PRERELEASE", env.prerelease);
     vi.resetModules();
     const { GATEWAY_SERVERS: servers } = await import("./config");
     return servers.map((s) => s.label);
@@ -227,5 +228,28 @@ describe("which gateways a build offers", () => {
 
   it("adds the local gateway too in a dev build", async () => {
     expect(await labelsFor({ DEV: true })).toEqual(["Production", "Staging", "Dev", "Local (dev)"]);
+  });
+
+  it("offers a choice only where it lists more than one gateway", async () => {
+    vi.stubEnv("DEV", false);
+    vi.stubEnv("VITE_GATE_PRERELEASE", undefined);
+    vi.resetModules();
+    expect((await import("./config")).OFFERS_GATEWAY_CHOICE).toBe(false);
+    vi.stubEnv("VITE_GATE_PRERELEASE", "true");
+    vi.resetModules();
+    expect((await import("./config")).OFFERS_GATEWAY_CHOICE).toBe(true);
+  });
+});
+
+describe("isListedGateway", () => {
+  it.each([
+    ["https://gateway.constellationgate.ai", true],
+    ["https://gateway.constellationgate.ai/", true],
+    ["https://Gateway.ConstellationGate.ai", true],
+    ["https://gate.example.com", false],
+    ["", false],
+    [null, false],
+  ])("%s -> %s", (url, listed) => {
+    expect(isListedGateway(url)).toBe(listed);
   });
 });

@@ -97,8 +97,10 @@ jobs:
           # ⇒ analytics stays a no-op, so the build still succeeds without it.
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
           # Inlined the same way. A tag with a `-` suffix is a pre-release, and
-          # only a pre-release lists the staging and dev gateways in Settings
-          # (GATEWAY_SERVERS in src/lib/config.ts).
+          # only a pre-release lists the staging and dev gateways
+          # (GATEWAY_SERVERS in src/lib/config.ts). The same expression marks
+          # the GitHub release `prerelease` below, so the bundle and the
+          # release agree on what they are.
           VITE_GATE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
           # Cognito OAuth client config, baked into the binary at compile time
           # via `option_env!` (crates/core/src/oauth.rs). Public client config,
@@ -126,7 +128,11 @@ jobs:
           # generation; the other legs find and reuse the existing draft.
           generateReleaseNotes: true
           releaseDraft: true
-          prerelease: false
+          # A pre-release is kept out of /releases/latest, which is what the
+          # updater reads, so a stable install can never auto-update into a
+          # build that offers staging and dev. Publishing an `-rc` draft as
+          # Latest by hand used to be one click away from exactly that.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
       # Tauri's AppImage bundler pulls libwayland-client/cursor/egl/server
       # into the AppDir via the GTK/WebKit dependency chain, even though

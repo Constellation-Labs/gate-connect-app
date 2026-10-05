@@ -147,46 +147,17 @@ pub fn load_base_url() -> Result<Option<String>> {
     Ok(read_account_file()?.map(|f| f.gateway_base_url))
 }
 
-/// The gateway host that marks the **staging** environment. Every host other
-/// than this and [`DEV_GATEWAY_HOST`] (production, self-hosted, unknown, or no
-/// account yet) is treated as production. Keep in sync with `GATEWAY_SERVERS`
-/// in `src/lib/config.ts`.
+/// The gateway host that marks the **staging** environment, which has its own
+/// Cognito pool (see [`crate::oauth::OAuthConfig::for_gateway`]). Every host
+/// other than this and [`DEV_GATEWAY_HOST`] (production, self-hosted, unknown,
+/// or no account yet) is treated as production, the choice that offers less
+/// rather than more. Keep in sync with `GATEWAY_SERVERS` in
+/// `src/lib/config.ts`.
 pub const STAGING_GATEWAY_HOST: &str = "gateway-staging.constellationgate.ai";
 
 /// The gateway host that marks the **dev** environment, which has its own
 /// Cognito pool. Keep in sync with `GATEWAY_SERVERS` in `src/lib/config.ts`.
 pub const DEV_GATEWAY_HOST: &str = "gateway-dev.constellationgate.ai";
-
-/// Whether the currently-selected gateway is the known staging host.
-///
-/// [`crate::oauth::OAuthConfig::from_build_env`] picks the staging Cognito pool
-/// with it, which is its only caller.
-///
-/// Reads the gateway URL from `account.json` (no keychain touch); a missing
-/// account or any parse failure falls back to production, which is the choice
-/// that offers less rather than more.
-pub fn gateway_is_staging() -> bool {
-    gateway_host().is_some_and(|h| h == STAGING_GATEWAY_HOST)
-}
-
-/// Whether the currently-selected gateway is the known dev host. Reads
-/// `account.json` the same way as [`gateway_is_staging`];
-/// [`crate::oauth::OAuthConfig::from_build_env`] picks the dev Cognito pool
-/// with it.
-pub fn gateway_is_dev() -> bool {
-    gateway_host().is_some_and(|h| h == DEV_GATEWAY_HOST)
-}
-
-/// The host of the gateway URL in `account.json`, or `None` when there is no
-/// account or it does not parse.
-fn gateway_host() -> Option<String> {
-    load_base_url()
-        .ok()
-        .flatten()
-        .as_deref()
-        .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|u| u.host_str().map(str::to_owned))
-}
 
 /// Read and parse `account.json`, or `None` when no account is on disk. The
 /// on-disk half of the account (gateway URL + key prefix) that both the UI

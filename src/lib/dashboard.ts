@@ -4,12 +4,12 @@
  * **Why this is derived rather than a constant.** The dashboard used to be four
  * hardcoded `app.constellationgate.ai` URLs in `config.ts` while the *gateway*
  * was switchable twice over - at build time through
- * `VITE_GATE_DEFAULT_BASE_URL`, and at runtime through Settings -> Dev mode
+ * `VITE_GATE_DEFAULT_BASE_URL`, and at runtime through Settings -> Gateway
  * (`GATEWAY_SERVERS`). So a developer or tester pointed at staging got
  * production dashboard links from every call site, and `pnpm app:local`
  * defaults to staging, which made that the normal dev state rather than an edge
  * case. Adding a second build-time flag would not have fixed it: a flag is
- * still wrong the moment somebody switches server in Dev mode, which is the
+ * still wrong the moment somebody switches server in Settings, which is the
  * same shape of bug one level along.
  *
  * The source of truth is therefore `Account.gateway_base_url` - what the

@@ -81,9 +81,9 @@ pub const REFRESH_INTERVAL_SECS: u64 = 30;
 
 /// OAuth client configuration, resolved for the **currently selected
 /// gateway**. The production, staging and dev Cognito pools are baked in at
-/// build time; [`OAuthConfig::from_build_env`] picks the pair matching the
-/// active gateway host (see [`crate::account::gateway_is_staging`] and
-/// [`crate::account::gateway_is_dev`]). Set `GATE_COGNITO_HOSTED_DOMAIN` /
+/// build time; [`OAuthConfig::for_gateway`] picks the pair matching the gateway
+/// host (see [`crate::account::STAGING_GATEWAY_HOST`] and
+/// [`crate::account::DEV_GATEWAY_HOST`]). Set `GATE_COGNITO_HOSTED_DOMAIN` /
 /// `GATE_COGNITO_CLIENT_ID` / `GATE_COGNITO_SCOPES` (and their `_STAGING` and
 /// `_DEV` variants) at build time, or, in a debug build only, override any of
 /// them via the process env at runtime.
@@ -99,39 +99,62 @@ pub struct OAuthConfig {
 }
 
 /// One build-time OAuth config value: in a debug build the process env wins at
-/// runtime, else the value baked in at build time. Empty values are ignored on
-/// both sides: an exported-but-blank var doesn't blank out a baked default, and
-/// a blank bake reads as absent. `release.yml` passes every Cognito variable,
-/// so one whose repo Variable is unset is baked as `Some("")` by `option_env!`,
-/// and without this the config resolves with an empty hosted domain (a sign-in
-/// that opens `https:///oauth2/authorize`) instead of returning `None`.
+/// runtime, else the value baked in at build time. Blank values (empty or
+/// whitespace) are ignored on both sides. `release.yml` passes every Cognito
+/// variable, so one whose repo Variable is unset is baked as `Some("")`, and
+/// that has to read as absent: an empty hosted domain is a sign-in that opens
+/// `https:///oauth2/authorize`, and blank scopes request none.
 ///
-/// The override goes through [`crate::env::test_seam`], so a release build
-/// ignores it. The hosted domain names the token endpoint, which receives the
-/// auth code, the PKCE verifier and every refresh token, so a process able to
-/// set this one's environment could otherwise collect the refresh token without
-/// ever touching the keychain. The CLI tests and the e2e harness that rely on
-/// the override all run debug builds.
+/// A release build ignores the override. The hosted domain names the token
+/// endpoint, which receives the auth code, the PKCE verifier and every refresh
+/// token, so a process able to set this one's environment could otherwise
+/// collect the refresh token without touching the keychain. The CLI tests and
+/// the e2e harness that rely on the override all run debug builds.
 fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
-    crate::env::test_seam(name)
-        .and_then(|v| v.into_string().ok())
-        .filter(|s| !s.is_empty())
-        .or_else(|| baked.filter(|s| !s.is_empty()).map(str::to_string))
+    runtime_override(name).or_else(|| baked.filter(|s| !s.trim().is_empty()).map(str::to_string))
+}
+
+/// The process-env half of [`config_value`]: honoured in a debug build,
+/// ignored in a release one. The ignore is reported once per process rather
+/// than on every resolve, which the 30s refresh loop would otherwise turn into
+/// a line every tick, and it names what was ignored in words a person who
+/// followed the runbook's local-testing step would recognise.
+fn runtime_override(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok().filter(|s| !s.trim().is_empty())?;
+    if cfg!(debug_assertions) {
+        return Some(value);
+    }
+    static IGNORED: std::sync::Once = std::sync::Once::new();
+    IGNORED.call_once(|| {
+        eprintln!(
+            "[gate] ignoring GATE_COGNITO_* from the environment: release builds use the Cognito config baked in at build time"
+        )
+    });
+    None
 }
 
 impl OAuthConfig {
-    /// Resolve the OAuth client config for the gateway currently on disk. The
-    /// active gateway host (`account.json`) selects the production, staging or dev
-    /// Cognito pool; within the chosen pool each value comes from the process
-    /// env at runtime if set in a debug build (local overrides, and the CLI's
-    /// hermetic tests), otherwise the value baked in at build time via
-    /// `option_env!`.
-    /// Returns `None` when neither supplies the domain/client id, so callers
-    /// can fall back to the legacy API-key flow with a clear message instead
-    /// of panicking. All values are public client config (no secret), so a
-    /// runtime override is safe.
+    /// Resolve the OAuth client config for the gateway currently on disk
+    /// (`account.json`, no keychain touch). See [`OAuthConfig::for_gateway`].
     pub fn from_build_env() -> Option<Self> {
-        let (hosted_domain, client_id, scopes_raw) = if crate::account::gateway_is_staging() {
+        let base_url = crate::account::load_base_url().ok().flatten();
+        Self::for_gateway(base_url.as_deref())
+    }
+
+    /// Resolve the OAuth client config for a gateway base URL, which need not
+    /// be on disk yet: the CLI's `login --oauth` resolves the pool for the
+    /// gateway it is about to save, not the one it is replacing. The host
+    /// selects the production, staging or dev Cognito pool; a missing or
+    /// unparseable URL gets production. Within the chosen pool each value comes
+    /// from [`config_value`]. Returns `None` when the pool has no domain or
+    /// client id, so callers can fall back to the legacy API-key flow with a
+    /// clear message instead of panicking.
+    pub fn for_gateway(gateway_base_url: Option<&str>) -> Option<Self> {
+        let host = gateway_base_url
+            .and_then(|u| reqwest::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_owned));
+        let is = |h: &str| host.as_deref() == Some(h);
+        let (hosted_domain, client_id, scopes_raw) = if is(crate::account::STAGING_GATEWAY_HOST) {
             (
                 config_value(
                     "GATE_COGNITO_HOSTED_DOMAIN_STAGING",
@@ -146,7 +169,7 @@ impl OAuthConfig {
                     option_env!("GATE_COGNITO_SCOPES_STAGING"),
                 ),
             )
-        } else if crate::account::gateway_is_dev() {
+        } else if is(crate::account::DEV_GATEWAY_HOST) {
             (
                 config_value(
                     "GATE_COGNITO_HOSTED_DOMAIN_DEV",
@@ -1130,6 +1153,7 @@ mod tests {
     fn config_value_treats_a_blank_bake_as_absent() {
         let name = "GATE_COGNITO_TEST_UNSET_FOR_BLANK_BAKE";
         assert_eq!(config_value(name, Some("")), None);
+        assert_eq!(config_value(name, Some("  ")), None);
         assert_eq!(config_value(name, None), None);
         assert_eq!(
             config_value(name, Some("auth.example")).as_deref(),
