@@ -2780,7 +2780,10 @@ export function NewUiApp() {
   }
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
-    const gatewayPicker = !import.meta.env.DEV ? undefined : (
+    // Wherever the build lists a choice: dev builds and pre-releases, so a
+    // tester can sign in straight to staging or dev. A stable release lists
+    // production alone and gets no picker.
+    const gatewayPicker = GATEWAY_SERVERS.length < 2 ? undefined : (
       <GatewayPicker
         value={setup.gateway}
         servers={GATEWAY_SERVERS}
