@@ -4424,6 +4424,28 @@ fn session_dead_after_tick(
 /// lifetime.
 const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Put the engine on the account's API key, with no OAuth bearer: what an
+/// account that left OAuth needs (see `ProxyManager::use_api_key`).
+///
+/// Only with a key actually read from an API-key account. A read that failed
+/// (a locked keychain), an account with no key, or one back in OAuth by now
+/// would hand the engine an empty key and wipe the one it holds; those clear
+/// the bearer alone, as before. Read through `keychain::get_cached`, so a 30s
+/// tick costs no secret-store session.
+fn use_stored_api_key() {
+    let manager = gate_connect_core::proxy::manager();
+    gate_connect_core::account::load()
+        .ok()
+        .flatten()
+        .filter(|account| account.auth_mode == gate_connect_core::account::AuthMode::ApiKey)
+        .map(|account| account.api_key)
+        .filter(|key| !key.is_empty())
+        .map_or_else(
+            || manager.refresh_token(""),
+            |key| manager.use_api_key(&key),
+        );
+}
+
 /// Re-verify a session the gateway has just refused, and react to the verdict.
 ///
 /// Shared by the two triggers, which differ only in how the refusal reaches us:
@@ -4448,6 +4470,17 @@ fn recheck_gate_session(
     app: &tauri::AppHandle,
 ) -> gate_connect_core::routing_health::SessionHealth {
     use gate_connect_core::routing_health::SessionHealth;
+    // A 401 under a mode that is not OAuth means the engine is holding a
+    // bearer the account no longer stands behind (see the refresh loop for
+    // how that happens). Drop it now rather than on the loop's next tick, so
+    // the request the tool is about to retry goes out under the key. The
+    // session itself is not in question, as `probe_session_health` reads it.
+    if gate_connect_core::account::auth_mode().unwrap_or_default()
+        != gate_connect_core::account::AuthMode::OAuth
+    {
+        use_stored_api_key();
+        return SessionHealth::Valid;
+    }
     match gate_connect_core::startup::reverify_session() {
         // The session was alive and the local clock was simply wrong about it.
         // The forced refresh minted a token that works; push it into the
@@ -6348,6 +6381,21 @@ pub fn run() {
                         // Not an OAuth account (e.g. the user switched a dead
                         // session to a pasted key): clear any stale attention
                         // signal so the tray doesn't strand a red dot, then idle.
+                        //
+                        // And put the engine on the account's key, with no
+                        // bearer. The paste path does this for its own process,
+                        // but the mode can change under a running engine from
+                        // outside it - the CLI's `login --api-key` - and the
+                        // bearer it kept would then outrank the key until it
+                        // expired, and 401 on every request after. Clearing the
+                        // bearer alone is not enough: an engine started under
+                        // OAuth holds no key, and would then refuse every
+                        // request as signed out. A no-op when routing is off.
+                        // On Linux each call re-sends the intercept config to
+                        // the daemon, as the OAuth branch already does every
+                        // tick; the account and CA reads behind it are cached
+                        // (`keychain::get_cached`), so no secret-store session.
+                        use_stored_api_key();
                         if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
                             let running = gate_connect_core::proxy::manager()
                                 .status()
@@ -6380,18 +6428,31 @@ pub fn run() {
                     // `session_reading` silently refreshes a stale token
                     // (persisting it) and is `Live` only for a usable session;
                     // push its token into the running engine (a no-op when
-                    // routing is off). "" means no usable session: the engine
-                    // then refuses routed requests as signed out - an OAuth
-                    // account holds no key to fall back to - matching the
-                    // signed-out state the UI derives from oauth_status.
+                    // routing is off). `SignedOut` pushes "": the engine then
+                    // refuses routed requests as signed out - an OAuth account
+                    // holds no key to fall back to - matching the signed-out
+                    // state the UI derives from oauth_status.
+                    //
+                    // `Unavailable` pushes nothing. It says nothing about the
+                    // session, and "" would say it is dead: the engine would
+                    // refuse every request as signed out until a later tick
+                    // read `Live`, and a request would not wait for the
+                    // re-check either, since an empty bearer is the signed-out
+                    // case. The bearer it keeps may be expired by now; the
+                    // engine does not send one of those without first waiting
+                    // for the re-check's renewed token (`bearer_needs_recovery`),
+                    // which is what recovers a machine whose network comes
+                    // back between ticks.
                     let reading = gate_connect_core::oauth::session_reading();
-                    let token = match &reading {
+                    match &reading {
                         gate_connect_core::oauth::SessionReading::Live(t) => {
-                            t.access_token.clone()
+                            gate_connect_core::proxy::manager().refresh_token(&t.access_token)
                         }
-                        _ => String::new(),
-                    };
-                    gate_connect_core::proxy::manager().refresh_token(&token);
+                        gate_connect_core::oauth::SessionReading::SignedOut => {
+                            gate_connect_core::proxy::manager().refresh_token("")
+                        }
+                        gate_connect_core::oauth::SessionReading::Unavailable => {}
+                    }
 
                     // Raise (or clear) the tray attention signal on the
                     // signed-in↔dead edge. "Dead" means a stored session was
