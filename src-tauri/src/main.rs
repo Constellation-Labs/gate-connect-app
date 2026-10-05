@@ -31,5 +31,12 @@ fn main() {
         return;
     }
 
+    // Started by a packaged app (Claude from the Store, its Code tab's
+    // terminal): relaunch outside its package before anything is written.
+    #[cfg(target_os = "windows")]
+    if gate_connect_desktop_lib::leave_foreign_package() {
+        return;
+    }
+
     gate_connect_desktop_lib::run()
 }

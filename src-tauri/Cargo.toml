@@ -34,6 +34,18 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSResponder", "block2"] }
 block2 = "0.6"
 
+# Detects being started inside another app's MSIX package and relaunches
+# outside it (`leave_foreign_package` in src/lib.rs). The version the forwarder
+# and tokio already link, so this adds bindings, not a new crate.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_Packaging_Appx",
+  "Win32_System_Threading",
+  "Win32_System_WindowsProgramming",
+] }
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-opener = "2"

@@ -899,6 +899,176 @@ fn register_application_restart() {
     }
 }
 
+/// Whether this process runs inside an MSIX package. Gate is never packaged,
+/// so any package is someone else's: the parent's, inherited because a
+/// packaged app (Claude from the Store, Windows Terminal) started us.
+#[cfg(target_os = "windows")]
+fn in_foreign_package() -> bool {
+    use windows_sys::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
+    use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
+    let mut len = 0u32;
+    // SAFETY: a zero-length query; Windows writes only `len` and returns
+    // either "no package" or "buffer too small".
+    let status = unsafe { GetCurrentPackageFullName(&mut len, std::ptr::null_mut()) };
+    status != APPMODEL_ERROR_NO_PACKAGE
+}
+
+/// Get out of another app's package before touching anything, by starting
+/// this same executable again outside it. Returns whether that relaunch is
+/// running, in which case the caller exits.
+///
+/// Inside a package, Windows redirects our HKCU and `%LOCALAPPDATA%` writes
+/// into that package's private copy, and only that package's processes read
+/// them back. So a Gate launched from Claude's Code tab set the system proxy
+/// for Claude alone, and when it later put the proxy back, it left Claude's
+/// copy saying "no PAC" for good: every Gate after it wrote the real settings,
+/// which Claude no longer reads, and Chat and Cowork went direct while every
+/// other app routed. The login item and the Gate CA landed in the same copy.
+///
+/// The child is created with `PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE`,
+/// which lands it outside even though the packaged ancestor told its
+/// descendants to stay in (checked by hand from inside Claude's package). Not
+/// `..._BREAKAWAY_OVERRIDE`, which despite the name forces a child *in*. It gets
+/// our own arguments, so a `--silent` launch stays silent; not through
+/// `explorer.exe`, which would drop them.
+#[cfg(target_os = "windows")]
+pub fn leave_foreign_package() -> bool {
+    /// Set on the relaunch, so a child that is somehow still inside carries on
+    /// rather than relaunching forever.
+    const RELAUNCHED: &str = "GATE_CONNECT_LEFT_PACKAGE";
+    if !in_foreign_package() {
+        return false;
+    }
+    if std::env::var_os(RELAUNCHED).is_some() {
+        eprintln!("[gate] still inside another app's package after relaunching out of it; carrying on");
+        return false;
+    }
+    std::env::set_var(RELAUNCHED, "1");
+    // A dev build is a child of `tauri dev`, which stops the frontend the
+    // moment we exit, so a relaunch would come up blank. Refuse instead, and
+    // say why: carrying on would write into the package's copy again.
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "[gate] started inside another app's package (a terminal in Claude Desktop?). \
+             Windows would send Gate's proxy, CA and login-item writes to that app's \
+             private registry. Run it from a terminal outside the app."
+        );
+        std::process::exit(1);
+    }
+    match relaunch_outside_package() {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("[gate] leaving another app's package failed, carrying on inside it: {e:#}");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn relaunch_outside_package() -> anyhow::Result<()> {
+    use anyhow::Context;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+        UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY, STARTUPINFOEXW,
+    };
+    use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
+
+    let exe = std::env::current_exe().context("locating our executable")?;
+    let mut command_line = quote_windows_arg(&exe.to_string_lossy());
+    for arg in std::env::args().skip(1) {
+        command_line.push(' ');
+        command_line.push_str(&quote_windows_arg(&arg));
+    }
+    let mut command_line: Vec<u16> = command_line.encode_utf16().chain([0]).collect();
+    let application: Vec<u16> = exe.as_os_str().encode_wide().chain([0]).collect();
+
+    // SAFETY: the attribute list is sized by the first call and lives in
+    // `list` for every call that uses it; the policy value it points at lives
+    // in `policy` until CreateProcessW returns; the strings are NUL-terminated
+    // UTF-16 owned above. The handles CreateProcessW returns are closed here.
+    unsafe {
+        let mut size = 0usize;
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
+        let mut list = vec![0u8; size];
+        let attrs = list.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+        if InitializeProcThreadAttributeList(attrs, 1, 0, &mut size) == 0 {
+            anyhow::bail!("InitializeProcThreadAttributeList: {}", std::io::Error::last_os_error());
+        }
+        let policy: u32 = PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
+        let updated = UpdateProcThreadAttribute(
+            attrs,
+            0,
+            PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY as usize,
+            &policy as *const u32 as *const _,
+            std::mem::size_of::<u32>(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
+        if updated == 0 {
+            let e = std::io::Error::last_os_error();
+            DeleteProcThreadAttributeList(attrs);
+            anyhow::bail!("UpdateProcThreadAttribute: {e}");
+        }
+        let mut startup: STARTUPINFOEXW = std::mem::zeroed();
+        startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        startup.lpAttributeList = attrs;
+        let mut process: PROCESS_INFORMATION = std::mem::zeroed();
+        let created = CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            EXTENDED_STARTUPINFO_PRESENT,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup.StartupInfo,
+            &mut process,
+        );
+        let e = std::io::Error::last_os_error();
+        DeleteProcThreadAttributeList(attrs);
+        if created == 0 {
+            anyhow::bail!("CreateProcessW: {e}");
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    Ok(())
+}
+
+/// One argument quoted for a Windows command line, by the rules
+/// `CommandLineToArgvW` and the MSVC runtime parse it back with: quotes only
+/// when needed, backslashes doubled only where they precede a quote.
+#[cfg(any(target_os = "windows", test))]
+fn quote_windows_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\u{b}', '"']) {
+        return arg.to_string();
+    }
+    let mut out = String::from('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+    out
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
@@ -4394,6 +4564,23 @@ fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The relaunch out of a foreign package rebuilds our command line, so
+    /// every argument has to come back as itself.
+    #[test]
+    fn quote_windows_arg_round_trips_through_the_msvc_rules() {
+        assert_eq!(quote_windows_arg("--silent"), "--silent");
+        assert_eq!(quote_windows_arg(""), "\"\"");
+        assert_eq!(
+            quote_windows_arg(r"C:\Users\New\AppData\Local\Gate Connect\gate-connect-desktop.exe"),
+            r#""C:\Users\New\AppData\Local\Gate Connect\gate-connect-desktop.exe""#
+        );
+        // Backslashes double only before a quote, including the closing one.
+        assert_eq!(quote_windows_arg(r"a dir\"), r#""a dir\\""#);
+        assert_eq!(quote_windows_arg(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(quote_windows_arg(r#"a\"b"#), r#""a\\\"b""#);
+        assert_eq!(quote_windows_arg(r"no\space"), r"no\space");
+    }
 
     /// An offline tick is no verdict: it keeps the flag where it was, so a
     /// machine that wakes without a network is not told its session expired,
