@@ -99,8 +99,12 @@ pub struct OAuthConfig {
 }
 
 /// One build-time OAuth config value: in a debug build the process env wins at
-/// runtime, else the value baked in at build time. Empty env values are ignored
-/// so an exported-but-blank var doesn't blank out a baked default.
+/// runtime, else the value baked in at build time. Empty values are ignored on
+/// both sides: an exported-but-blank var doesn't blank out a baked default, and
+/// a blank bake reads as absent. `release.yml` passes every Cognito variable,
+/// so one whose repo Variable is unset is baked as `Some("")` by `option_env!`,
+/// and without this the config resolves with an empty hosted domain (a sign-in
+/// that opens `https:///oauth2/authorize`) instead of returning `None`.
 ///
 /// The override goes through [`crate::env::test_seam`], so a release build
 /// ignores it. The hosted domain names the token endpoint, which receives the
@@ -112,7 +116,7 @@ fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
     crate::env::test_seam(name)
         .and_then(|v| v.into_string().ok())
         .filter(|s| !s.is_empty())
-        .or_else(|| baked.map(str::to_string))
+        .or_else(|| baked.filter(|s| !s.is_empty()).map(str::to_string))
 }
 
 impl OAuthConfig {
@@ -1118,6 +1122,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Cognito variable whose repo Variable is unset is baked as `Some("")`,
+    /// and has to read as absent so `from_build_env` returns `None` (the
+    /// API-key fallback) rather than a config with an empty hosted domain.
+    #[test]
+    fn config_value_treats_a_blank_bake_as_absent() {
+        let name = "GATE_COGNITO_TEST_UNSET_FOR_BLANK_BAKE";
+        assert_eq!(config_value(name, Some("")), None);
+        assert_eq!(config_value(name, None), None);
+        assert_eq!(
+            config_value(name, Some("auth.example")).as_deref(),
+            Some("auth.example")
+        );
+    }
 
     /// One interactive login at a time, which is what the product has and what
     /// `cancel_login` means by "the current attempt".
