@@ -62,8 +62,9 @@ export interface ToolMessages {
 }
 
 export interface ToolMessagesView {
-  /** Tool slug -> its figure. A tool with no reading is absent. */
-  byTool: Map<string, ToolMessages>;
+  /** Scope key -> its figure: a tool's slug, or a section's `clientScopeKey`.
+   *  A key with no reading is absent. */
+  byKey: Map<string, ToolMessages>;
   /** Slugs with a read in flight and nothing held yet, so a row can hold a place
    *  rather than draw a zero it has not measured. */
   pending: Set<string>;
@@ -121,7 +122,7 @@ export function useToolMessages(
    *  through `clientScopeKey` - the key the backend holds that reading under, so
    *  a section row and the window's pane share one. Compared by contents rather
    *  than identity, so a caller need not memoise it. */
-  slugs: string[],
+  keys: string[],
   /** This machine, as the gateway named it. `null` means org-wide, which is a
    *  different question - see `machineKnown` in `NewUiApp` - so the caller must
    *  gate `enabled` on having one rather than passing null and getting the whole
@@ -131,13 +132,13 @@ export function useToolMessages(
    *  `useActivity`'s. */
   credential = "",
 ): ToolMessagesView {
-  const [byTool, setByTool] = useState<Map<string, ToolMessages>>(new Map());
+  const [byKey, setByKey] = useState<Map<string, ToolMessages>>(new Map());
   const [pending, setPending] = useState<Set<string>>(new Set());
   /** The org these readings belong to, so the popover's footer can name it.
    *  Comes off the same disk read the rows do, so it costs no extra call. */
   const [orgName, setOrgName] = useState<string | null>(null);
   /**
-   * When each slug was last *asked for*, for the staleness decision.
+   * When each key was last *asked for*, for the staleness decision.
    *
    * Our own ask time, not the body's `generatedAt`: that is the gateway's compute
    * time and sits behind our read by however long the request took, so deciding
@@ -158,8 +159,10 @@ export function useToolMessages(
    * de-duplicates passes but never invalidates one.
    */
   const attempt = useRef(0);
-  /** The slug list by value, for invalidating `refresh` on its contents. */
-  const wanted = slugs.join(",");
+  /** The key list by value, for invalidating `refresh` on its contents. Joined
+   *  on `|`, because a section's key already contains commas, and a name can
+   *  hold neither. */
+  const wanted = keys.join("|");
 
   // A reading belongs to the account and the machine it was taken for. Same rule
   // as everywhere else here: figures must never survive a switch and be
@@ -167,13 +170,13 @@ export function useToolMessages(
   // alone is undone by whatever is still in flight.
   useEffect(() => {
     attempt.current += 1;
-    setByTool(new Map());
+    setByKey(new Map());
     setPending(new Set());
     readAt.current = new Map();
   }, [credential, installId]);
 
   const refresh = useCallback(() => {
-    if (!enabled || installId === null || slugs.length === 0) return;
+    if (!enabled || installId === null || keys.length === 0) return;
     // Supersede rather than refuse. An earlier pass dropping the replacement was
     // its own bug: a scope change bounces `installId` through null, and the new
     // scope's read arrived while the old pass was still draining, got refused,
@@ -191,9 +194,9 @@ export function useToolMessages(
       if (!current()) return;
       const fromDisk = new Map<string, ToolMessages>();
       let heldOrg: string | null = null;
-      for (const [slug, text] of Object.entries(held)) {
+      for (const [key, text] of Object.entries(held)) {
         const one = figure(text);
-        if (one) fromDisk.set(slug, one);
+        if (one) fromDisk.set(key, one);
         // Any body will do: the cache is scoped to one org at a time, which is
         // the property `activity_cache.rs` maintains, so every reading under
         // this scope names the same one.
@@ -201,33 +204,33 @@ export function useToolMessages(
       }
       if (heldOrg) setOrgName(heldOrg);
       if (fromDisk.size > 0) {
-        setByTool((prev) => new Map([...prev, ...fromDisk]));
+        setByKey((prev) => new Map([...prev, ...fromDisk]));
         // Seeded from the reading's own age, which is the only clock a body off
         // disk has. It runs behind our real ask time by the length of that
         // request, so this errs towards re-asking - the safe direction - while
         // still sparing a launch-and-peek the full N calls for readings that are
         // seconds old.
-        for (const [slug, one] of fromDisk) {
-          if (!readAt.current.has(slug)) readAt.current.set(slug, one.measuredAtMs);
+        for (const [key, one] of fromDisk) {
+          if (!readAt.current.has(key)) readAt.current.set(key, one.measuredAtMs);
         }
       }
 
       const now = Date.now();
-      const stale = slugs.filter((s) => now - (readAt.current.get(s) ?? 0) > STALE_MS);
+      const stale = keys.filter((s) => now - (readAt.current.get(s) ?? 0) > STALE_MS);
       if (stale.length === 0) return;
       setPending(new Set(stale.filter((s) => !fromDisk.has(s))));
       // Sequential, not `Promise.all`. A popover open must not be a burst of N
       // concurrent requests at a shared budget, and nobody is waiting on the
       // last row's figure to read the first one's.
-      for (const slug of stale) {
-        const text = await activityOverview(installId, slug.split(",")).catch(() => null);
+      for (const key of stale) {
+        const text = await activityOverview(installId, key.split(",")).catch(() => null);
         if (!current()) return;
         // Recorded even for a failure: a gateway that just refused is not worth
         // asking again on the next look a second later.
-        readAt.current.set(slug, Date.now());
+        readAt.current.set(key, Date.now());
         const one = text === null ? null : figure(text);
-        setByTool((prev) => {
-          if (one) return new Map(prev).set(slug, one);
+        setByKey((prev) => {
+          if (one) return new Map(prev).set(key, one);
           // A read that failed drops whatever was held. The held figure was true
           // of an account this credential may no longer be able to read at all -
           // a sign-out leaves `account.json` in place, so the hook stays enabled
@@ -235,25 +238,24 @@ export function useToolMessages(
           // the one thing this must never draw. `useActivity` keeps its held
           // reading through a failure because its own header prints the age
           // beside it; a rail row has no such room.
-          if (!prev.has(slug)) return prev;
+          if (!prev.has(key)) return prev;
           const next = new Map(prev);
-          next.delete(slug);
+          next.delete(key);
           return next;
         });
         setPending((prev) => {
-          if (!prev.has(slug)) return prev;
+          if (!prev.has(key)) return prev;
           const next = new Set(prev);
-          next.delete(slug);
+          next.delete(key);
           return next;
         });
       }
     })();
-    // `wanted` rather than `slugs`: the array's *contents* are what should
+    // `wanted` rather than `keys`: the array's *contents* are what should
     // invalidate this callback, and a caller that built a fresh array each render
     // would otherwise re-create it every render, re-run the effect below, and
-    // loop. The body reads `slugs` directly - the earlier version round-tripped
-    // it through the string, which bought a shadowed variable and a silent break
-    // on any slug containing a comma.
+    // loop. The body reads `keys` directly rather than splitting `wanted` back
+    // apart, so the join separator only has to tell lists apart.
   }, [enabled, installId, wanted, credential]);
 
   // On mount, on scope change, and on every fresh look. The `refresh` identity
@@ -271,5 +273,5 @@ export function useToolMessages(
     };
   }, [refresh]);
 
-  return { byTool, pending, orgName, refresh };
+  return { byKey, pending, orgName, refresh };
 }

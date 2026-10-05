@@ -42,14 +42,14 @@ function body(messages: number | null, generatedAt = "2026-09-04T09:00:00.000Z")
 }
 
 function harness(
-  props: { slugs?: string[]; installId?: string | null; credential?: string } = {},
+  props: { keys?: string[]; installId?: string | null; credential?: string } = {},
 ) {
   const seen: ReturnType<typeof useToolMessages>[] = [];
-  function Probe({ slugs, installId, credential }: typeof props) {
+  function Probe({ keys, installId, credential }: typeof props) {
     seen.push(
       useToolMessages(
         true,
-        slugs ?? ["claude-code", "codex"],
+        keys ?? ["claude-code", "codex"],
         installId === undefined ? "install-7" : installId,
         credential ?? "cred-a",
       ),
@@ -108,7 +108,7 @@ describe("useToolMessages org name", () => {
     const h = harness();
     await flush();
 
-    // `byTool` is not asserted here: the stale sweep fetches afterwards and
+    // `byKey` is not asserted here: the stale sweep fetches afterwards and
     // fills it. What matters is that the name survived a body `figure()` drops.
     expect(h.last().orgName).toBe("Constellation Labs");
   });
@@ -131,8 +131,8 @@ describe("useToolMessages", () => {
     const h = harness();
     await flush();
 
-    expect(h.last().byTool.get("claude-code")?.messages).toBe(1032);
-    expect(h.last().byTool.get("codex")?.messages).toBe(7);
+    expect(h.last().byKey.get("claude-code")?.messages).toBe(1032);
+    expect(h.last().byKey.get("codex")?.messages).toBe(7);
     // One file read for both rows, not one per row: the file holds them all.
     expect(disk).toHaveBeenCalledTimes(1);
   });
@@ -180,7 +180,7 @@ describe("useToolMessages", () => {
       inFlight -= 1;
       return body(3);
     });
-    harness({ slugs: ["claude-code", "codex", "opencode"] });
+    harness({ keys: ["claude-code", "codex", "opencode"] });
     await flush();
 
     // A look must not be a burst of N concurrent requests at a shared budget.
@@ -189,7 +189,7 @@ describe("useToolMessages", () => {
 
   it("reads a section's scope key as its set of names, and files it under the key", async () => {
     net.mockResolvedValue(body(9));
-    const h = harness({ slugs: ["claude-code,claude-desktop,claude-web", "opencode"] });
+    const h = harness({ keys: ["claude-code,claude-desktop,claude-web", "opencode"] });
     await flush();
 
     expect(net).toHaveBeenCalledWith("install-7", [
@@ -198,25 +198,25 @@ describe("useToolMessages", () => {
       "claude-web",
     ]);
     expect(net).toHaveBeenCalledWith("install-7", ["opencode"]);
-    expect(h.last().byTool.get("claude-code,claude-desktop,claude-web")?.messages).toBe(9);
+    expect(h.last().byKey.get("claude-code,claude-desktop,claude-web")?.messages).toBe(9);
   });
 
   it("has no figure for a declined section, rather than a zero", async () => {
     net.mockResolvedValue(body(null));
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
 
     // `0` here would be a claim about this person's traffic that the gateway
     // explicitly refused to make.
-    expect(h.last().byTool.has("claude-code")).toBe(false);
+    expect(h.last().byKey.has("claude-code")).toBe(false);
   });
 
   it("has no figure when the read fails", async () => {
     net.mockRejectedValue("gateway unreachable");
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
 
-    expect(h.last().byTool.has("claude-code")).toBe(false);
+    expect(h.last().byKey.has("claude-code")).toBe(false);
     expect(h.last().pending.has("claude-code")).toBe(false);
   });
 
@@ -235,7 +235,7 @@ describe("useToolMessages", () => {
     net.mockImplementation(() => new Promise<string>(() => {}));
     const h = harness();
     await flush();
-    expect(h.last().byTool.get("claude-code")?.messages).toBe(1032);
+    expect(h.last().byKey.get("claude-code")?.messages).toBe(1032);
 
     // One org's traffic must never sit on screen under another org's name - the
     // rule every reading in this app follows.
@@ -244,7 +244,7 @@ describe("useToolMessages", () => {
     h.rerender({ credential: "cred-b" });
     await flush();
 
-    expect(h.last().byTool.has("claude-code")).toBe(false);
+    expect(h.last().byKey.has("claude-code")).toBe(false);
     // And the new scope is actually read. An earlier version of this test passed
     // without this line while `credential` was missing from `refresh`'s deps: the
     // figures were cleared and then nothing re-read them, so the rows sat blank
@@ -263,17 +263,17 @@ describe("useToolMessages", () => {
     // against the bug.
     const releases: ((v: string) => void)[] = [];
     net.mockImplementation(() => new Promise<string>((r) => releases.push(r)));
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
     expect(releases).toHaveLength(1);
 
-    h.rerender({ slugs: ["claude-code"], credential: "cred-b" });
+    h.rerender({ keys: ["claude-code"], credential: "cred-b" });
     await flush();
     // The old scope's answer, arriving late.
     releases[0](body(999));
     await flush();
 
-    expect(h.last().byTool.has("claude-code")).toBe(false);
+    expect(h.last().byKey.has("claude-code")).toBe(false);
 
     // And it did not suppress the new scope's own read either: that request is
     // live, and its answer is the one that lands. Before the guard, the late
@@ -281,7 +281,7 @@ describe("useToolMessages", () => {
     expect(releases.length).toBeGreaterThan(1);
     releases[releases.length - 1](body(4));
     await flush();
-    expect(h.last().byTool.get("claude-code")?.messages).toBe(4);
+    expect(h.last().byKey.get("claude-code")?.messages).toBe(4);
   });
 
   it("drops a held figure when the read stops working", async () => {
@@ -293,9 +293,9 @@ describe("useToolMessages", () => {
     // mount's own fetch replaces it and the test proves nothing about holding.
     const justNow = new Date(Date.now() - 1_000).toISOString();
     disk.mockResolvedValue({ "claude-code": body(1032, justNow) });
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
-    expect(h.last().byTool.get("claude-code")?.messages).toBe(1032);
+    expect(h.last().byKey.get("claude-code")?.messages).toBe(1032);
 
     net.mockRejectedValue("401 invalid_key");
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + STALE_MS + 1);
@@ -304,12 +304,12 @@ describe("useToolMessages", () => {
     });
     await flush();
 
-    expect(h.last().byTool.has("claude-code")).toBe(false);
+    expect(h.last().byKey.has("claude-code")).toBe(false);
   });
 
   it("holds a place for a row it has no figure for yet", async () => {
     net.mockImplementation(() => new Promise<string>(() => {}));
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
 
     // Not a zero and not `N/A`: neither is true while we are still asking.
@@ -322,10 +322,10 @@ describe("useToolMessages", () => {
     // that landed seconds ago.
     const justNow = new Date(Date.now() - 1_000).toISOString();
     disk.mockResolvedValue({ "claude-code": body(50, justNow) });
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
 
-    expect(h.last().byTool.get("claude-code")?.messages).toBe(50);
+    expect(h.last().byKey.get("claude-code")?.messages).toBe(50);
     expect(net).not.toHaveBeenCalled();
   });
 
@@ -333,13 +333,13 @@ describe("useToolMessages", () => {
     const anHourAgo = new Date(Date.UTC(2026, 8, 4, 9, 0, 0)).toISOString();
     disk.mockResolvedValue({ "claude-code": body(12, anHourAgo) });
     net.mockImplementation(() => new Promise<string>(() => {}));
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
 
     // The body's `generatedAt`, to the millisecond - not `Date.now()`. A
     // `toBeTruthy()` here would pass the exact regression this forbids, which is
     // what the first version of this test did.
-    expect(h.last().byTool.get("claude-code")?.measuredAtMs).toBe(Date.parse(anHourAgo));
+    expect(h.last().byKey.get("claude-code")?.measuredAtMs).toBe(Date.parse(anHourAgo));
   });
 
   it("has no figure for a body whose age is not a date", async () => {
@@ -347,9 +347,9 @@ describe("useToolMessages", () => {
     // age, and "measured Invalid Date" in a tooltip is worse than nothing.
     disk.mockResolvedValue({ "claude-code": body(12, "not-a-date") });
     net.mockImplementation(() => new Promise<string>(() => {}));
-    const h = harness({ slugs: ["claude-code"] });
+    const h = harness({ keys: ["claude-code"] });
     await flush();
 
-    expect(h.last().byTool.has("claude-code")).toBe(false);
+    expect(h.last().byKey.has("claude-code")).toBe(false);
   });
 });

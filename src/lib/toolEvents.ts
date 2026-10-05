@@ -408,6 +408,12 @@ export function useToolEvents(
   // answer from the page it held before, and a read still in flight from
   // before the switch is superseded here, since a disabled `fetchPage` never
   // bumps the generation itself.
+  //
+  // Unlike `useActivity`, which keeps its reading through a disable. The rows
+  // here feed the Gate model warning, which is built from the newest few: a
+  // page read before the tool left Gate models and came back is not evidence
+  // about the choice in force now. Every way the section feed itself is
+  // disabled also changes its scope or credential, which cleared it already.
   useEffect(() => {
     attempt.current += 1;
     setView(null);

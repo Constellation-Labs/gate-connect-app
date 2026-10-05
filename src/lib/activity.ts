@@ -383,9 +383,10 @@ export function clockTime(taken: Date, now = new Date()): string {
  * `tools` scopes it to a section's senders the same way, for the app pane
  * (AG-574). One hook rather than two: the generation guard, the
  * cache-versus-network race and the clear-on-scope-change effect all apply
- * identically to a scoped read, and a second copy of that race guard is the thing most likely to drift. Both call
- * sites keep their own state - hooks do not share any - so the Overview and an
- * app pane can be mounted at once without either seeing the other's reading.
+ * identically to a scoped read, and a second copy of that race guard is the
+ * thing most likely to drift. Both call sites keep their own state - hooks do not
+ * share any - so the Overview and an app pane can be mounted at once without
+ * either seeing the other's reading.
  *
  * `credential` identifies whose reading this is - the gateway, the org and the
  * credential type. It is not sent anywhere; changing it clears the view and
@@ -536,6 +537,11 @@ export function useActivity(
   // scope - but supersedes a read still in flight: a disabled `reload` returns
   // before bumping the generation, so a reply could otherwise land after the
   // hook was switched off.
+  //
+  // The opposite of `useToolEvents`, which clears on disable, and for a reason:
+  // these are counters whose own label says when they were taken, so the last
+  // reading is still true of its moment. A feed's rows feed a decision - the
+  // Gate model warning - that must not be made from rows read before a switch.
   useEffect(() => {
     if (enabled) return;
     attempt.current += 1;

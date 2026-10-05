@@ -5516,17 +5516,19 @@ mod tests {
             );
             header_tool(&h)
         };
-        for id in [
-            ToolId::ClaudeCode,
-            ToolId::Codex,
-            ToolId::OpenCode,
-            ToolId::OpenClaw,
-            ToolId::Hermes,
-        ] {
+        // Every registered tool, so a new one is covered without editing this.
+        for id in crate::registry::registry().iter().map(|i| i.id()) {
+            if id == ToolId::EnvProxy {
+                assert_eq!(
+                    named(id.slug()),
+                    None,
+                    "the environment channel is not a tool"
+                );
+                continue;
+            }
             assert_eq!(named(id.slug()), Some(id.slug()));
             assert_eq!(stamped_client(id.slug()), Some(id.slug()));
         }
-        assert_eq!(named(ToolId::EnvProxy.slug()), None);
         assert_eq!(named("nope"), None);
     }
 

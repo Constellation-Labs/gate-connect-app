@@ -1550,17 +1550,15 @@ mod tests {
             let path = format!("/__gate/t/{}/anthropic/v1/messages", id.slug());
             resolved(&path).expect("routes").tool
         };
-        for id in [
-            ToolId::ClaudeCode,
-            ToolId::Codex,
-            ToolId::OpenCode,
-            ToolId::OpenClaw,
-            ToolId::Hermes,
-        ] {
+        // Every registered tool, so a new one is covered without editing this.
+        for id in crate::registry::registry().iter().map(|i| i.id()) {
+            if id == ToolId::EnvProxy {
+                assert_eq!(marked(id), None, "the environment channel is not a tool");
+                continue;
+            }
             assert_eq!(marked(id), Some(id.slug()), "the marker names {id}");
             assert_eq!(crate::proxy::stamped_client(id.slug()), Some(id.slug()));
         }
-        assert_eq!(marked(ToolId::EnvProxy), None);
     }
 
     /// The forwarder serves relay requests itself once the engine is gone, from

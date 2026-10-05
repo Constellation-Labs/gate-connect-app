@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { defaultState } from "../e2e/backend";
 import { installFakeTauri } from "../e2e/install";
 import { NewUiApp } from "./NewUiApp";
@@ -37,14 +37,22 @@ function page(status: "success" | "error") {
  * Answer the feed by scope: the fake backend has no handler for it. The call is
  * still passed through so it is recorded.
  */
+/** Feed reads answered so far, keyed by the scope asked for. */
+const answered = new Map<string, number>();
+
 function answerFeed(answer: (tools: string[]) => string) {
+  answered.clear();
   const internals = (window as any).__TAURI_INTERNALS__;
   const original = internals.invoke;
   internals.invoke = (cmd: string, args: Record<string, unknown> = {}) => {
     const recorded = original(cmd, args);
     if (cmd !== "activity_tool_events") return recorded;
     recorded.catch(() => {});
-    return Promise.resolve(answer(args.tools as string[]));
+    const tools = args.tools as string[];
+    const key = tools.join(",");
+    return Promise.resolve(answer(tools)).finally(() =>
+      answered.set(key, (answered.get(key) ?? 0) + 1),
+    );
   };
 }
 
@@ -158,12 +166,14 @@ describe("an app pane reads its whole section", () => {
     );
     await openClaude();
 
-    await waitFor(() =>
-      expect(callsTo("activity_tool_events")).toContainEqual(
-        expect.objectContaining({ tools: ["claude-code"] }),
-      ),
-    );
-    await new Promise((r) => setTimeout(r, 50));
+    // Both reads answered, and React has drawn what they said.
+    await waitFor(() => {
+      expect(answered.get("claude-code")).toBeGreaterThan(0);
+      expect(answered.get(CLAUDE.join(","))).toBeGreaterThan(0);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(screen.queryByText(/The last few requests from this app have failed/)).toBeNull();
   });
 
@@ -194,11 +204,16 @@ describe("an app pane reads its whole section", () => {
       expect.objectContaining({ tools: CLAUDE }),
     );
 
-    // Another section's sender does not.
+    // Another section's sender does not. The listener handles reports in
+    // order, so a Claude report after it is the sync point: exactly one new
+    // read means the Codex one asked for nothing.
     const settled = callsTo("activity_tool_events").length;
     window.__GATE_E2E__.emit("traffic-observed", ["codex"]);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(callsTo("activity_tool_events").length).toBe(settled);
+    window.__GATE_E2E__.emit("traffic-observed", ["claude-desktop"]);
+    await waitFor(() =>
+      expect(callsTo("activity_tool_events").length).toBeGreaterThan(settled),
+    );
+    expect(callsTo("activity_tool_events").length).toBe(settled + 1);
   });
 });
 
@@ -226,5 +241,82 @@ describe("the tray's section rows read what the panes read", () => {
     expect(trayReads).toContainEqual(["opencode"]);
     expect(trayReads).not.toContainEqual(["claude-code"]);
     expect(trayReads).not.toContainEqual(["codex"]);
+  });
+});
+
+describe("the tray's section row draws the section's figures", () => {
+  /** An overview body whose message counter is `messages`. */
+  function overview(messages: number) {
+    return JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      window: { from: "2026-09-30T00:00:00.000Z", to: "2026-10-01T00:00:00.000Z" },
+      org: { orgId: "org-1", name: "Constellation Labs" },
+      counters: {
+        blockedOrFlagged: { state: "ok", value: 0 },
+        needsReview: { state: "ok", value: 0 },
+        requestsRouted: { state: "ok", value: messages },
+        tokensSaved: { state: "ok", fraction: 0, amount: 0, currency: "USD" },
+      },
+      requestsByHour: { state: "ok", buckets: [] },
+      policies: { state: "ok", rows: [] },
+      tokenSavings: { state: "ok", rows: [] },
+    });
+  }
+  const alert = (id: string, tool: string | null) => ({
+    id,
+    requestId: `req-${id}`,
+    at: "2026-09-30T23:00:00Z",
+    action: "block" as const,
+    category: "credential",
+    tool,
+    model: "claude-opus-4",
+    provider: "anthropic",
+  });
+
+  it("counts the whole section's messages and alerts on the Claude row", async () => {
+    const state = defaultState();
+    state.windowLabel = "tray";
+    state.installations = {
+      installations: [
+        { installId: "m-1", label: "m-1", current: true, lastSeenAt: "", requests: 1 },
+      ],
+      current: "m-1",
+    };
+    state.securityFeed = {
+      state: "live",
+      events: [
+        alert("1", "claude-code"),
+        alert("2", "claude-web"),
+        alert("3", "claude-desktop"),
+        alert("4", "codex"),
+        alert("5", null),
+      ],
+    };
+    installFakeTauri(state);
+    // The section's set reads 7; the CLI alone would read 1. Every other row
+    // answers 0 so nothing else is waiting on a read.
+    const internals = (window as any).__TAURI_INTERNALS__;
+    const original = internals.invoke;
+    internals.invoke = (cmd: string, args: Record<string, unknown> = {}) => {
+      const recorded = original(cmd, args);
+      if (cmd === "activity_cached_tool_overviews") {
+        recorded.catch(() => {});
+        return Promise.resolve({});
+      }
+      if (cmd !== "activity_overview") return recorded;
+      recorded.catch(() => {});
+      const tools = (args.tools as string[] | undefined) ?? [];
+      const key = tools.join(",");
+      return Promise.resolve(
+        overview(key === CLAUDE.join(",") ? 7 : key === "claude-code" ? 1 : 0),
+      );
+    };
+    render(<TrayApp />);
+
+    const row = (await screen.findByRole("switch", { name: "Claude" })).closest("li")!;
+    await waitFor(() => expect(row.textContent).toContain("7 messages"));
+    // Claude Code, claude.ai and the desktop app; not Codex's, not the
+    // unattributed one.
+    expect(row.textContent).toContain("3 alerts");
   });
 });

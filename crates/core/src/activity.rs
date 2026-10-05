@@ -94,8 +94,13 @@ fn installations_endpoint(gateway_base_url: &str) -> String {
 pub fn overview_json(install_id: Option<&str>, clients: &[&str]) -> Result<String, Failure> {
     let install_id = install_id.filter(|s| !s.is_empty());
     let query = scoped_query(install_id, clients, None);
+    // The account before the request, so the reply is held under the account it
+    // was asked for or not at all - see `activity_cache::store_for`.
+    let taken = crate::activity_cache::scope_now();
     let body = get_json(Endpoint::Activity, &query)?;
-    crate::activity_cache::store(install_id, clients, &body);
+    if let Some(taken) = taken {
+        crate::activity_cache::store_for(&taken, install_id, clients, &body);
+    }
     Ok(body)
 }
 
@@ -183,9 +188,18 @@ pub fn feed_clients(names: &[String]) -> Result<Vec<&'static str>, String> {
     }
     names
         .iter()
-        .map(|n| crate::proxy::stamped_client(n).ok_or_else(|| format!("unknown client {n:?}")))
+        .map(|n| crate::proxy::stamped_client(n).ok_or_else(|| unknown_client(n)))
         .collect::<Result<_, _>>()
         .map(dedup)
+}
+
+/// The refusal for a name outside the set. The name is echoed so a mismatch
+/// between the two sides can be read off the error, but only its start: the
+/// list comes from the webview, and an error need not carry it back whole.
+fn unknown_client(name: &str) -> String {
+    let shown: String = name.chars().take(40).collect();
+    let more = if shown.len() < name.len() { "..." } else { "" };
+    format!("unknown client {shown:?}{more}")
 }
 
 /// Once each, in first-seen order. The set is closed, so this also bounds the
@@ -209,7 +223,7 @@ pub fn overview_clients(names: &[String]) -> Result<Vec<&'static str>, String> {
         .map(|n| {
             crate::proxy::stamped_client(n)
                 .or_else(|| ToolId::from_slug(n).map(ToolId::slug))
-                .ok_or_else(|| format!("unknown client {n:?}"))
+                .ok_or_else(|| unknown_client(n))
         })
         .collect::<Result<_, _>>()
         .map(dedup)
@@ -280,6 +294,13 @@ mod tests {
         // A row, not a sender; and the environment channel, which nothing stamps.
         assert!(feed_clients(&names(&["any-app"])).is_err());
         assert!(feed_clients(&names(&["env-proxy"])).is_err());
+        // A refusal names the start of what it refused, not all of it.
+        let long = "x".repeat(500);
+        let refused = feed_clients(&[long.clone()]).unwrap_err();
+        assert!(
+            refused.contains(&long[..40]) && refused.len() < 80,
+            "{refused}"
+        );
         // Repeats go out once: twenty-one of them would otherwise be refused
         // by the gateway outright.
         assert_eq!(feed_clients(&names(&["codex"; 25])), Ok(vec!["codex"]));

@@ -77,15 +77,32 @@ const detectionSignature = (reading: unknown): string => JSON.stringify(reading)
  * nothing measured.
  */
 function messageFigure(
-  byTool: ToolMessagesView["byTool"],
+  byKey: ToolMessagesView["byKey"],
   pending: ToolMessagesView["pending"],
-  slug: string,
+  key: string,
 ): SidebarApp["messages"] {
-  const held = byTool.get(slug);
+  const held = byKey.get(key);
   if (held) {
     return { kind: "count", count: held.messages, measuredAt: held.measuredAt };
   }
-  return pending.has(slug) ? { kind: "pending" } : undefined;
+  return pending.has(key) ? { kind: "pending" } : undefined;
+}
+
+/**
+ * The alert figure for a row filed under `names`: every event the feed counted
+ * under any of them. One name for a tool row, a section's `SECTION_CLIENTS` for
+ * its row. Null counts are "no reading", which draws nothing unless the feed is
+ * still answering.
+ */
+function alertFigure(
+  counts: Map<string, number> | null,
+  pending: boolean,
+  names: readonly string[],
+): SidebarApp["alerts"] {
+  if (counts) {
+    return { kind: "count", count: names.reduce((n, c) => n + (counts.get(c) ?? 0), 0) };
+  }
+  return pending ? { kind: "pending" } : undefined;
 }
 
 /**
@@ -606,7 +623,7 @@ export function TrayApp() {
    * exists to avoid. Every other installed tool reads its own slug. A section
    * with no sender to name (the OpenAI API) has nothing to read.
    */
-  const messageSlugs = useMemo(() => {
+  const messageKeys = useMemo(() => {
     const drawn = groups.filter((g) => SECTION_CLIENTS[g.id]);
     const covered = new Set(drawn.flatMap((g) => sectionMemberKeys(g.id)));
     return [
@@ -621,12 +638,12 @@ export function TrayApp() {
   // recompute on every render. `alertCounts` above depends on `securityFeed`'s
   // fields for exactly this reason.
   const {
-    byTool: messagesByTool,
+    byKey: messagesByKey,
     pending: messagesPending,
     orgName: readingOrgName,
   } = useToolMessages(
     account !== null && machineKnown,
-    messageSlugs,
+    messageKeys,
     installs.current,
     credential,
   );
@@ -709,12 +726,8 @@ export function TrayApp() {
           // A held figure outranks the pending state, so a look that re-reads
           // keeps the last number on the row instead of blanking it for the
           // length of a fetch. The skeleton is the first read only.
-          messages: messageFigure(messagesByTool, messagesPending, t.slug),
-          alerts: alertCounts
-            ? { kind: "count", count: alertCounts.get(t.slug) ?? 0 }
-            : alertsPending
-              ? { kind: "pending" }
-              : undefined,
+          messages: messageFigure(messagesByKey, messagesPending, t.slug),
+          alerts: alertFigure(alertCounts, alertsPending, [t.slug]),
         })),
     [
       tools,
@@ -723,7 +736,7 @@ export function TrayApp() {
       routingBusy,
       alertCounts,
       alertsPending,
-      messagesByTool,
+      messagesByKey,
       messagesPending,
     ],
   );
@@ -738,6 +751,10 @@ export function TrayApp() {
   // owns and gates behind a confirmation - so the tray would be the way to
   // route someone's signed-in session without ever being asked.
   const trayGroups = useMemo<SidebarGroup[]>(() => {
+    // Before the ledger is built, rows are tools, so each carries its own
+    // tool's figure: a "Claude Code" row is not the Claude section, and drawing
+    // the section's count under it would name the wrong subject. `messageKeys`
+    // reads the tool alone for exactly this case.
     if (groups.length === 0) {
       return apps.length > 0 ? [{ id: "all", label: "", apps }] : [];
     }
@@ -754,15 +771,8 @@ export function TrayApp() {
       const tool = g.members.find((m) => m.kind === "config");
       const figures = clients
         ? {
-            messages: messageFigure(messagesByTool, messagesPending, clientScopeKey(clients)),
-            alerts: alertCounts
-              ? {
-                  kind: "count" as const,
-                  count: clients.reduce((n, c) => n + (alertCounts.get(c) ?? 0), 0),
-                }
-              : alertsPending
-                ? { kind: "pending" as const }
-                : undefined,
+            messages: messageFigure(messagesByKey, messagesPending, clientScopeKey(clients)),
+            alerts: alertFigure(alertCounts, alertsPending, clients),
           }
         : tool
           ? bySlug.get(tool.key)
@@ -788,7 +798,7 @@ export function TrayApp() {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
     return grouped.filter((g) => g.apps.length > 0);
-  }, [groups, apps, routingBusy, messagesByTool, messagesPending, alertCounts, alertsPending]);
+  }, [groups, apps, routingBusy, messagesByKey, messagesPending, alertCounts, alertsPending]);
 
   /**
    * The app switch, the same one the rail draws.

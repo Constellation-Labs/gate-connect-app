@@ -126,6 +126,19 @@ fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("activity-cache.json"))
 }
 
+/// The account a reading was asked for, taken before the request goes out.
+///
+/// Opaque on purpose: the only things to do with one are to hand it to
+/// [`store_for`] and to compare it with the account as it is now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope(String);
+
+/// The account as it is now, for a caller about to ask the gateway. `None` when
+/// there is none, which is also when there is nothing to hold a reading under.
+pub fn scope_now() -> Option<Scope> {
+    scope().map(Scope)
+}
+
 /// Which reading this is: everything that changes what the gateway would answer.
 ///
 /// Returns `None` when there is no account, which is also when there is nothing
@@ -176,15 +189,26 @@ fn held(scope: &str) -> Option<CacheFile> {
     (entry.scope == scope).then_some(entry)
 }
 
-/// Hold a reading that just landed. Best effort: a cache that cannot be written
-/// is not a failed fetch, and the caller has the real answer in hand either way.
-pub fn store(install_id: Option<&str>, clients: &[&str], body: &str) {
-    let Some(scope) = scope() else {
-        return;
-    };
+/// Hold a reading that just landed, as of the account it was asked for. Best
+/// effort: a cache that cannot be written is not a failed fetch, and the caller
+/// has the real answer in hand either way.
+///
+/// `taken` is the account before the request went out ([`scope_now`]), not
+/// after the reply came back. Working the scope out on arrival filed a reply
+/// under whichever account was current *then*, so a switch while a request was
+/// in flight held the old org's counts under the new org's scope, and the tray
+/// opened on them. A reply whose account is no longer current is not held at
+/// all: it is true of an account the user has left.
+pub fn store_for(taken: &Scope, install_id: Option<&str>, clients: &[&str], body: &str) {
     // Held for the duration of the read-modify-write, not just the write: two
     // threads that both read this file before either writes lose one insert.
+    // And taken before the comparison, so a scope cannot change between the
+    // check and the write.
     let _lock = STORE_LOCK.lock();
+    if scope().as_deref() != Some(taken.0.as_str()) {
+        return;
+    }
+    let scope = taken.0.clone();
     // Merged into whatever this scope already holds, so one tool's read does not
     // evict the others - the whole point of the map. A file from another scope is
     // replaced rather than merged into: its readings belong to an org the user
@@ -278,6 +302,11 @@ pub fn clear() -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Store as of the account now, which is every case here but the switch.
+    fn store(install_id: Option<&str>, clients: &[&str], body: &str) {
+        store_for(&scope_now().expect("an account"), install_id, clients, body);
+    }
+
     /// The property the whole module rests on: a reading written for one scope is
     /// never handed to another. Exercised on the struct rather than through the
     /// filesystem, because the scope string is the part that decides it.
@@ -327,7 +356,8 @@ mod tests {
         assert_eq!(key_install("|codex"), UNFILTERED);
         assert_eq!(key_tool("install-7|"), UNFILTERED);
         // A section's set is one key whatever order it was asked in, and not
-        // any one of its members' keys.
+        // any one of its members' keys. `clientScopeKey` in `src/lib/groups.ts`
+        // has to build the same tool half, and its test pins this literal.
         assert_eq!(
             key(None, &["claude-web", "claude-code", "claude-desktop"]),
             "|claude-code,claude-desktop,claude-web"
@@ -418,6 +448,55 @@ mod tests {
             first, second,
             "a different key can mean a different org, so its reading is not the same reading"
         );
+    }
+
+    /// A reply that lands after an account switch is not held, under either
+    /// account: it was asked for the first, which the user has left, and filing
+    /// it under the second is the replay this module exists to prevent.
+    #[test]
+    fn a_reply_from_before_an_account_switch_is_not_held() {
+        // Both seams are process-global; see `replacing_an_api_key_changes_the_scope`.
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!("gate-cache-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        account::save("https://gw.example", Some("sk-gw-aaaaaaaaaaaa1111")).unwrap();
+        let asked_for = scope_now().expect("an account exists");
+        // The request is in flight; the user replaces the key with another org's.
+        account::save("https://gw.example", Some("sk-gw-bbbbbbbbbbbb2222")).unwrap();
+        store_for(
+            &asked_for,
+            Some("install-7"),
+            &["claude-code"],
+            r#"{"org":"first"}"#,
+        );
+        let under_new = load(Some("install-7"), &["claude-code"]);
+        let rows_new = load_tools(Some("install-7"));
+        // And the ordinary case still holds.
+        store(Some("install-7"), &["claude-code"], r#"{"org":"second"}"#);
+        let after = load(Some("install-7"), &["claude-code"]);
+
+        let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        };
+        restore("GATE_CONNECT_TEST_HOME", prev_home);
+        restore("GATE_CONNECT_TEST_SECRETS", prev_secrets);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            under_new, None,
+            "the old org's counts under the new account"
+        );
+        assert!(
+            rows_new.is_empty(),
+            "the tray would open on the old org's counts"
+        );
+        assert_eq!(after.as_deref(), Some(r#"{"org":"second"}"#));
     }
 
     /// The merge, through the real filesystem: storing one tool must not evict

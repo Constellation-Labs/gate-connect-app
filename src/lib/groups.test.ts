@@ -9,6 +9,7 @@ import {
   SECTIONS,
   SECTION_CLIENTS,
   browserTrustRemovedAdvice,
+  clientScopeKey,
   browserTrustRestartAdvice,
   buildGroups,
   cascadeTargets,
@@ -1171,5 +1172,30 @@ describe("SECTION_CLIENTS", () => {
     expect(paneClients("claude", "claude-code")).toEqual(SECTION_CLIENTS.claude);
     expect(paneClients("opencode", "opencode")).toEqual(["opencode"]);
     expect(paneClients("openai-api", null)).toBeNull();
+  });
+});
+
+/**
+ * The key the tray finds a section's reading under. It has to be byte-identical
+ * to the tool half of `activity_cache::key` in Rust, or the tray misses every
+ * reading the pane stored. The two sides cannot share a test, so each pins the
+ * same literal: `the_installation_filter_is_part_of_the_key` asserts
+ * `|claude-code,claude-desktop,claude-web` for the same set.
+ */
+describe("clientScopeKey", () => {
+  it("sorts and joins, matching the Rust cache key", () => {
+    expect(clientScopeKey(["claude-web", "claude-code", "claude-desktop"])).toBe(
+      "claude-code,claude-desktop,claude-web",
+    );
+  });
+
+  it("is one key for a set whatever its order or repeats", () => {
+    expect(clientScopeKey(["codex", "chatgpt", "codex"])).toBe(
+      clientScopeKey(["chatgpt", "codex"]),
+    );
+  });
+
+  it("is a tool's own slug for a set of one, which is the tray row's key", () => {
+    expect(clientScopeKey(["opencode"])).toBe("opencode");
   });
 });
