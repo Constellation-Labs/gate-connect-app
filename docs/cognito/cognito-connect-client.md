@@ -71,7 +71,9 @@ App-side constants (from `crates/core/src/oauth.rs`):
 | Callback path | `/callback` (host `localhost`, scheme `http`) |
 | Scopes (default) | `openid email profile aws.cognito.signin.user.admin` |
 
-For production, resolve the equivalent pool id and domain with step 1 against the
+The commands in steps 1-4 are written against staging. For another environment,
+substitute its values: the Dev column above (dev's pool id comes from step 1),
+or, for production, the pool id and domain step 1 resolves against the
 production account and region.
 
 ## Step 1: Confirm the pool behind the hosted domain
@@ -256,8 +258,11 @@ builds only (a release build ignores the override). They are
 public client config, not secrets.
 
 **Three pools, picked at runtime.** The production, staging and dev Cognito
-pools are baked into a single binary. `OAuthConfig::from_build_env()` selects the pair
-matching the active gateway: if `account.gateway_base_url`'s host equals
+pools are baked into a single binary. `OAuthConfig::for_gateway(url)` selects
+the pair matching a gateway URL, and `OAuthConfig::from_build_env()` calls it
+with the one in `account.json`. The CLI's `login --oauth` passes the gateway it
+is about to save, so it signs in to that gateway's pool and not the previous
+one's. If the host equals
 `STAGING_GATEWAY_HOST` (`gateway-staging.constellationgate.ai`, kept in sync with
 `GATEWAY_SERVERS` in `src/lib/config.ts`) it uses the `_STAGING` values; if it
 equals `DEV_GATEWAY_HOST` (`gateway-dev.constellationgate.ai`) it uses the `_DEV`
@@ -281,31 +286,39 @@ Variables), consumed by `.github/workflows/release.yml`:
 `crates/core/build.rs` declares `rerun-if-env-changed` for all nine so a cached
 `target/` cannot ship a stale value.
 
-Local testing (no rebuild needed: in a debug build such as `pnpm tauri dev`, the
-runtime env wins over the baked value; a release build ignores it). Set
-the pair matching the gateway you'll select in Settings → Gateway → Change server:
+Local testing (no rebuild needed: in a debug build, the runtime env wins over
+the baked value; a release build ignores it). Export the pair for the gateway
+you will use, then start the app with `pnpm app:local`, which also keeps the OS
+keychain out of the loop (see the repo's `CLAUDE.md`). Pass the gateway to start
+on it, or pick it at first run or in Settings → Gateway → Change server. These
+are public client values, already baked into every release binary:
 
 ```bash
-# Production gateway (default):
-export GATE_COGNITO_HOSTED_DOMAIN=<PROD_HOSTED_DOMAIN>
-export GATE_COGNITO_CLIENT_ID=<PROD_CONNECT_CLIENT_ID>
+# Production gateway:
+export GATE_COGNITO_HOSTED_DOMAIN=swarm-deck-production-ue1.auth.us-east-1.amazoncognito.com
+export GATE_COGNITO_CLIENT_ID=4clteokot0t9rlnr5vkj5j2ar5
 
-# Staging gateway (select "Staging" in Settings → Gateway → Change server):
+# Staging gateway (the `pnpm app:local` default):
 export GATE_COGNITO_HOSTED_DOMAIN_STAGING=swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com
-export GATE_COGNITO_CLIENT_ID_STAGING=<STAGING_CONNECT_CLIENT_ID>
+export GATE_COGNITO_CLIENT_ID_STAGING=63aafqa8oc0lo631v4cho4lmmv
 
-# Dev gateway (select "Dev" in Settings → Gateway → Change server):
-export GATE_COGNITO_HOSTED_DOMAIN_DEV=<DEV_HOSTED_DOMAIN>
-export GATE_COGNITO_CLIENT_ID_DEV=<DEV_CONNECT_CLIENT_ID>
+# Dev gateway:
+export GATE_COGNITO_HOSTED_DOMAIN_DEV=swarm-deck-dev-ue1.auth.us-east-1.amazoncognito.com
+export GATE_COGNITO_CLIENT_ID_DEV=7jr537ea8g5i8os72nt3312g7f
 
-pnpm tauri dev
+pnpm app:local                                          # staging
+pnpm app:local https://gateway-dev.constellationgate.ai # dev
 ```
 
 ## Production setup checklist
 
-The condensed run-through of steps 1-5 against the production account. Staging
-is already done; production is not. Each item links back to the step with the
-full command and flag rationale.
+The condensed run-through of steps 1-5 against the production account, kept for
+rebuilding a client or adding an environment (substitute its values). Each item
+links back to the step with the full command and flag rationale.
+
+Status (2026-10-05): production and staging are done. Dev has its client,
+branding and repo Variables, and waits only on Constellation-Labs/gate#1139
+being merged and applied.
 
 - [ ] **Prod AWS credentials.** `aws sts get-caller-identity` shows the
   production account; `export AWS_PAGER=""`. (Prerequisites)
