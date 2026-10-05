@@ -80,11 +80,12 @@ const EXPIRY_SKEW_SECS: i64 = 60;
 pub const REFRESH_INTERVAL_SECS: u64 = 30;
 
 /// OAuth client configuration, resolved for the **currently selected
-/// gateway**. Both the production and staging Cognito pools are baked in at
+/// gateway**. The production, staging and dev Cognito pools are baked in at
 /// build time; [`OAuthConfig::from_build_env`] picks the pair matching the
-/// active gateway host (see [`crate::account::gateway_is_staging`]). Set
+/// active gateway host (see [`crate::account::gateway_is_staging`] and
+/// [`crate::account::gateway_is_dev`]). Set
 /// `GATE_COGNITO_HOSTED_DOMAIN` / `GATE_COGNITO_CLIENT_ID` /
-/// `GATE_COGNITO_SCOPES` (and their `_STAGING` variants) at build time, or
+/// `GATE_COGNITO_SCOPES` (and their `_STAGING` and `_DEV` variants) at build time, or
 /// override any of them via the process env at runtime.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
@@ -109,7 +110,7 @@ fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
 
 impl OAuthConfig {
     /// Resolve the OAuth client config for the gateway currently on disk. The
-    /// active gateway host (`account.json`) selects the production or staging
+    /// active gateway host (`account.json`) selects the production, staging or dev
     /// Cognito pool; within the chosen pool each value comes from the process
     /// env at runtime if set (dev/staging override, and the CLI's hermetic
     /// tests), otherwise the value baked in at build time via `option_env!`.
@@ -131,6 +132,21 @@ impl OAuthConfig {
                 config_value(
                     "GATE_COGNITO_SCOPES_STAGING",
                     option_env!("GATE_COGNITO_SCOPES_STAGING"),
+                ),
+            )
+        } else if crate::account::gateway_is_dev() {
+            (
+                config_value(
+                    "GATE_COGNITO_HOSTED_DOMAIN_DEV",
+                    option_env!("GATE_COGNITO_HOSTED_DOMAIN_DEV"),
+                )?,
+                config_value(
+                    "GATE_COGNITO_CLIENT_ID_DEV",
+                    option_env!("GATE_COGNITO_CLIENT_ID_DEV"),
+                )?,
+                config_value(
+                    "GATE_COGNITO_SCOPES_DEV",
+                    option_env!("GATE_COGNITO_SCOPES_DEV"),
                 ),
             )
         } else {

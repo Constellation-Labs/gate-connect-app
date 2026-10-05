@@ -31,6 +31,7 @@ export interface GatewayServer {
 export const GATEWAY_SERVERS: GatewayServer[] = [
   { label: "Production", url: "https://gateway.constellationgate.ai" },
   { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+  { label: "Dev", url: "https://gateway-dev.constellationgate.ai" },
   // A gateway running on this machine, for development only (AG-572)
   // (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
   //

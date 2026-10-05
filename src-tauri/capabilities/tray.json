@@ -13,6 +13,7 @@
       "allow": [
         { "url": "https://app.constellationgate.ai/*" },
         { "url": "https://app-staging.constellationgate.ai/*" },
+        { "url": "https://app-dev.constellationgate.ai/*" },
         { "url": "https://docs.constellationgate.ai/*" }
       ]
     }

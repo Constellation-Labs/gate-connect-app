@@ -58,12 +58,20 @@ fn resolves_pool_from_gateway_host() {
     std::env::set_var("GATE_COGNITO_CLIENT_ID", "prod-client");
     std::env::set_var("GATE_COGNITO_HOSTED_DOMAIN_STAGING", "staging.auth.test");
     std::env::set_var("GATE_COGNITO_CLIENT_ID_STAGING", "staging-client");
+    std::env::set_var("GATE_COGNITO_HOSTED_DOMAIN_DEV", "dev.auth.test");
+    std::env::set_var("GATE_COGNITO_CLIENT_ID_DEV", "dev-client");
 
     // Staging gateway → staging pool.
     account::save("https://gateway-staging.constellationgate.ai", None).unwrap();
     let cfg = OAuthConfig::from_build_env().expect("config resolves for staging gateway");
     assert_eq!(cfg.hosted_domain, "staging.auth.test");
     assert_eq!(cfg.client_id, "staging-client");
+
+    // Dev gateway → dev pool.
+    account::switch_gateway("https://gateway-dev.constellationgate.ai").unwrap();
+    let cfg = OAuthConfig::from_build_env().expect("config resolves for dev gateway");
+    assert_eq!(cfg.hosted_domain, "dev.auth.test");
+    assert_eq!(cfg.client_id, "dev-client");
 
     // Production gateway → prod pool.
     account::switch_gateway("https://gateway.constellationgate.ai").unwrap();
