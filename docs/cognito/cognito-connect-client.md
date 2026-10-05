@@ -242,11 +242,12 @@ new client. Until this is set, sign-in captures a token but `GET /v1/me/orgs`
 ## Step 5: Wire the client id into the Connect build
 
 The app reads its OAuth client config, baked at compile time via `option_env!`
-in `crates/core/src/oauth.rs`, with process env overriding at runtime. They are
+in `crates/core/src/oauth.rs`, with process env overriding at runtime in debug
+builds only (a release build ignores the override). They are
 public client config, not secrets.
 
-**Two pools, picked at runtime.** Both the production and staging Cognito pools
-are baked into a single binary. `OAuthConfig::from_build_env()` selects the pair
+**Three pools, picked at runtime.** The production, staging and dev Cognito
+pools are baked into a single binary. `OAuthConfig::from_build_env()` selects the pair
 matching the active gateway: if `account.gateway_base_url`'s host equals
 `STAGING_GATEWAY_HOST` (`gateway-staging.constellationgate.ai`, kept in sync with
 `GATEWAY_SERVERS` in `src/lib/config.ts`) it uses the `_STAGING` values; if it

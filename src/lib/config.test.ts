@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 // `?raw` rather than node:fs: tsconfig sets types to ["vite/client"] only, and
 // widening the app's type surface to all of node just to read a file in a test
 // is the wrong trade. vite/client already declares `*?raw` as a string.
@@ -190,5 +190,42 @@ describe("the tray popover's opener ACL covers what its menu opens", () => {
     // itself is the case that matters: the popover never opens it in a browser.
     const gatewayUrl = "https://gateway-staging.constellationgate.ai/";
     expect(patterns.some((p) => globToRegExp(p).test(gatewayUrl))).toBe(false);
+  });
+});
+
+/**
+ * Staging and dev are for testers: a stable release lists production alone, so
+ * nobody running one can be steered at a less hardened environment. The list is
+ * built when the module loads, so each case stubs the env and imports it fresh.
+ */
+describe("which gateways a build offers", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  async function labelsFor(env: { DEV: boolean; prerelease?: string }) {
+    vi.stubEnv("DEV", env.DEV);
+    if (env.prerelease !== undefined) vi.stubEnv("VITE_GATE_PRERELEASE", env.prerelease);
+    vi.resetModules();
+    const { GATEWAY_SERVERS: servers } = await import("./config");
+    return servers.map((s) => s.label);
+  }
+
+  it("lists production alone in a stable release", async () => {
+    expect(await labelsFor({ DEV: false })).toEqual(["Production"]);
+    expect(await labelsFor({ DEV: false, prerelease: "false" })).toEqual(["Production"]);
+  });
+
+  it("adds staging and dev in a pre-release", async () => {
+    expect(await labelsFor({ DEV: false, prerelease: "true" })).toEqual([
+      "Production",
+      "Staging",
+      "Dev",
+    ]);
+  });
+
+  it("adds the local gateway too in a dev build", async () => {
+    expect(await labelsFor({ DEV: true })).toEqual(["Production", "Staging", "Dev", "Local (dev)"]);
   });
 });

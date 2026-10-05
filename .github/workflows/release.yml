@@ -96,6 +96,10 @@ jobs:
           # Inlined into the frontend bundle by Vite (beforeBuildCommand). Absent
           # ⇒ analytics stays a no-op, so the build still succeeds without it.
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          # Inlined the same way. A tag with a `-` suffix is a pre-release, and
+          # only a pre-release lists the staging and dev gateways in Settings
+          # (GATEWAY_SERVERS in src/lib/config.ts).
+          VITE_GATE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
           # Cognito OAuth client config, baked into the binary at compile time
           # via `option_env!` (crates/core/src/oauth.rs). Public client config,
           # not secrets, so these are repo Variables. Absent ⇒ the app falls

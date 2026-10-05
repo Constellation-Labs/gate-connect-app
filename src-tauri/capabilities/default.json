@@ -20,7 +20,6 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         { "url": "https://github.com/Constellation-Labs/gate-connect-app/releases/*" },
-        { "url": "https://*.amazoncognito.com/*" },
         { "url": "https://app.constellationgate.ai/*" },
         { "url": "https://app-staging.constellationgate.ai/*" },
         { "url": "https://app-dev.constellationgate.ai/*" },

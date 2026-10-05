@@ -198,7 +198,8 @@ export function buildSettingsSections({
   /** Whether the Gate certificate is in the system trust store, as a phrase.
    * Absent on a platform with no proxy subsystem, which has no certificate. */
   certificate?: string;
-  /** Dev builds only: repoint the account at another environment. */
+  /** Repoint the account at another environment. Absent when there is none to
+   * pick: a stable release lists production alone (`GATEWAY_SERVERS`). */
   onChangeGateway?: () => void;
   /** Only offered while the certificate is actually trusted; removing one that
    * is not there is a button that cannot do anything. */

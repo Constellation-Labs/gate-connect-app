@@ -159,11 +159,8 @@ pub const DEV_GATEWAY_HOST: &str = "gateway-dev.constellationgate.ai";
 
 /// Whether the currently-selected gateway is the known staging host.
 ///
-/// Two callers, for the same reason: staging is where a Gate-side capability
-/// lands before production has it, so the app has to resolve which environment
-/// it is pointed at before offering anything that depends on one.
-/// [`crate::oauth::OAuthConfig::from_build_env`] picks a Cognito pool with it,
-/// and [`crate::proxy::config`] gates the chat surfaces on it.
+/// [`crate::oauth::OAuthConfig::from_build_env`] picks the staging Cognito pool
+/// with it, which is its only caller.
 ///
 /// Reads the gateway URL from `account.json` (no keychain touch); a missing
 /// account or any parse failure falls back to production, which is the choice
@@ -172,9 +169,10 @@ pub fn gateway_is_staging() -> bool {
     gateway_host().is_some_and(|h| h == STAGING_GATEWAY_HOST)
 }
 
-/// Whether the currently-selected gateway is the known dev host. Same rules as
-/// [`gateway_is_staging`]; [`crate::oauth::OAuthConfig::from_build_env`] picks
-/// the dev Cognito pool with it.
+/// Whether the currently-selected gateway is the known dev host. Reads
+/// `account.json` the same way as [`gateway_is_staging`];
+/// [`crate::oauth::OAuthConfig::from_build_env`] picks the dev Cognito pool
+/// with it.
 pub fn gateway_is_dev() -> bool {
     gateway_host().is_some_and(|h| h == DEV_GATEWAY_HOST)
 }

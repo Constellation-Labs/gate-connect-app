@@ -48,8 +48,8 @@ const GATE_SUFFIX = ".constellationgate.ai";
  * The dashboard origin for a gateway base URL, or `null` when there is not one.
  *
  * The mapping is the first host label: `gateway` -> `app`, keeping whatever
- * environment suffix follows it, so `gateway-staging` -> `app-staging` and a
- * future `gateway-dev` -> `app-dev` without another edit here.
+ * environment suffix follows it, so `gateway-staging` -> `app-staging` and
+ * `gateway-dev` -> `app-dev` without another edit here.
  *
  * Everything else returns `null` on purpose - a plain `localhost` gateway, an
  * `http://` origin, a host outside `constellationgate.ai`, and a

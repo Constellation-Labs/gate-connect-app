@@ -28,10 +28,26 @@ export interface GatewayServer {
   url: string;
 }
 
+/**
+ * Whether this bundle is a pre-release (`v1.0.0-alpha.12`, `v0.3.2-rc.0`):
+ * `release.yml` sets it from the tag, which is a pre-release exactly when it
+ * carries a `-` suffix. Unset in every other build, so a stable release and a
+ * plain `pnpm build` both read false.
+ */
+const PRERELEASE = (import.meta.env.VITE_GATE_PRERELEASE as string | undefined) === "true";
+
 export const GATEWAY_SERVERS: GatewayServer[] = [
   { label: "Production", url: "https://gateway.constellationgate.ai" },
-  { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
-  { label: "Dev", url: "https://gateway-dev.constellationgate.ai" },
+  // Staging and dev are for testers, so they are offered only in pre-releases
+  // and dev builds. A stable release lists production alone, and a user cannot
+  // be talked into repointing every routed tool at an environment that is less
+  // hardened than the one they installed.
+  ...(import.meta.env.DEV || PRERELEASE
+    ? [
+        { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+        { label: "Dev", url: "https://gateway-dev.constellationgate.ai" },
+      ]
+    : []),
   // A gateway running on this machine, for development only (AG-572)
   // (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
   //

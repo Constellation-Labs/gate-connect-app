@@ -2248,7 +2248,16 @@ export function NewUiApp() {
         onRemoveCertificate: proxy?.ca_trusted
           ? () => void routing.untrustCa()
           : undefined,
-        onChangeGateway: settings.openSwitchGateway,
+        // Only where there is somewhere to go: a stable release lists
+        // production alone, so the action would open a one-row dialog. Kept for
+        // an account already on a gateway the list does not name (a stable
+        // install hand-pointed at staging per POSTINSTALL.md), which needs a
+        // way back.
+        onChangeGateway:
+          GATEWAY_SERVERS.length > 1 ||
+          !GATEWAY_SERVERS.some((s) => s.url === account?.gateway_base_url)
+            ? settings.openSwitchGateway
+            : undefined,
         onCopyInstallId: installId
           ? () => void settings.copyText(installId)
           : noop,

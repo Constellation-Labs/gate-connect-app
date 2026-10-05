@@ -83,10 +83,10 @@ pub const REFRESH_INTERVAL_SECS: u64 = 30;
 /// gateway**. The production, staging and dev Cognito pools are baked in at
 /// build time; [`OAuthConfig::from_build_env`] picks the pair matching the
 /// active gateway host (see [`crate::account::gateway_is_staging`] and
-/// [`crate::account::gateway_is_dev`]). Set
-/// `GATE_COGNITO_HOSTED_DOMAIN` / `GATE_COGNITO_CLIENT_ID` /
-/// `GATE_COGNITO_SCOPES` (and their `_STAGING` and `_DEV` variants) at build time, or
-/// override any of them via the process env at runtime.
+/// [`crate::account::gateway_is_dev`]). Set `GATE_COGNITO_HOSTED_DOMAIN` /
+/// `GATE_COGNITO_CLIENT_ID` / `GATE_COGNITO_SCOPES` (and their `_STAGING` and
+/// `_DEV` variants) at build time, or, in a debug build only, override any of
+/// them via the process env at runtime.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     /// Cognito Hosted UI domain - e.g. `auth.constellationgate.ai` or
@@ -98,12 +98,19 @@ pub struct OAuthConfig {
     pub scopes: Vec<String>,
 }
 
-/// One build-time OAuth config value: the process env wins at runtime, else
-/// the value baked in at build time. Empty env values are ignored so an
-/// exported-but-blank var doesn't blank out a baked default.
+/// One build-time OAuth config value: in a debug build the process env wins at
+/// runtime, else the value baked in at build time. Empty env values are ignored
+/// so an exported-but-blank var doesn't blank out a baked default.
+///
+/// The override goes through [`crate::env::test_seam`], so a release build
+/// ignores it. The hosted domain names the token endpoint, which receives the
+/// auth code, the PKCE verifier and every refresh token, so a process able to
+/// set this one's environment could otherwise collect the refresh token without
+/// ever touching the keychain. The CLI tests and the e2e harness that rely on
+/// the override all run debug builds.
 fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
-    std::env::var(name)
-        .ok()
+    crate::env::test_seam(name)
+        .and_then(|v| v.into_string().ok())
         .filter(|s| !s.is_empty())
         .or_else(|| baked.map(str::to_string))
 }
@@ -112,8 +119,9 @@ impl OAuthConfig {
     /// Resolve the OAuth client config for the gateway currently on disk. The
     /// active gateway host (`account.json`) selects the production, staging or dev
     /// Cognito pool; within the chosen pool each value comes from the process
-    /// env at runtime if set (dev/staging override, and the CLI's hermetic
-    /// tests), otherwise the value baked in at build time via `option_env!`.
+    /// env at runtime if set in a debug build (local overrides, and the CLI's
+    /// hermetic tests), otherwise the value baked in at build time via
+    /// `option_env!`.
     /// Returns `None` when neither supplies the domain/client id, so callers
     /// can fall back to the legacy API-key flow with a clear message instead
     /// of panicking. All values are public client config (no secret), so a
