@@ -525,15 +525,22 @@ export function useActivity(
   // rather than leaving it under the new label until the replacement lands.
   // Separate from `reload` on purpose: the retry button re-reads without
   // blanking numbers that are still the best answer available.
-  // Being disabled drops it as well, and supersedes a read still in flight: a
-  // disabled `reload` returns before bumping the generation, so a pane switched
-  // to one with no reading would otherwise take the previous pane's reply.
   useEffect(() => {
     attempt.current += 1;
     setView(null);
     setFailure(null);
     setLoading(false);
-  }, [enabled, credential, installId, scope]);
+  }, [credential, installId, scope]);
+
+  // Being disabled keeps the reading - it is still the last real one for this
+  // scope - but supersedes a read still in flight: a disabled `reload` returns
+  // before bumping the generation, so a reply could otherwise land after the
+  // hook was switched off.
+  useEffect(() => {
+    if (enabled) return;
+    attempt.current += 1;
+    setLoading(false);
+  }, [enabled]);
 
   useEffect(reload, [reload]);
 

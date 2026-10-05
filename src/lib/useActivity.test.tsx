@@ -40,10 +40,11 @@ function body(orgName: string, messages: number) {
 }
 
 /** Renders the hook and records every value it returns. */
-function harness(props: { credential?: string; tools?: readonly string[] } = {}) {
+type HarnessProps = { credential?: string; tools?: readonly string[]; enabled?: boolean };
+function harness(props: HarnessProps = {}) {
   const seen: ReturnType<typeof useActivity>[] = [];
-  function Probe({ credential, tools }: { credential?: string; tools?: readonly string[] }) {
-    seen.push(useActivity(true, null, credential ?? "cred-a", tools));
+  function Probe({ credential, tools, enabled }: HarnessProps) {
+    seen.push(useActivity(enabled ?? true, null, credential ?? "cred-a", tools));
     return null;
   }
   const utils = render(<Probe {...props} />);
@@ -195,6 +196,27 @@ describe("useActivity", () => {
     rerender({ tools: ["codex"] });
     await flush();
     expect(net).toHaveBeenLastCalledWith(undefined, ["codex"]);
+  });
+
+  it("keeps its reading when disabled, and drops a reply that lands after", async () => {
+    disk.mockResolvedValue(null);
+    net.mockResolvedValueOnce(body("Org", 3));
+    const { seen, rerender } = harness({ tools: ["claude-code"] });
+    await flush();
+    expect(seen.at(-1)?.view?.stats.messages).toBe(3);
+
+    // A re-read in flight when the hook is switched off.
+    let land: (text: string) => void = () => {};
+    net.mockImplementationOnce(() => new Promise<string>((r) => (land = r)));
+    act(() => seen.at(-1)?.reload());
+    rerender({ tools: ["claude-code"], enabled: false });
+    await act(async () => {
+      land(body("Org", 99));
+      await Promise.resolve();
+    });
+
+    expect(seen.at(-1)?.view?.stats.messages).toBe(3);
+    expect(seen.at(-1)?.loading).toBe(false);
   });
 
   it("sends no scope for every sender", async () => {
