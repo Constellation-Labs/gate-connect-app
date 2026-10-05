@@ -15,6 +15,8 @@ import type {
   Tool,
   Verdict,
 } from "./lib/api";
+import { paintPlan, serialSweeps } from "./lib/snapshotPaint";
+import type { Held } from "./lib/snapshotPaint";
 import {
   deviceName as fetchDeviceName,
   diagnostics as fetchDiagnostics,
@@ -66,6 +68,8 @@ import {
   isSettingsManaged,
   sectionHint,
   notInstalledSections,
+  paneClients,
+  SECTION_CLIENTS,
   sectionMemberKeys,
 } from "./lib/groups";
 import {
@@ -481,10 +485,10 @@ export function NewUiApp() {
    *
    * At most one, and that is a property of the sections rather than a
    * coincidence worth guarding: each app has a single thing Gate writes a
-   * config file for. It is what the per-tool activity read below is keyed on,
-   * which is the whole of "aggregate" - the section's other surfaces are hosts,
-   * and the gateway attributes nothing to a host, so there is no second reading
-   * to add in.
+   * config file for. It is what the model card, the credits and the Gate model
+   * warning are about. The activity reads are keyed on `openClients` instead,
+   * which is the whole section where the engine names its surfaces apart and
+   * this tool alone where it does not.
    *
    * Resolved from the section table rather than from the built ledger, which is
    * declared further down: this sits above it because the reads it gates have
@@ -497,7 +501,7 @@ export function NewUiApp() {
           // `list_tools` carries the not-installed ones too, so without it a
           // Claude pane on a machine with no Claude Code resolved to
           // `claude-code`, fired every per-tool read against a tool that cannot
-          // have traffic, and drew zeroes with no caveat - `openDomain` false
+          // have traffic, and drew zeroes with no caveat - `noPaneReading` false
           // so no unattributed marker. A number with nothing behind it, in the
           // one place principle 6 names. (The `partialReading` caveat this used
           // to name as the other half of that guard is gone; see the commit
@@ -505,15 +509,19 @@ export function NewUiApp() {
           tools.some((t) => t.slug === key && t.status.kind !== "not_installed"),
         ) ?? null)
       : null;
-  /** The open pane belongs to a proxy domain rather than a config tool. The
-   *  gateway attributes requests to config tools only - `client_tool` is
-   *  derived from each tool's own user agent, and traffic from these surfaces
-   *  arrives unattributed on purpose, because a guessed slug would file one
-   *  app's traffic under another's name. So the per-tool reads below must not
-   *  fire for a domain: filtering by its slug would return an empty reading,
-   *  and the pane would report a quiet day over traffic it cannot see. A slug
-   *  carried by an installed tool stays a tool. */
-  const openDomain = openTool === null && view.kind === "app";
+  /**
+   * Every sender the open pane's activity covers: the whole section where the
+   * engine names its surfaces apart (`SECTION_CLIENTS` - the Claude pane is
+   * Claude Code, the desktop app and claude.ai), else the one config tool.
+   * Computed once; the counters, the chart and the feed all read this list.
+   */
+  const openClients = view.kind === "app" ? paneClients(view.slug, openTool) : null;
+  /** The open pane has no per-app reading: a section the engine stamps no
+   *  sender for (the OpenAI API's traffic carries no app name) and with no
+   *  config tool installed. Filtering by a slug nothing is stamped with would
+   *  return an empty reading, and the pane would report a quiet day over
+   *  traffic it cannot see, so the reads below do not fire for it. */
+  const noPaneReading = openClients === null && view.kind === "app";
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -589,10 +597,10 @@ export function NewUiApp() {
     if (activityFailureCode) noteGatewayFailure(activityFailureCode);
   }, [activityFailureCode]);
   const toolActivity = useActivity(
-    canRead && openTool !== null && machineKnown,
+    canRead && openClients !== null && machineKnown,
     currentInstallId,
     credential,
-    openTool ?? undefined,
+    openClients ?? undefined,
   );
   /** This install's per-tool model choices, and what each tool's own config
    *  says (AG-588). One read for the whole sidebar: the backend reads every
@@ -708,11 +716,42 @@ export function NewUiApp() {
   const openModelId = openModelIds[0] ?? null;
 
   const toolEvents = useToolEvents(
-    canRead && openTool !== null && machineKnown,
-    openTool,
+    canRead && openClients !== null && machineKnown,
+    openClients,
     currentInstallId,
     credential,
   );
+  /** Whether the pane's feed covers more than its config tool, so its rows are
+   *  not that tool's own: the section reads a client set. */
+  const sectionWide =
+    openTool !== null && view.kind === "app" && SECTION_CLIENTS[view.slug] !== undefined;
+  /**
+   * The config tool's own newest requests, for the Gate model warning only.
+   *
+   * A Gate model is written into the tool's config, so whether it is failing is
+   * a question about that tool's traffic alone. The section feed mixes in the
+   * desktop app and the website, whose rows say nothing about the choice and do
+   * not say which app sent them: a failing claude.ai chat would raise the
+   * warning over Claude Code, and its successes would hide Claude Code failing.
+   * So this reads page one for the tool, and only while there is a Gate model to
+   * warn about and the section feed is not already exactly this.
+   *
+   * A failed read leaves the warning to its other checks, the catalogue and the
+   * balance, with nothing said about the read itself: the card is about the
+   * model, and the section feed's own failure notice already covers a gateway
+   * that is not answering.
+   */
+  const modelFeed = useToolEvents(
+    canRead &&
+      sectionWide &&
+      GATE_MODEL_TOOLS.has(openTool) &&
+      openPref?.source === "gate" &&
+      machineKnown,
+    openTool === null ? null : [openTool],
+    currentInstallId,
+    credential,
+  );
+  const modelRecent = (sectionWide ? modelFeed : toolEvents).view?.entries.slice(0, 5) ?? null;
 
   /** When the activity surfaces were last re-read on our own initiative, for
    *  the focus edge's guard below. Starts at mount, which is when the hooks
@@ -723,8 +762,8 @@ export function NewUiApp() {
    *
    * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
    * better information. The Overview's org-wide read refreshes on any of it;
-   * the open pane's per-tool reads only when its tool is among the senders, so
-   * Codex traffic does not re-read the Claude pane.
+   * the open pane's reads only when one of its senders is among them, so Codex
+   * traffic does not re-read the Claude pane and claude.ai traffic does.
    * Each hook's `reload` is a no-op while that hook is disabled.
    */
   const refreshActivity = (tools: (string | null)[] | null) => {
@@ -735,10 +774,11 @@ export function NewUiApp() {
     // failed may answer now; left alone, both kept the pane on a state that had
     // stopped being true until restart.
     if (installsFailure !== null || unattributedMachine) reloadInstalls();
-    if (openTool !== null && (tools === null || tools.includes(openTool))) {
+    if (openClients !== null && (tools === null || openClients.some((c) => tools.includes(c)))) {
       toolActivity.reload();
       toolEvents.reload();
     }
+    if (openTool !== null && (tools === null || tools.includes(openTool))) modelFeed.reload();
   };
   // Latest-callback ref so the listener registers once: the hooks hand back a
   // fresh `reload` closure every render, so there is nothing stable to memoise
@@ -884,10 +924,38 @@ export function NewUiApp() {
   /** The routing sweep, kept separate from {@link refresh} because it is the one
    * probe that costs network I/O and a process walk. Callers that changed a
    * tool's config re-run it; callers that only repainted do not have to. */
+  // One sweep at a time, in the order asked: see `serialSweeps`.
+  const sweepVerdicts = useRef(
+    serialSweeps(() => routingVerdicts().then(verdictsBySlug)),
+  ).current;
   const refreshVerdicts = useCallback(async () => {
-    const v = await routingVerdicts().catch(() => null);
-    if (v) setVerdicts(verdictsBySlug(v));
-  }, []);
+    const m = await sweepVerdicts();
+    if (m) setVerdicts(m);
+  }, [sweepVerdicts]);
+
+  /**
+   * Paint a fresh reading as one update: the tools, the engine, and the
+   * verdicts that describe them, set together once the sweep has answered.
+   *
+   * Set apart, they were seen apart. The config write lands first and the
+   * switch flipped on it, while the row, the pane and its banner still read
+   * the verdict from before the write: "Not routed", then "Not protected",
+   * then "Protected", on every turn-on. What was on screen stays until all
+   * three can move at once. `null` leaves that reading as it is. What a
+   * failed sweep paints is `paintPlan`'s decision.
+   */
+  const held = useRef<Held>({ tools: [], proxy: null, verdicts: new Map() });
+  /** A routing action is writing; it repaints when it settles. */
+  const routingInFlight = useRef(false);
+  const paintSnapshot = useCallback(
+    async (t: Tool[] | null, px: ProxyState | null) => {
+      const plan = paintPlan(held.current, { tools: t, proxy: px }, await sweepVerdicts());
+      if (plan.tools) setTools(plan.tools);
+      if (plan.proxy) setProxy(plan.proxy);
+      if (plan.verdicts) setVerdicts(plan.verdicts);
+    },
+    [sweepVerdicts],
+  );
 
   /**
    * Is any tool waiting to be reopened?
@@ -934,13 +1002,10 @@ export function NewUiApp() {
     // the two, so a device Gate could not read rendered as a device with no AI
     // apps on it - the exact confusion AG-560 exists to remove.
     setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-    if (t) setTools(t);
-    if (px) setProxy(px);
     // The engine coming up or going down changes every verdict, since the relay
-    // health check is shared - so this follows the snapshot rather than waiting
-    // for something else to ask.
-    void refreshVerdicts();
-  }, [refreshVerdicts]);
+    // health check is shared - so the reading is painted with its verdicts.
+    await paintSnapshot(t, px);
+  }, [paintSnapshot]);
 
   /**
    * Re-read what is installed, without the routing sweep.
@@ -963,6 +1028,7 @@ export function NewUiApp() {
     if (redetecting.current) return;
     redetecting.current = true;
     try {
+      const readDuringWrite = routingInFlight.current;
       const [t, px] = await Promise.all([
         listTools().catch(() => null),
         proxyStatus().catch(() => null),
@@ -971,25 +1037,27 @@ export function NewUiApp() {
       // card's evidence that something is still looking, and letting it go stale
       // while the reads continued would misdate a scan that did happen.
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-      let changed = false;
       // A failed read commits nothing, so it also reports nothing as changed -
       // the last good list stays on screen and the card says the scan failed.
-      if (t && detectionSignature(t) !== rendered.current.tools) {
-        setTools(t);
-        changed = true;
-      }
-      if (px && detectionSignature(px) !== rendered.current.proxy) {
-        setProxy(px);
-        changed = true;
-      }
+      const toolsMoved = !!t && detectionSignature(t) !== rendered.current.tools;
+      const proxyMoved = !!px && detectionSignature(px) !== rendered.current.proxy;
+      const changed = toolsMoved || proxyMoved;
       // Either one moving invalidates every verdict: a tool that just appeared
       // has none yet, and the engine coming up or going down changes all of
       // them, because the relay health check behind them is shared.
-      if (changed) void refreshVerdicts();
+      // Painted with its verdicts, like every other reading: this is also the
+      // echo of the app's own config write (`tools-changed`), and the tool's
+      // new status on its own repainted the row before the sweep could.
+      // Not while a routing action is writing: the echo of a section's first
+      // member would paint the section half-moved, and the action's own
+      // `settle` re-reads everything once it is done. Asked at both ends: a
+      // read taken mid-write and answered after the settle is older than it.
+      if (changed && !readDuringWrite && !routingInFlight.current)
+        await paintSnapshot(toolsMoved ? t : null, proxyMoved ? px : null);
     } finally {
       redetecting.current = false;
     }
-  }, [refreshVerdicts]);
+  }, [paintSnapshot]);
 
   /** Re-run detection because the user asked - the inventory card's control, for
    * a scan that failed and may not fail again. Same reads as the event-driven
@@ -1009,6 +1077,9 @@ export function NewUiApp() {
       proxy: detectionSignature(proxy),
     };
   }, [tools, proxy]);
+  useEffect(() => {
+    held.current = { tools, proxy, verdicts };
+  }, [tools, proxy, verdicts]);
 
   // Detection used to be the one reading the window could not be told about, so
   // this polled `list_tools` every five seconds. It is told now: the backend
@@ -1064,16 +1135,20 @@ export function NewUiApp() {
       void loadLaunchAtLogin();
       void loadPreferences();
       void loadIdentity();
-      setTools(t ?? []);
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-      void refreshVerdicts();
-        setProviders(p);
+      setTools(t ?? []);
+      setProviders(p);
       setProxy(px);
       setAccount(acct.account);
       setAccountUnread(acct.unread);
       setOAuth(oauthState);
       setVersion(v);
       setLoaded(true);
+      // Not awaited, and not through `paintSnapshot`: the sweep can reach the
+      // identity provider, and the window must not wait on it to draw. Rows
+      // read "Checking" until it lands, which is true; there is no earlier
+      // verdict for the new reading to disagree with.
+      void refreshVerdicts();
       // The per-launch counterpart of `app_first_launched`: without it a launch
       // of this window was invisible, and a funnel had no denominator for
       // returning users. Only the props the first read already answered; the
@@ -1253,13 +1328,10 @@ export function NewUiApp() {
   const routing = useRouting({
     tools,
     proxy,
-    onSnapshot: ({ tools: t, proxy: px }) => {
-      setTools(t);
-      setProxy(px);
-      // A write landed, so the verdicts are stale: the tool may now need a
-      // reopen, and the relay may have been auto-enabled by the connect.
-      void refreshVerdicts();
-    },
+    // A write landed, so the verdicts are stale: the tool may now need a
+    // reopen, and the relay may have been auto-enabled by the connect. The
+    // snapshot waits for the sweep and lands with it.
+    onSnapshot: ({ tools: t, proxy: px }) => paintSnapshot(t, px),
     // The removal's own note, from what it recorded about the browser stores:
     // "removed, reopen your browsers" or "a browser kept it, here is how to
     // remove it". `ca_trusted` going false cannot say which, and also flips
@@ -1311,6 +1383,9 @@ export function NewUiApp() {
     },
   });
   const routingBusy = routing.busy;
+  useEffect(() => {
+    routingInFlight.current = routingBusy;
+  }, [routingBusy]);
 
   /** Name the tools a teardown left on Gate, read back off their configs.
    *
@@ -1527,9 +1602,8 @@ export function NewUiApp() {
       listTools().catch(() => tools),
       proxyStatus().catch(() => proxy),
     ]);
-    setTools(t);
-    setProxy(px);
-  }, [tools, proxy]);
+    await paintSnapshot(t, px);
+  }, [tools, proxy, paintSnapshot]);
 
   const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
   const [noticePage, setNoticePage] = useState(0);
@@ -3296,9 +3370,10 @@ export function NewUiApp() {
           buckets={toolActivity.view?.buckets ?? []}
           // Pending while the installation list is still open too: until it
           // answers we do not know which machine this is, so there is nothing to
-          // read yet - and a skeleton is the honest account of that. A domain
-          // pane is never pending: its read will not fire (see `openDomain`),
-          // and a skeleton would promise an answer that is not coming.
+          // read yet - and a skeleton is the honest account of that. A pane
+          // with no reading is never pending: its read will not fire (see
+          // `noPaneReading`), and a skeleton would promise an answer that is
+          // not coming.
           //
           // Nor is an unattributed one, for exactly the same reason and by the
           // same mechanism: `toolActivity` is gated on `machineKnown`, so with
@@ -3310,7 +3385,7 @@ export function NewUiApp() {
           // A failed installation list is the same shape (no read will fire)
           // and is excluded for the same reason; its cause is in the banner.
           pending={
-            !openDomain &&
+            !noPaneReading &&
             !unattributedMachine &&
             installsFailure === null &&
             (!installsResolved ||
@@ -3320,7 +3395,7 @@ export function NewUiApp() {
           // card: see `GATE_MODEL_TOOLS` and `AppPane`'s `modelChoice`. That
           // list is not the rail's `coversAllProviders` - Hermes is
           // multi-provider there and still takes a Gate model set here.
-          // `openDomain` (where `openTool` is null) never gets the card, and for
+          // A pane where `openTool` is null never gets the card, and for
           // a stricter reason than the other tools left out: the choice could
           // not take effect at all. A Gate model choice is written into the
           // tool's own config, and a chat domain is a browser, which has no
@@ -3353,7 +3428,7 @@ export function NewUiApp() {
                     // tool cannot actually be served with: the catalogue says it
                     // exists and the balance says it is affordable, and the
                     // requests fail anyway.
-                    recent: toolEvents.view?.entries.slice(0, 5) ?? null,
+                    recent: modelRecent,
                   })?.message ?? null,
                 // R3: the user changed the model inside the app, so its config
                 // no longer holds a Gate model and the card moved to App
@@ -3426,7 +3501,7 @@ export function NewUiApp() {
           // feed read is gated on `machineKnown` too, so an unattributed machine
           // left this true indefinitely.
           eventsPending={
-            !openDomain &&
+            !noPaneReading &&
             !unattributedMachine &&
             installsFailure === null &&
             (!installsResolved ||
@@ -3447,8 +3522,8 @@ export function NewUiApp() {
           // reported as unreadable because the *chart* had not landed, which is
           // precisely the unread-versus-empty confusion these flags exist to
           // prevent. Two endpoints, two answers.
-          // `openDomain` is deliberately NOT folded in here any more. It is not
-          // a read that failed - no read is attempted for a domain - so
+          // `noPaneReading` is deliberately NOT folded in here any more. It is
+          // not a read that failed - no read is attempted for it - so
           // reporting it as one would be a fault report over a reading that
           // does not exist. It travels as `unattributed` instead, which the
           // cards draw ahead of this.
@@ -3466,15 +3541,7 @@ export function NewUiApp() {
               !unattributedMachine &&
               (installsFailure !== null || toolEvents.failure !== null),
           }}
-          unattributed={openDomain}
-          // A section spans surfaces the gateway attributes differently: its
-          // config tool sends a User-Agent `client_tool` recognises, its host
-          // surfaces do not. So the counters are the tool's, under a heading
-          // naming the whole app, and saying which is the difference between a
-          // measurement and a plausible number.
-          //
-          // Computed from the section rather than hardcoded, so it disappears
-          // per surface as attribution improves rather than needing a sweep.
+          unattributed={noPaneReading}
           alert={
             <>
               {/* First: the write the user just asked for did not happen, and
@@ -3542,11 +3609,10 @@ export function NewUiApp() {
                   {modelError}
                 </p>
               )}
-              {openDomain || unattributedMachine ? null : (
-                // A domain pane has no per-app reading (the gateway attributes
-                // requests to config tools only), and an unattributed machine
-                // has no per-machine one yet. Neither is a failure, so neither
-                // gets the failure notices below.
+              {noPaneReading || unattributedMachine ? null : (
+                // A pane with no sender to read has no per-app reading, and an
+                // unattributed machine has no per-machine one yet. Neither is a
+                // failure, so neither gets the failure notices below.
                 <>
                   {/* The same notices the Overview shows, from the same builder, so
                       the two panes cannot describe one gateway failure two

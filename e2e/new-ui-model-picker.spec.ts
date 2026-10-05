@@ -46,11 +46,10 @@ const catalogue = [
 
 const base = { proxy: { running: true, ca_trusted: true }, tools };
 
-/** The card's heading over what the app's config holds. It said "Current Gate
- *  model" while the gateway rewrote each request; the choice is written into
- *  the app's own config now, which the app reads when it next starts. */
-const GATE_MODEL_HEADING = /^Gate models? in .+ config, from its next session$/;
-const GATE_MODELS_HEADING = /^Gate models in .+ config, from its next session$/;
+/** The card's heading over what the app's config holds: the frame's words
+ *  (`1410:28145`), singular over a single row. */
+const GATE_MODEL_HEADING = /^Current Gate models?$/;
+const GATE_MODELS_HEADING = /^Current Gate models$/;
 
 /**
  * Open one app's pane, which is where model selection lives.
@@ -117,7 +116,7 @@ test.describe("new UI model picker", () => {
 
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
-    await expect(app.page.getByRole("heading", { name: "Choose a Gate model" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Choose Gate models" })).toBeVisible();
     await expect(app.page.getByRole("dialog").getByRole("checkbox")).toHaveCount(2);
   });
 

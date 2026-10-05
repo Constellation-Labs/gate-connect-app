@@ -169,9 +169,8 @@ export interface SidebarApp {
    * pane, where there is room for the events themselves. It lives on the shared
    * row type because the two surfaces build their rows from one shape.
    *
-   * Absent where the feed has no attribution to give: it keys events on the tool
-   * slug, and a chat domain's traffic arrives unattributed on purpose -
-   * `NewUiApp`'s `openDomain` note has the reason - so those rows have no
+   * Absent where the feed has no attribution to give: it keys events on the
+   * sender's name, and a row with no sender to name (the OpenAI API) has no
    * reading, permanently. An unreadable feed is the same case, and the Overview's
    * Security events section is the surface that says so.
    */

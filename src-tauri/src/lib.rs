@@ -810,6 +810,10 @@ fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
 /// gateway migration that added it - scoping by default would hide every
 /// earlier request from a total the user could already see.
 ///
+/// `tools` narrows it to those senders - a section's client names on an app
+/// pane, one slug per tray row - and omitted or empty is every sender. See
+/// `activity::overview_clients` for what it accepts.
+///
 /// The payload stays raw JSON while the gateway contract moves; `lib/activity.ts`
 /// is the only place that models it.
 ///
@@ -820,11 +824,12 @@ fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
 #[tauri::command]
 async fn activity_overview(
     install_id: Option<String>,
-    tool: Option<String>,
+    tools: Option<Vec<String>>,
 ) -> Result<String, String> {
-    let tool = parse_tool(tool)?;
+    let clients = gate_connect_core::activity::overview_clients(&tools.unwrap_or_default())?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::overview_json(install_id.as_deref(), tool).map_err(envelope)
+        gate_connect_core::activity::overview_json(install_id.as_deref(), &clients)
+            .map_err(envelope)
     })
     .await
     .map_err(|e| format!("activity overview join error: {e}"))?
@@ -855,11 +860,11 @@ fn parse_tool(tool: Option<String>) -> Result<Option<gate_connect_core::registry
 #[tauri::command]
 async fn activity_cached_overview(
     install_id: Option<String>,
-    tool: Option<String>,
+    tools: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
-    let tool = parse_tool(tool)?;
+    let clients = gate_connect_core::activity::overview_clients(&tools.unwrap_or_default())?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), tool)
+        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), &clients)
     })
     .await
     .map_err(|e| format!("cached activity join error: {e}"))
@@ -886,18 +891,21 @@ async fn activity_cached_tool_overviews(
     .map_err(|e| format!("cached tool activity join error: {e}"))
 }
 
-/// One page of a tool's recent requests, for the app pane's feed (AG-574).
+/// The first page of a section's recent requests, for the app pane's feed (AG-574).
 ///
-/// `tool` is required here, unlike on the overview: the feed is always about one
-/// tool, and the gateway refuses a request that names none. Not cached - see
+/// `tools` is required and non-empty, unlike on the overview: the feed is always
+/// about named senders, and the gateway refuses a request that names none. Each
+/// must be a name the engine stamps (`activity::feed_clients`). Not cached - see
 /// `activity::tool_events_json` for why the held reading stays with the overview.
 #[tauri::command]
-async fn activity_tool_events(install_id: Option<String>, tool: String) -> Result<String, String> {
-    let Some(tool) = parse_tool(Some(tool))? else {
-        return Err("a tool slug is required to read a tool's events".into());
-    };
+async fn activity_tool_events(
+    install_id: Option<String>,
+    tools: Vec<String>,
+) -> Result<String, String> {
+    let clients = gate_connect_core::activity::feed_clients(&tools)?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::tool_events_json(install_id.as_deref(), tool).map_err(envelope)
+        gate_connect_core::activity::tool_events_json(install_id.as_deref(), &clients)
+            .map_err(envelope)
     })
     .await
     .map_err(|e| format!("activity tool events join error: {e}"))?
@@ -3837,32 +3845,128 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
     (closed, still_running)
 }
 
-/// Refresh Codex's app-server daemon, if it is stale and no Codex session is
+/// How often a pending Codex daemon refresh looks for the last session to
+/// close. Short, because a user who quits Codex to pick up a change reopens it
+/// straight away, and a reopen that beats the refresh lands on the old daemon.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const CODEX_IDLE_POLL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a pending refresh waits for Codex to go idle before giving up. A
+/// bound on the cost of a session that never ends, or of a process the walk
+/// keeps counting as a session (an empty argv on Windows would make the daemon
+/// itself look like one); the next change owes it again.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const CODEX_IDLE_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+
+/// A pending Codex daemon refresh, and whether a worker is waiting on it. One
+/// lock for both, so a refresh owed while the worker is deciding to stop is
+/// never lost (review on #398).
+#[derive(Default)]
+struct CodexIdleRefresh {
+    /// Why it is owed: the trigger, for the log line.
+    owed: Option<&'static str>,
+    worker: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static CODEX_IDLE_REFRESH: std::sync::Mutex<CodexIdleRefresh> =
+    std::sync::Mutex::new(CodexIdleRefresh {
+        owed: None,
+        worker: false,
+    });
+
+/// Refresh Codex's app-server daemon once it is stale and no Codex session is
 /// open. The one rule for it, shared by every path that changes what Codex
 /// should load: a model save, the restart notice's Close, and routing coming
 /// up (startup or the toggle), which reconnects Codex and can rewrite its
 /// config (review on #382).
 ///
-/// Stale is `codex::refresh_app_server_daemon`'s test: the daemon started
-/// before Gate last changed Codex's config. An open session is left alone,
-/// because the restart would end it; the restart notice asks the user to close
-/// it, and its Close comes back here. A session that outlived that close still
-/// counts as open, so it is not cut off either.
+/// Stale is `codex::app_server_daemon_is_stale`: the daemon started before Gate
+/// last changed Codex's config. A current or absent daemon owes nothing, so
+/// nothing waits. An open session is left alone, because the restart would end
+/// it: the refresh waits for the last session to close, however it closes. It
+/// used to be dropped, so a user who quit Codex themselves rather than through
+/// the restart notice reopened it on the old daemon, whose model list predated
+/// the change, and only a terminal command fixed it (staging QA on alpha.12,
+/// 2026-10-01).
 ///
-/// On a thread of its own: the restart can take seconds, and the callers are a
-/// save the user is watching, a close, and the startup thread.
+/// On a thread of its own: the staleness check walks the process table and the
+/// restart can take seconds, and the callers are a save the user is watching, a
+/// close, and the startup thread.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn refresh_codex_daemon_when_idle(why: &'static str) {
     std::thread::spawn(move || {
-        let mut open_sessions = 0u32;
-        for_each_agent_process(&["codex"], |_| open_sessions += 1);
-        if open_sessions > 0 {
+        if !gate_connect_core::integrations::codex::app_server_daemon_is_stale() {
             return;
         }
-        if let Err(e) = gate_connect_core::integrations::codex::refresh_app_server_daemon() {
-            eprintln!("[gate] {why}: could not refresh the Codex app server: {e:#}");
+        if owe_codex_refresh(&CODEX_IDLE_REFRESH, why) {
+            wait_for_codex_idle(
+                &CODEX_IDLE_REFRESH,
+                codex_sessions_open,
+                |why| {
+                    if let Err(e) =
+                        gate_connect_core::integrations::codex::refresh_app_server_daemon()
+                    {
+                        eprintln!("[gate] {why}: could not refresh the Codex app server: {e:#}");
+                    }
+                },
+                CODEX_IDLE_POLL,
+                CODEX_IDLE_WAIT_CAP,
+            );
         }
     });
+}
+
+/// Record a refresh as owed. Returns whether the caller must run the worker:
+/// `false` when one is already waiting, which will pick this up.
+fn owe_codex_refresh(state: &std::sync::Mutex<CodexIdleRefresh>, why: &'static str) -> bool {
+    let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+    st.owed = Some(why);
+    !std::mem::replace(&mut st.worker, true)
+}
+
+/// The worker: refresh as soon as no session is open, checking first and then
+/// every `poll`, until nothing is owed or `cap` has passed. A refresh owed
+/// again while one runs is made after it. Generic over the session check and
+/// the refresh so the hand-off can be tested without processes.
+fn wait_for_codex_idle(
+    state: &std::sync::Mutex<CodexIdleRefresh>,
+    sessions_open: impl Fn() -> bool,
+    refresh: impl Fn(&'static str),
+    poll: std::time::Duration,
+    cap: std::time::Duration,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        let why = {
+            let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+            match st.owed {
+                Some(why) if started.elapsed() < cap => why,
+                Some(why) => {
+                    eprintln!("[gate] {why}: Codex stayed open, gave up waiting to refresh its app server");
+                    *st = CodexIdleRefresh::default();
+                    return;
+                }
+                None => {
+                    st.worker = false;
+                    return;
+                }
+            }
+        };
+        if sessions_open() {
+            std::thread::sleep(poll);
+            continue;
+        }
+        state.lock().unwrap_or_else(|p| p.into_inner()).owed = None;
+        refresh(why);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn codex_sessions_open() -> bool {
+    let mut open = false;
+    for_each_agent_process(&["codex"], |_| open = true);
+    open
 }
 
 /// Close running agents so their next launch picks up the routing change, and
@@ -4268,7 +4372,8 @@ fn set_updater_relaunching(relaunching: bool) {
 /// Whether the OAuth session has died and the user must sign in again.
 ///
 /// Set by the startup session probe, by the background refresh loop on the
-/// signed-in→dead edge (a `live_session()` that can no longer refresh), and by
+/// signed-in→dead edge (a session the identity provider or the gateway refused,
+/// never one it could not reach; see [`session_dead_after_tick`]), and by
 /// [`signal_session_dead`] when the gateway refuses a real call. Cleared by the
 /// refresh loop, a recovered re-check, and a completed sign-in
 /// ([`oauth_begin_login`]).
@@ -4281,6 +4386,30 @@ fn set_updater_relaunching(relaunching: bool) {
 /// one tick stale costs one tray click landing on the other window. Starts
 /// false (assume signed in until proven dead).
 static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the refresh loop should consider the session dead after a tick's
+/// [`session_reading`](gate_connect_core::oauth::session_reading).
+///
+/// A refused or rejected session is dead only while a bundle is still stored:
+/// a deliberate sign-out clears the bundle (`oauth::clear`) and must stay quiet
+/// even though `auth_mode` is still OAuth. A bundle that no longer parses is
+/// still stored ([`has_stored_bundle`](gate_connect_core::oauth::has_stored_bundle)). An unavailable reading - the
+/// identity provider could not be reached, or the secret store could not be
+/// read - is no verdict, so the tick keeps whatever it believed before. Calling
+/// it dead put "session expired" on every machine that woke offline with an
+/// expired access token.
+fn session_dead_after_tick(
+    reading: &gate_connect_core::oauth::SessionReading,
+    has_stored_bundle: impl FnOnce() -> bool,
+    was_dead: bool,
+) -> bool {
+    use gate_connect_core::oauth::SessionReading;
+    match reading {
+        SessionReading::Live(_) => false,
+        SessionReading::SignedOut => has_stored_bundle(),
+        SessionReading::Unavailable => was_dead,
+    }
+}
 
 /// How far the wall clock may drift from elapsed monotonic time across one
 /// refresh tick before the background loop treats it as a jump rather than
@@ -5871,7 +6000,8 @@ pub fn run() {
                         gate_connect_core::startup::SessionVerdict::NeedsSignIn => {
                             SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
                         }
-                        gate_connect_core::startup::SessionVerdict::NotOauth => {}
+                        gate_connect_core::startup::SessionVerdict::NotOauth
+                        | gate_connect_core::startup::SessionVerdict::Unavailable => {}
                     }
 
                     // An `opencode.ai` domain an older build turned on, left
@@ -6242,30 +6372,34 @@ pub fn run() {
                             }
                         }
                     }
-                    // `live_session` silently refreshes a stale token (persisting
-                    // it) and yields None when the session is dead; push the
-                    // result into the running engine (a no-op when routing is
-                    // off). "" is a dead session: the engine then refuses
-                    // routed requests as signed out - an OAuth account holds
-                    // no key to fall back to - matching the signed-out state
-                    // the UI derives from oauth_status.
-                    let token = gate_connect_core::oauth::live_session()
-                        .map(|t| t.access_token)
-                        .unwrap_or_default();
+                    // `session_reading` silently refreshes a stale token
+                    // (persisting it) and is `Live` only for a usable session;
+                    // push its token into the running engine (a no-op when
+                    // routing is off). "" means no usable session: the engine
+                    // then refuses routed requests as signed out - an OAuth
+                    // account holds no key to fall back to - matching the
+                    // signed-out state the UI derives from oauth_status.
+                    let reading = gate_connect_core::oauth::session_reading();
+                    let token = match &reading {
+                        gate_connect_core::oauth::SessionReading::Live(t) => {
+                            t.access_token.clone()
+                        }
+                        _ => String::new(),
+                    };
                     gate_connect_core::proxy::manager().refresh_token(&token);
 
                     // Raise (or clear) the tray attention signal on the
-                    // signed-in↔dead edge. "Dead" means a stored session exists
-                    // but can no longer refresh (expired / revoked) - NOT a
-                    // deliberate sign-out, which clears the stored tokens
-                    // (`oauth::clear`) and so must stay quiet even though
-                    // auth_mode is still OAuth. Redraw only on a change so the
-                    // tray isn't rewritten every 30s.
-                    let dead = token.is_empty()
-                        && gate_connect_core::oauth::current()
-                            .ok()
-                            .flatten()
-                            .is_some();
+                    // signed-in↔dead edge. "Dead" means a stored session was
+                    // refused (revoked, expired refresh token, rejected by the
+                    // gateway) - NOT a deliberate sign-out, and not a refresh
+                    // that got no answer; see `session_dead_after_tick`.
+                    // Redraw only on a change so the tray isn't rewritten
+                    // every 30s.
+                    let dead = session_dead_after_tick(
+                        &reading,
+                        gate_connect_core::oauth::has_stored_bundle,
+                        SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed),
+                    );
                     if SESSION_NEEDS_SIGNIN.swap(dead, Ordering::Relaxed) != dead {
                         let running = gate_connect_core::proxy::manager()
                             .status()
@@ -6900,11 +7034,148 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 #[cfg(test)]
 mod tests {
 
+    mod codex_idle_refresh {
+        use super::super::{owe_codex_refresh, wait_for_codex_idle, CodexIdleRefresh};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        const POLL: Duration = Duration::from_millis(1);
+        const CAP: Duration = Duration::from_secs(60);
+
+        #[test]
+        fn refreshes_once_the_last_session_closes() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let checks = AtomicUsize::new(0);
+            let refreshed = Mutex::new(Vec::new());
+            wait_for_codex_idle(
+                &state,
+                || checks.fetch_add(1, Ordering::SeqCst) < 3,
+                |why| refreshed.lock().unwrap().push(why),
+                POLL,
+                CAP,
+            );
+            assert_eq!(*refreshed.lock().unwrap(), vec!["set model"]);
+            let st = state.lock().unwrap();
+            assert!(
+                st.owed.is_none() && !st.worker,
+                "the worker ends and frees the slot"
+            );
+        }
+
+        #[test]
+        fn a_second_owe_joins_the_waiting_worker_and_refreshes_once() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            assert!(
+                !owe_codex_refresh(&state, "close agents"),
+                "a worker is already waiting, so no second one starts"
+            );
+            let refreshes = AtomicUsize::new(0);
+            wait_for_codex_idle(
+                &state,
+                || false,
+                |_| {
+                    refreshes.fetch_add(1, Ordering::SeqCst);
+                },
+                POLL,
+                CAP,
+            );
+            assert_eq!(
+                refreshes.load(Ordering::SeqCst),
+                1,
+                "never two restarts for one owe"
+            );
+        }
+
+        #[test]
+        fn a_refresh_owed_during_a_refresh_is_made_after_it() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let calls = Mutex::new(Vec::new());
+            wait_for_codex_idle(
+                &state,
+                || false,
+                |why| {
+                    let first = calls.lock().unwrap().is_empty();
+                    calls.lock().unwrap().push(why);
+                    if first {
+                        // Another save lands while the first restart runs.
+                        assert!(!owe_codex_refresh(&state, "routing on"));
+                    }
+                },
+                POLL,
+                CAP,
+            );
+            assert_eq!(*calls.lock().unwrap(), vec!["set model", "routing on"]);
+        }
+
+        #[test]
+        fn gives_up_after_the_cap_and_frees_the_slot() {
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let refreshes = AtomicUsize::new(0);
+            wait_for_codex_idle(
+                &state,
+                || true,
+                |_| {
+                    refreshes.fetch_add(1, Ordering::SeqCst);
+                },
+                POLL,
+                Duration::from_millis(20),
+            );
+            assert_eq!(refreshes.load(Ordering::SeqCst), 0);
+            assert!(
+                owe_codex_refresh(&state, "next change"),
+                "a later owe starts a new worker"
+            );
+        }
+    }
+
     #[test]
     fn a_dead_session_sends_the_tray_to_the_main_window() {
         use super::{tray_entry, TrayEntry};
         assert_eq!(tray_entry(true), TrayEntry::MainWindow);
         assert_eq!(tray_entry(false), TrayEntry::Popover);
+    }
+
+    /// An offline tick is no verdict: it keeps the flag where it was, so a
+    /// machine that wakes without a network is not told its session expired,
+    /// and one already known dead stays dead until a real answer comes.
+    #[test]
+    fn a_refused_session_is_dead_and_no_answer_keeps_the_flag() {
+        use super::session_dead_after_tick;
+        use gate_connect_core::oauth::{OAuthTokens, SessionReading};
+        let live = SessionReading::Live(OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            id_token: None,
+            expires_at_unix: 0,
+            client_id: String::new(),
+        });
+        assert!(!session_dead_after_tick(&live, || true, true));
+        assert!(session_dead_after_tick(
+            &SessionReading::SignedOut,
+            || true,
+            false
+        ));
+        // A deliberate sign-out cleared the bundle.
+        assert!(!session_dead_after_tick(
+            &SessionReading::SignedOut,
+            || false,
+            true
+        ));
+        assert!(!session_dead_after_tick(
+            &SessionReading::Unavailable,
+            || true,
+            false
+        ));
+        assert!(session_dead_after_tick(
+            &SessionReading::Unavailable,
+            || true,
+            true
+        ));
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

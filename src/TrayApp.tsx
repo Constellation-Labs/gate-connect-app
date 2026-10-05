@@ -28,7 +28,9 @@ import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
 import {
   BAND_LABELS,
+  SECTION_CLIENTS,
   buildGroups,
+  clientScopeKey,
   hintForMember,
   isSettingsManaged,
   sectionHint,
@@ -75,15 +77,32 @@ const detectionSignature = (reading: unknown): string => JSON.stringify(reading)
  * nothing measured.
  */
 function messageFigure(
-  byTool: ToolMessagesView["byTool"],
+  byKey: ToolMessagesView["byKey"],
   pending: ToolMessagesView["pending"],
-  slug: string,
+  key: string,
 ): SidebarApp["messages"] {
-  const held = byTool.get(slug);
+  const held = byKey.get(key);
   if (held) {
     return { kind: "count", count: held.messages, measuredAt: held.measuredAt };
   }
-  return pending.has(slug) ? { kind: "pending" } : undefined;
+  return pending.has(key) ? { kind: "pending" } : undefined;
+}
+
+/**
+ * The alert figure for a row filed under `names`: every event the feed counted
+ * under any of them. One name for a tool row, a section's `SECTION_CLIENTS` for
+ * its row. Null counts are "no reading", which draws nothing unless the feed is
+ * still answering.
+ */
+function alertFigure(
+  counts: Map<string, number> | null,
+  pending: boolean,
+  names: readonly string[],
+): SidebarApp["alerts"] {
+  if (counts) {
+    return { kind: "count", count: names.reduce((n, c) => n + (counts.get(c) ?? 0), 0) };
+  }
+  return pending ? { kind: "pending" } : undefined;
 }
 
 /**
@@ -597,25 +616,34 @@ export function TrayApp() {
   /**
    * The messages figure per row, off the held readings and refreshed on each look.
    *
-   * The rows are the config tools only. A chat domain's traffic arrives at the
-   * gateway unattributed on purpose, so there is no per-tool reading to ask for -
-   * the same reason its alert count is absent rather than zero.
+   * A section in `SECTION_CLIENTS` reads its whole set, the same reading the
+   * window's pane takes, so the Claude row and the Claude pane count the same
+   * traffic. Its config tool is not read on its own as well: that row is the
+   * section's, and a second read per open is the fan-out `useToolMessages`
+   * exists to avoid. Every other installed tool reads its own slug. A section
+   * with no sender to name (the OpenAI API) has nothing to read.
    */
-  const messageSlugs = useMemo(
-    () => tools.filter((t) => t.status.kind !== "not_installed").map((t) => t.slug),
-    [tools],
-  );
+  const messageKeys = useMemo(() => {
+    const drawn = groups.filter((g) => SECTION_CLIENTS[g.id]);
+    const covered = new Set(drawn.flatMap((g) => sectionMemberKeys(g.id)));
+    return [
+      ...drawn.map((g) => clientScopeKey(SECTION_CLIENTS[g.id])),
+      ...tools
+        .filter((t) => t.status.kind !== "not_installed" && !covered.has(t.slug))
+        .map((t) => t.slug),
+    ];
+  }, [groups, tools]);
   // Destructured, not held as the view object. The hook returns a fresh literal
   // every render, so depending on it made `apps` - and `trayGroups` below it -
   // recompute on every render. `alertCounts` above depends on `securityFeed`'s
   // fields for exactly this reason.
   const {
-    byTool: messagesByTool,
+    byKey: messagesByKey,
     pending: messagesPending,
     orgName: readingOrgName,
   } = useToolMessages(
     account !== null && machineKnown,
-    messageSlugs,
+    messageKeys,
     installs.current,
     credential,
   );
@@ -626,9 +654,10 @@ export function TrayApp() {
    *
    * Keyed on the event's `tool`, the only attribution the feed carries, so an
    * unattributed event is counted against nobody rather than against a guessed
-   * slug. The chat domains are therefore permanently without one, which is why
-   * `alerts` is optional rather than defaulted: their rows keep the two-line
-   * shape instead of claiming a quiet day over traffic Gate cannot see.
+   * slug. A section row sums its `SECTION_CLIENTS` names. A row with no name to
+   * count under is permanently without one, which is why `alerts` is optional
+   * rather than defaulted: it keeps the two-line shape instead of claiming a
+   * quiet day over traffic Gate cannot see.
    *
    * Null is "no reading", and a row draws nothing for it. Four ways to get
    * there and they are one thing to the reader: the feed could not be read, it
@@ -697,12 +726,8 @@ export function TrayApp() {
           // A held figure outranks the pending state, so a look that re-reads
           // keeps the last number on the row instead of blanking it for the
           // length of a fetch. The skeleton is the first read only.
-          messages: messageFigure(messagesByTool, messagesPending, t.slug),
-          alerts: alertCounts
-            ? { kind: "count", count: alertCounts.get(t.slug) ?? 0 }
-            : alertsPending
-              ? { kind: "pending" }
-              : undefined,
+          messages: messageFigure(messagesByKey, messagesPending, t.slug),
+          alerts: alertFigure(alertCounts, alertsPending, [t.slug]),
         })),
     [
       tools,
@@ -711,7 +736,7 @@ export function TrayApp() {
       routingBusy,
       alertCounts,
       alertsPending,
-      messagesByTool,
+      messagesByKey,
       messagesPending,
     ],
   );
@@ -726,6 +751,10 @@ export function TrayApp() {
   // owns and gates behind a confirmation - so the tray would be the way to
   // route someone's signed-in session without ever being asked.
   const trayGroups = useMemo<SidebarGroup[]>(() => {
+    // Before the ledger is built, rows are tools, so each carries its own
+    // tool's figure: a "Claude Code" row is not the Claude section, and drawing
+    // the section's count under it would name the wrong subject. `messageKeys`
+    // reads the tool alone for exactly this case.
     if (groups.length === 0) {
       return apps.length > 0 ? [{ id: "all", label: "", apps }] : [];
     }
@@ -735,10 +764,19 @@ export function TrayApp() {
     for (const g of groups) {
       const status = sectionStatus(g, bySlug);
       if (!status) continue;
-      // The section's config tool carries the figures: the gateway attributes
-      // per tool, and a host surface has nothing of its own to report.
+      // A section with a client set carries the set's figures: the messages
+      // reading for the whole set, and every alert the feed filed under any of
+      // its names. Any other section's config tool carries them, as before.
+      const clients = SECTION_CLIENTS[g.id];
       const tool = g.members.find((m) => m.kind === "config");
-      const figures = tool ? bySlug.get(tool.key) : undefined;
+      const figures = clients
+        ? {
+            messages: messageFigure(messagesByKey, messagesPending, clientScopeKey(clients)),
+            alerts: alertFigure(alertCounts, alertsPending, clients),
+          }
+        : tool
+          ? bySlug.get(tool.key)
+          : undefined;
       for (const m of g.members) bySlug.delete(m.key);
       if (g.band !== band) {
         band = g.band;
@@ -760,7 +798,7 @@ export function TrayApp() {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
     return grouped.filter((g) => g.apps.length > 0);
-  }, [groups, apps, routingBusy]);
+  }, [groups, apps, routingBusy, messagesByKey, messagesPending, alertCounts, alertsPending]);
 
   /**
    * The app switch, the same one the rail draws.

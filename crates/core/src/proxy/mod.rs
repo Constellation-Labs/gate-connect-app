@@ -2147,11 +2147,16 @@ pub mod testing {
 /// An unknown slug yields `None` rather than being passed through, so the value
 /// that reaches the activity column is always one of ours. Same reasoning as the
 /// relay's marker: a request we cannot name is served unlabelled.
+///
+/// `env-proxy` is dropped with the unknown ones, as the relay's marker drops it:
+/// it is the environment channel rather than a program, so it is not a
+/// [`stamped_client`] name and no activity read could ask for its series.
 pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
     headers
         .get(GATE_TOOL_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(crate::registry::ToolId::from_slug)
+        .filter(|id| *id != crate::registry::ToolId::EnvProxy)
         .map(crate::registry::ToolId::slug)
 }
 
@@ -2188,11 +2193,10 @@ pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
 /// tool's own config - and this must stay a label.)
 ///
 /// Four of the values it emits - `claude-desktop`, `claude-web`, `chatgpt`,
-/// `chatgpt-web` - have no [`crate::registry::ToolId`], and the activity queries
-/// take one (`activity::overview_json`, `tool_events_json`). So the desktop-app
-/// and website series are written and not yet read back: the App pane's "these
-/// counts cover X" caveat is the user-visible consequence, and the reader that
-/// would close it belongs with whatever gives those surfaces a query key.
+/// `chatgpt-web` - have no [`crate::registry::ToolId`]. The activity reads take
+/// names from [`stamped_client`] instead, so the App pane reads them back per
+/// section: the Claude pane asks for Claude Code, the desktop app and claude.ai
+/// together.
 ///
 /// Slugs are [`crate::taxonomy::Client`] slugs, which the tool ones coincide
 /// with by construction - `Client::ClaudeCode` is `claude-code`. That is the
@@ -2361,6 +2365,24 @@ fn openai_web(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str>
 /// the two today; anything that starts to has to say which it means.
 const CLAUDE_WEB_CLIENT: &str = "claude-web";
 const CHATGPT_WEB_CLIENT: &str = "chatgpt-web";
+
+/// The name as the engine stamps it, if the engine can stamp it at all.
+///
+/// The closed set of `x-gate-client` values: every [`crate::taxonomy::Client`]
+/// but `any-app`, which names a ledger row rather than a sender, plus the two
+/// website slugs above. The activity reads validate against this, so a name
+/// the stamper cannot produce is refused here rather than read back as a
+/// series that is always empty. Defined beside the stamper's own constants so
+/// the two cannot drift; `every_stamped_client_is_readable` pins it.
+pub fn stamped_client(name: &str) -> Option<&'static str> {
+    use crate::taxonomy::Client;
+    Client::ALL
+        .into_iter()
+        .filter(|c| *c != Client::AnyApp)
+        .map(Client::slug)
+        .chain([CLAUDE_WEB_CLIENT, CHATGPT_WEB_CLIENT])
+        .find(|slug| *slug == name)
+}
 
 /// Inject the live Gate credential into `headers`, the single precedence rule
 /// shared by the MITM engine ([`engine::apply_rewrite`]) and the loopback
@@ -5415,6 +5437,99 @@ mod tests {
             HeaderValue::from_static("com.anthropic.claudefordesktop"),
         );
         assert_eq!(client_tool(&only_app, None), Some("claude-desktop"));
+    }
+
+    /// Every value `client_tool` can stamp is one the activity reads accept, so
+    /// no series is written that the App pane could never ask for.
+    ///
+    /// Walks every branch rather than the enum: the stamper's outputs are the
+    /// claim, and the set is what has to cover them. The relay marker's half is
+    /// in `relay.rs`, beside the function that peels it.
+    #[test]
+    fn every_stamped_client_is_readable() {
+        let with = |pairs: &[(&'static str, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (name, value) in pairs {
+                h.insert(
+                    HeaderName::from_static(name),
+                    HeaderValue::from_static(value),
+                );
+            }
+            h
+        };
+        let cases: Vec<(HeaderMap, Option<&str>)> = vec![
+            (with(&[("user-agent", "claude-cli/2.1.0")]), None),
+            (with(&[("user-agent", "codex_cli_rs/0.55.0")]), None),
+            (with(&[("user-agent", "opencode/0.4.2")]), None),
+            (with(&[("user-agent", "openclaw/1.4.0")]), None),
+            (with(&[("user-agent", "hermes/0.1")]), None),
+            (
+                with(&[(ANTHROPIC_CLIENT_PLATFORM, ANTHROPIC_DESKTOP_PLATFORM)]),
+                None,
+            ),
+            (
+                with(&[(ANTHROPIC_CLIENT_PLATFORM, ANTHROPIC_WEB_PLATFORM)]),
+                None,
+            ),
+            (
+                with(&[("anthropic-client-app", "com.anthropic.claudefordesktop")]),
+                None,
+            ),
+            (
+                with(&[("originator", "Codex Desktop")]),
+                Some("chatgpt-apps"),
+            ),
+            (with(&[("oai-device-id", "d")]), Some("chatgpt")),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for (headers, domain) in &cases {
+            let slug = client_tool(headers, *domain)
+                .unwrap_or_else(|| panic!("case {headers:?} on {domain:?} stamped nothing"));
+            assert_eq!(stamped_client(slug), Some(slug), "{slug:?} is not readable");
+            seen.insert(slug);
+        }
+        // And the other way: nothing in the set that no branch above stamps,
+        // so the reads cannot ask for a series the engine never writes.
+        let all: std::collections::BTreeSet<&str> = crate::taxonomy::Client::ALL
+            .into_iter()
+            .map(crate::taxonomy::Client::slug)
+            .chain([CLAUDE_WEB_CLIENT, CHATGPT_WEB_CLIENT])
+            .filter_map(stamped_client)
+            .collect();
+        assert_eq!(seen, all);
+        // `any-app` names a row, not a sender, and nothing stamps it.
+        assert_eq!(stamped_client("any-app"), None);
+        assert_eq!(stamped_client("env-proxy"), None);
+        assert_eq!(stamped_client(""), None);
+    }
+
+    /// The engine's config-header signal names only readable clients, the
+    /// header half of `every_stamped_client_is_readable`.
+    #[test]
+    fn every_tool_the_config_header_names_is_readable() {
+        use crate::registry::ToolId;
+        let named = |slug: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                HeaderName::from_static(GATE_TOOL_HEADER),
+                HeaderValue::from_static(slug),
+            );
+            header_tool(&h)
+        };
+        // Every registered tool, so a new one is covered without editing this.
+        for id in crate::registry::registry().iter().map(|i| i.id()) {
+            if id == ToolId::EnvProxy {
+                assert_eq!(
+                    named(id.slug()),
+                    None,
+                    "the environment channel is not a tool"
+                );
+                continue;
+            }
+            assert_eq!(named(id.slug()), Some(id.slug()));
+            assert_eq!(stamped_client(id.slug()), Some(id.slug()));
+        }
+        assert_eq!(named("nope"), None);
     }
 
     /// The website is attributed too, and separately from the desktop app.

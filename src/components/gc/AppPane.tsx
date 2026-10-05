@@ -474,7 +474,7 @@ function ModelSelection({
         Model selection
       </h2>
       <p className="mt-1 text-sm leading-5 text-base-muted-foreground">
-        Choose whether {appName} uses its own model or Gate models you enable
+        Choose whether {appName} or Gate selects the AI models for requests
       </p>
 
       {pending ? (
@@ -504,8 +504,8 @@ function ModelSelection({
               selected={gateActive}
               disabled={choice === null || busy}
               onSelect={() => onChoose("gate")}
-              icon={<Icon name="cube" size={20} />}
-              title="Gate model"
+              icon={<Icon name="boxes" size={20} />}
+              title="Gate models"
               // Names the chosen model once there is one, rather than the
               // generic line the frame draws.
               //
@@ -620,14 +620,16 @@ function ModelSelection({
        * picker when no model is enabled yet. */}
       {gateActive && (
         <>
-          {/* `heading/14` in `base/muted-foreground` (`1410:28145`); was
-            * `label/12`. The frame's words are "Current Gate models"; this
-            * says where the models went and when they take effect, by the
-            * user's decision (2026-09-30), and is owed to design. */}
-          <p className="mt-4 text-sm font-medium leading-5 tracking-heading-14 text-base-muted-foreground">
-            {(gateModel?.ids.length ?? 0) > 1
-              ? `Gate models in ${appName}'s config, from its next session`
-              : `Gate model in ${appName}'s config, from its next session`}
+          {/* `heading/16` in `base/foreground`, with the frame's words
+            * (`1410:28145`), enforced as drawn (2026-10-02) over the
+            * 2026-09-30 "in {app}'s config, from its next session" wording.
+            * That wording carried a fact the frame does not - the choice
+            * lands in the tool's config and takes effect in its next session
+            * - which now has no home on the card; it is owed a design answer.
+            * One local deviation: singular over a single row, since a plural
+            * heading there reads as rows gone missing. */}
+          <p className="mt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
+            {(gateModel?.ids.length ?? 0) > 1 ? "Current Gate models" : "Current Gate model"}
           </p>
 
           <div className="mt-2">
@@ -756,7 +758,7 @@ function ModelOption({
       className={`flex items-center gap-3 rounded-control border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-60 ${
         selected
           ? "border-base-primary bg-base-card"
-          : "border-base-border bg-base-card enabled:hover:bg-gray-50"
+          : "border-base-input bg-base-card enabled:hover:bg-gray-50"
       }`}
     >
       <span
@@ -776,7 +778,7 @@ function ModelOption({
       {selected && (
         <Icon
           name="circleCheck"
-          size={16}
+          size={20}
           className="shrink-0 text-base-primary"
         />
       )}

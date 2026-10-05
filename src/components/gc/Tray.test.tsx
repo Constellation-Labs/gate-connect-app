@@ -519,8 +519,9 @@ describe("the row activity line", () => {
   });
 
   it("draws nothing for a row the feed cannot attribute", () => {
-    // The chat-domain case, and it is permanent: the feed keys events on the
-    // tool slug and a domain's traffic arrives unattributed on purpose.
+    // A row the shell handed no alert figure: the feed keys events on the
+    // sender's name, and a row with no name to count under gets none. This
+    // component draws what it is given, so the absence must stay an absence.
     renderTray({ groups: withAlerts({ kind: "count", count: 23 }) });
 
     expect(row("Claude Desktop")).toContain("Not routed");

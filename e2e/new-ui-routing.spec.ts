@@ -880,14 +880,15 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
-  test("an app pane with no installed CLI says where its traffic is counted", async ({
+  test("an app pane with no installed CLI still reads its section", async ({
     boot,
   }) => {
-    // `openDomain` is `openTool === null` - "this section has no INSTALLED
-    // config tool" - not "this section is a provider endpoint", and a section
-    // stays alive on its `domain:` members. So a Claude pane on a machine with
-    // no Claude Code has no per-app reading either, and its cards have to say
-    // so rather than drawing zeros over Claude Desktop's traffic.
+    // The Claude pane reads Claude Code, the desktop app and claude.ai
+    // together (`SECTION_CLIENTS`), so a machine with no Claude Code still has
+    // a per-app reading: the desktop app and the website are named apart by
+    // the engine. Its cards must not send the reader to the Overview; the
+    // OpenAI API pane, whose traffic carries no app name, still does (see
+    // "a row with nothing attributable names where its traffic is counted").
     //
     // `tools: []`, because the default fixture ships every CLI as detected and
     // would never see this.
@@ -897,10 +898,11 @@ test.describe("new UI sidebar rail", () => {
     });
 
     await app.openApp("Claude");
-
-    await expect(
-      app.page.getByText("Shows in the Overview, not per app"),
-    ).toHaveCount(2);
+    // The fixture's machine is one the gateway has not seen yet, so the feed's
+    // empty state is what a pane with a reading draws here. The caveat would
+    // have been drawn in its place.
+    await expect(app.page.getByText("No recent messages")).toBeVisible();
+    await expect(app.page.getByText("Shows in the Overview, not per app")).toHaveCount(0);
   });
 
   test("a machine the gateway has not seen yet reads as empty, not unreadable", async ({

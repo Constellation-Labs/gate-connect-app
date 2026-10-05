@@ -1219,3 +1219,114 @@ describe("useRouting: the install funnel's tool_connected (AG-960)", () => {
     expect(noteToolConnected).toHaveBeenCalledWith("anthropic", "domain");
   });
 });
+
+describe("useRouting: one paint per action", () => {
+  // The switch reads the tool list and the status line reads the verdicts;
+  // painted apart, a turn-on showed "Not routed", then "Not protected", then
+  // "Protected". The caller now paints the snapshot with its verdicts, and the
+  // hook waits for that paint before it releases the switch.
+  it("holds busy until the caller has painted the snapshot", async () => {
+    (connectTool as Mock).mockResolvedValue({ kind: "connected" });
+    let paint!: () => void;
+    const painted = new Promise<void>((resolve) => {
+      paint = resolve;
+    });
+    const api: { current: ReturnType<typeof useRouting> | null } = { current: null };
+    const onSnapshot = vi.fn(() => painted);
+    function Probe() {
+      api.current = useRouting({
+        tools: [tool("codex", { kind: "detected" })],
+        proxy: proxyState(),
+        onSnapshot,
+      });
+      return null;
+    }
+    render(<Probe />);
+
+    let done = false;
+    await act(async () => {
+      void api.current!.setAppRouted("codex", true).then(() => {
+        done = true;
+      });
+    });
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.current!.busy).toBe(true);
+    expect(done).toBe(false);
+
+    await act(async () => {
+      paint();
+      await painted;
+    });
+    expect(api.current!.busy).toBe(false);
+    expect(done).toBe(true);
+  });
+
+  it("re-reads once for a cascade, after its last member", async () => {
+    (connectTool as Mock).mockResolvedValue({ kind: "connected" });
+    const { api, onSnapshot } = harness(
+      [tool("codex", { kind: "detected" }), tool("hermes", { kind: "detected" })],
+      proxyState(),
+    );
+
+    await act(async () => {
+      await api.current!.runCascade(async () => {
+        await api.current!.setAppRouted("codex", true);
+        await api.current!.setAppRouted("hermes", true);
+      });
+    });
+
+    expect(connectTool).toHaveBeenCalledTimes(2);
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.current!.busy).toBe(false);
+  });
+
+  it("lets every member through when the caller reads the latest hook", async () => {
+    // The section switch got its later members past the `busy` guard only
+    // because it held the render from before the first member's write. Read
+    // the hook after `busy` has rendered on, as a latest-ref caller would, and
+    // the cascade must still write all of them.
+    (connectTool as Mock).mockResolvedValue({ kind: "connected" });
+    const { api } = harness(
+      [tool("codex", { kind: "detected" }), tool("hermes", { kind: "detected" })],
+      proxyState(),
+    );
+    let release!: () => void;
+    const between = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    let cascade!: Promise<void>;
+    await act(async () => {
+      cascade = api.current!.runCascade(async () => {
+        await api.current!.setAppRouted("codex", true);
+        await between;
+        await api.current!.setAppRouted("hermes", true);
+      });
+    });
+    expect(api.current!.busy).toBe(true);
+
+    await act(async () => {
+      release();
+      await cascade;
+    });
+    expect(connectTool).toHaveBeenCalledTimes(2);
+    expect(api.current!.busy).toBe(false);
+  });
+
+  it("still re-reads and releases when a cascade member throws", async () => {
+    (connectTool as Mock).mockResolvedValue({ kind: "connected" });
+    const { api, onSnapshot } = harness([tool("codex", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api
+        .current!.runCascade(async () => {
+          await api.current!.setAppRouted("codex", true);
+          throw new Error("the second member blew up");
+        })
+        .catch(() => {});
+    });
+
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.current!.busy).toBe(false);
+  });
+});

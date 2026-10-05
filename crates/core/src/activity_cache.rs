@@ -33,7 +33,6 @@ use std::path::PathBuf;
 use crate::account::{self, AuthMode};
 use crate::env;
 use crate::primitives;
-use crate::registry::ToolId;
 
 /// The file's whole contents: the readings for **one** scope, keyed by tool.
 ///
@@ -93,12 +92,23 @@ static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// an installation id.
 const UNFILTERED: &str = "";
 
-/// `<installation>|<tool>`, either half possibly [`UNFILTERED`].
-fn key(install_id: Option<&str>, tool: Option<ToolId>) -> String {
+/// `<installation>|<tools>`, either half possibly [`UNFILTERED`].
+///
+/// The tool half is the client names sorted and comma-joined, so one set is one
+/// key whatever order it was asked in. A single name is just its slug, which is
+/// what [`load_tools`] hands the tray by row.
+fn key(install_id: Option<&str>, clients: &[&str]) -> String {
+    let mut clients = clients.to_vec();
+    clients.sort_unstable();
+    clients.dedup();
     format!(
         "{}|{}",
         install_id.unwrap_or(UNFILTERED),
-        tool.map(ToolId::slug).unwrap_or(UNFILTERED)
+        if clients.is_empty() {
+            UNFILTERED.to_owned()
+        } else {
+            clients.join(",")
+        }
     )
 }
 
@@ -114,6 +124,19 @@ fn key_tool(k: &str) -> &str {
 
 fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("activity-cache.json"))
+}
+
+/// The account a reading was asked for, taken before the request goes out.
+///
+/// Opaque on purpose: the only things to do with one are to hand it to
+/// [`store_for`] and to compare it with the account as it is now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope(String);
+
+/// The account as it is now, for a caller about to ask the gateway. `None` when
+/// there is none, which is also when there is nothing to hold a reading under.
+pub fn scope_now() -> Option<Scope> {
+    scope().map(Scope)
 }
 
 /// Which reading this is: everything that changes what the gateway would answer.
@@ -166,15 +189,26 @@ fn held(scope: &str) -> Option<CacheFile> {
     (entry.scope == scope).then_some(entry)
 }
 
-/// Hold a reading that just landed. Best effort: a cache that cannot be written
-/// is not a failed fetch, and the caller has the real answer in hand either way.
-pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
-    let Some(scope) = scope() else {
-        return;
-    };
+/// Hold a reading that just landed, as of the account it was asked for. Best
+/// effort: a cache that cannot be written is not a failed fetch, and the caller
+/// has the real answer in hand either way.
+///
+/// `taken` is the account before the request went out ([`scope_now`]), not
+/// after the reply came back. Working the scope out on arrival filed a reply
+/// under whichever account was current *then*, so a switch while a request was
+/// in flight held the old org's counts under the new org's scope, and the tray
+/// opened on them. A reply whose account is no longer current is not held at
+/// all: it is true of an account the user has left.
+pub fn store_for(taken: &Scope, install_id: Option<&str>, clients: &[&str], body: &str) {
     // Held for the duration of the read-modify-write, not just the write: two
     // threads that both read this file before either writes lose one insert.
+    // And taken before the comparison, so a scope cannot change between the
+    // check and the write.
     let _lock = STORE_LOCK.lock();
+    if scope().as_deref() != Some(taken.0.as_str()) {
+        return;
+    }
+    let scope = taken.0.clone();
     // Merged into whatever this scope already holds, so one tool's read does not
     // evict the others - the whole point of the map. A file from another scope is
     // replaced rather than merged into: its readings belong to an org the user
@@ -202,7 +236,7 @@ pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
     }
     entry
         .readings
-        .insert(key(install_id, tool), body.to_owned());
+        .insert(key(install_id, clients), body.to_owned());
     let Ok(path) = config_path() else {
         return;
     };
@@ -219,9 +253,9 @@ pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
 /// Infallible by design, like [`crate::preferences::load`]: every failure here -
 /// no file, unreadable, unparseable, a different org - means the same thing to
 /// the caller, which is that it has to wait for the network like it always did.
-pub fn load(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
+pub fn load(install_id: Option<&str>, clients: &[&str]) -> Option<String> {
     let want = scope()?;
-    held(&want)?.readings.remove(&key(install_id, tool))
+    held(&want)?.readings.remove(&key(install_id, clients))
 }
 
 /// Every per-tool reading held for this scope, keyed by slug.
@@ -234,6 +268,9 @@ pub fn load(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
 /// unfiltered reading is the Overview's, attributable to no row, and a caller
 /// iterating rows would have to know to skip a key that looks like every other
 /// one. Another machine's reading is not this machine's traffic at all.
+/// A section's reading is handed out under its sorted, comma-joined names - the
+/// key the app pane stored it under, and the one the tray's section row asks
+/// for - so the two surfaces share one reading of one section.
 pub fn load_tools(install_id: Option<&str>) -> BTreeMap<String, String> {
     let Some(want) = scope() else {
         return BTreeMap::new();
@@ -264,6 +301,11 @@ pub fn clear() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Store as of the account now, which is every case here but the switch.
+    fn store(install_id: Option<&str>, clients: &[&str], body: &str) {
+        store_for(&scope_now().expect("an account"), install_id, clients, body);
+    }
 
     /// The property the whole module rests on: a reading written for one scope is
     /// never handed to another. Exercised on the struct rather than through the
@@ -304,21 +346,30 @@ mod tests {
     /// evicting each other on every store.
     #[test]
     fn the_installation_filter_is_part_of_the_key() {
-        assert_eq!(key(None, None), "|");
-        assert_eq!(key(Some("install-7"), None), "install-7|");
-        assert_eq!(key(None, Some(ToolId::Codex)), "|codex");
-        assert_eq!(
-            key(Some("install-7"), Some(ToolId::Codex)),
-            "install-7|codex"
-        );
-        assert_ne!(
-            key(None, Some(ToolId::Codex)),
-            key(Some("install-7"), Some(ToolId::Codex))
-        );
+        assert_eq!(key(None, &[]), "|");
+        assert_eq!(key(Some("install-7"), &[]), "install-7|");
+        assert_eq!(key(None, &["codex"]), "|codex");
+        assert_eq!(key(Some("install-7"), &["codex"]), "install-7|codex");
+        assert_ne!(key(None, &["codex"]), key(Some("install-7"), &["codex"]));
         assert_eq!(key_install("install-7|codex"), "install-7");
         assert_eq!(key_tool("install-7|codex"), "codex");
         assert_eq!(key_install("|codex"), UNFILTERED);
         assert_eq!(key_tool("install-7|"), UNFILTERED);
+        // A section's set is one key whatever order it was asked in, and not
+        // any one of its members' keys. `clientScopeKey` in `src/lib/groups.ts`
+        // has to build the same tool half, and its test pins this literal.
+        assert_eq!(
+            key(None, &["claude-web", "claude-code", "claude-desktop"]),
+            "|claude-code,claude-desktop,claude-web"
+        );
+        assert_eq!(
+            key(None, &["claude-code", "claude-desktop", "claude-web"]),
+            key(None, &["claude-web", "claude-desktop", "claude-code"])
+        );
+        assert_ne!(
+            key(None, &["claude-code", "claude-web"]),
+            key(None, &["claude-code"])
+        );
     }
 
     /// The same property for the tool dimension, which the map key carries now
@@ -333,10 +384,9 @@ mod tests {
         };
         let mine = Some("install-7");
         file.readings
-            .insert(key(mine, Some(ToolId::ClaudeCode)), "cc".into());
-        file.readings
-            .insert(key(mine, Some(ToolId::Codex)), "cx".into());
-        file.readings.insert(key(None, None), "org".into());
+            .insert(key(mine, &["claude-code"]), "cc".into());
+        file.readings.insert(key(mine, &["codex"]), "cx".into());
+        file.readings.insert(key(None, &[]), "org".into());
 
         assert_eq!(
             file.readings
@@ -400,6 +450,55 @@ mod tests {
         );
     }
 
+    /// A reply that lands after an account switch is not held, under either
+    /// account: it was asked for the first, which the user has left, and filing
+    /// it under the second is the replay this module exists to prevent.
+    #[test]
+    fn a_reply_from_before_an_account_switch_is_not_held() {
+        // Both seams are process-global; see `replacing_an_api_key_changes_the_scope`.
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!("gate-cache-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        account::save("https://gw.example", Some("sk-gw-aaaaaaaaaaaa1111")).unwrap();
+        let asked_for = scope_now().expect("an account exists");
+        // The request is in flight; the user replaces the key with another org's.
+        account::save("https://gw.example", Some("sk-gw-bbbbbbbbbbbb2222")).unwrap();
+        store_for(
+            &asked_for,
+            Some("install-7"),
+            &["claude-code"],
+            r#"{"org":"first"}"#,
+        );
+        let under_new = load(Some("install-7"), &["claude-code"]);
+        let rows_new = load_tools(Some("install-7"));
+        // And the ordinary case still holds.
+        store(Some("install-7"), &["claude-code"], r#"{"org":"second"}"#);
+        let after = load(Some("install-7"), &["claude-code"]);
+
+        let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        };
+        restore("GATE_CONNECT_TEST_HOME", prev_home);
+        restore("GATE_CONNECT_TEST_SECRETS", prev_secrets);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            under_new, None,
+            "the old org's counts under the new account"
+        );
+        assert!(
+            rows_new.is_empty(),
+            "the tray would open on the old org's counts"
+        );
+        assert_eq!(after.as_deref(), Some(r#"{"org":"second"}"#));
+    }
+
     /// The merge, through the real filesystem: storing one tool must not evict
     /// another. A slot that held one reading is what made a per-row figure
     /// impossible - the tray's second row would evict the first - so this is the
@@ -419,25 +518,25 @@ mod tests {
         // One machine's per-tool readings, and the Overview's own org-wide one.
         // The tray writes the first kind, the Overview the second, and before the
         // installation became part of the key each store wiped the other's.
-        store(
-            Some("install-7"),
-            Some(ToolId::ClaudeCode),
-            r#"{"tool":"cc"}"#,
-        );
-        store(Some("install-7"), Some(ToolId::Codex), r#"{"tool":"cx"}"#);
-        store(None, None, r#"{"tool":"org"}"#);
+        store(Some("install-7"), &["claude-code"], r#"{"tool":"cc"}"#);
+        store(Some("install-7"), &["codex"], r#"{"tool":"cx"}"#);
+        store(None, &[], r#"{"tool":"org"}"#);
+        // And a section's reading, which the app pane writes under the set.
+        let claude = ["claude-code", "claude-desktop", "claude-web"];
+        store(Some("install-7"), &claude, r#"{"tool":"claude"}"#);
 
-        let cc = load(Some("install-7"), Some(ToolId::ClaudeCode));
-        let cx = load(Some("install-7"), Some(ToolId::Codex));
-        let org = load(None, None);
+        let section = load(Some("install-7"), &claude);
+        let cc = load(Some("install-7"), &["claude-code"]);
+        let cx = load(Some("install-7"), &["codex"]);
+        let org = load(None, &[]);
         let rows = load_tools(Some("install-7"));
         let other_machine = load_tools(None);
         // Browsing another machine in the picker. Its readings are not this
         // machine's traffic, so they replace them - but the Overview's own
         // reading belongs to no machine and has to survive.
-        store(Some("install-9"), Some(ToolId::Codex), r#"{"tool":"cx-9"}"#);
-        let after_other_machine = load(Some("install-7"), Some(ToolId::ClaudeCode));
-        let org_after = load(None, None);
+        store(Some("install-9"), &["codex"], r#"{"tool":"cx-9"}"#);
+        let after_other_machine = load(Some("install-7"), &["claude-code"]);
+        let org_after = load(None, &[]);
 
         let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
             Some(v) => std::env::set_var(k, v),
@@ -448,6 +547,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
 
         assert_eq!(cc.as_deref(), Some(r#"{"tool":"cc"}"#));
+        assert_eq!(
+            section.as_deref(),
+            Some(r#"{"tool":"claude"}"#),
+            "a section's set is its own key, beside its members' readings"
+        );
         assert_eq!(
             cx.as_deref(),
             Some(r#"{"tool":"cx"}"#),
@@ -461,9 +565,13 @@ mod tests {
         );
         assert_eq!(
             rows.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["claude-code", "codex"],
+            vec![
+                "claude-code",
+                "claude-code,claude-desktop,claude-web",
+                "codex"
+            ],
             "one machine's tool-filtered readings, and nothing else: an \
-             unfiltered reading is no row's"
+             unfiltered reading is no row's, and a section's is under its set"
         );
         assert!(
             other_machine.is_empty(),

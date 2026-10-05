@@ -53,10 +53,11 @@ afterEach(cleanup);
 describe("the model picker, choosing several", () => {
   it("draws the file's copy, and names the app in the subtitle", () => {
     renderPicker();
-    // Singular in both modes. `665:18405` draws it, and that frame is this
-    // dialog; the plural came from `665:19069` and design pointed here.
+    // Plural in the multiple mode, which the current picker frame
+    // (`1410:31859`) draws over the older singular (`665:18405`); the frame
+    // is enforced as drawn (2026-10-02). The single mode keeps the singular.
     expect(
-      screen.getByRole("heading", { name: "Choose a Gate model" }),
+      screen.getByRole("heading", { name: "Choose Gate models" }),
     ).toBeTruthy();
     expect(screen.getByRole("dialog").textContent).toContain(
       "OpenCode will be able to use these models",
