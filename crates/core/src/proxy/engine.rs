@@ -322,6 +322,104 @@ fn enabled_only(domains: &[ProxyDomain]) -> Vec<ProxyDomain> {
     domains.iter().filter(|d| d.enabled).cloned().collect()
 }
 
+/// How often the engine PINGs an HTTP/2 connection to the gateway while a
+/// request is open on it.
+const UPSTREAM_H2_PING_INTERVAL: Duration = Duration::from_secs(20);
+/// How long a PING may go unanswered before the connection is declared dead.
+const UPSTREAM_H2_PING_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The client hudsucker forwards every intercepted request with.
+///
+/// hudsucker's own default sets only the two http1 header-case options below,
+/// so an h2 connection to the gateway had no liveness check at all: when the
+/// CloudFront leg died without a reset reaching us, a request already written
+/// to it waited forever. No response headers, no error, so hudsucker never
+/// reached `handle_error` and the client got nothing until its own timer.
+/// Measured on the 2026-10-02 bench (AG-1002): the ALB shows CloudFront hanging
+/// up 2.6 to 6.9 s into each request, the engine logged no response for it,
+/// and Claude Code gave up at its 183 s first-byte window, five times.
+///
+/// The PING runs only while a stream is open (`keep_alive_while_idle` stays
+/// off), and the gateway's edge answers it itself, so a long silent response
+/// (extended thinking) is unaffected: only a connection that has stopped
+/// answering is failed, and hudsucker turns that into a 502 the client retries.
+fn upstream_client_builder(
+    ping_interval: Duration,
+    ping_timeout: Duration,
+) -> hudsucker::hyper_util::client::legacy::Builder {
+    let mut builder = hudsucker::hyper_util::client::legacy::Client::builder(TokioExecutor::new());
+    // The two http1 options are hudsucker's own defaults, kept so supplying a
+    // builder does not silently give up header-case preservation.
+    builder
+        .http1_title_case_headers(true)
+        .http1_preserve_header_case(true)
+        // h2 keep-alive is inert without a timer.
+        .timer(hudsucker::hyper_util::rt::TokioTimer::new())
+        .http2_keep_alive_interval(ping_interval)
+        .http2_keep_alive_timeout(ping_timeout);
+    builder
+}
+
+/// How long an upstream socket may sit idle before the OS sends the first TCP
+/// keepalive probe.
+const UPSTREAM_TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(20);
+/// Gap between unanswered probes.
+const UPSTREAM_TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+/// Unanswered probes before the OS resets the socket. With the two above, a
+/// dead idle socket fails 20 + 4 x 5 = 40 s after it last carried data: the
+/// same window as the h2 PING (20 s interval + 20 s timeout).
+const UPSTREAM_TCP_KEEPALIVE_RETRIES: u32 = 4;
+
+/// The TCP connector under the engine's TLS connector to the gateway.
+///
+/// HTTP/1.1 has no PING, so an h1 connection whose far side vanished without a
+/// reset waits for response headers forever, the same AG-1002 hang the h2
+/// keep-alive above closes. TCP keepalive is the h1 equivalent: while a
+/// request waits in silence the socket carries no unacknowledged data, so the
+/// OS probes it, and a peer that stops answering gets the socket reset, which
+/// fails the request and hudsucker answers 502. A slow but live response is
+/// unaffected, because the peer's kernel answers probes whatever the server
+/// is doing. It also clears dead pooled sockets, h1 or h2, before reuse.
+///
+/// A response-header deadline is deliberately NOT used, on h1 or h2. The
+/// gateway writes no status line until the provider's own headers arrive, and
+/// for a non-streamed or block-scanned response not until the body is done or
+/// its first heartbeat (15 s later). Its own first-byte budget is 525 s in
+/// production, with CloudFront's origin read timeout at 540 s above it. Any
+/// deadline that could have caught the AG-1002 hang before Claude Code's own
+/// 183 s would cut off legitimate slow first bytes, and one above 540 s is
+/// later than every client already gives up.
+///
+/// Known limit, shared with the PING: both are answered by the CloudFront
+/// edge, so a dead CloudFront-to-origin hop is invisible from here. The edge
+/// is what sees that hop; nothing at the engine can, short of the gateway
+/// sending bytes before the provider answers.
+///
+/// `enforce_http(false)` matches what `HttpsConnectorBuilder::build` sets on
+/// the connector it would otherwise create: the TLS layer above enforces the
+/// scheme.
+fn upstream_http_connector() -> hudsucker::hyper_util::client::legacy::connect::HttpConnector {
+    let mut http = hudsucker::hyper_util::client::legacy::connect::HttpConnector::new();
+    http.enforce_http(false);
+    http.set_keepalive(Some(UPSTREAM_TCP_KEEPALIVE_IDLE));
+    http.set_keepalive_interval(Some(UPSTREAM_TCP_KEEPALIVE_INTERVAL));
+    http.set_keepalive_retries(Some(UPSTREAM_TCP_KEEPALIVE_RETRIES));
+    http
+}
+
+/// The connector hudsucker opens every upstream connection with: TLS from
+/// `tls` (ALPN h2 then http/1.1) over [`upstream_http_connector`].
+fn upstream_https_connector(
+    tls: ClientConfig,
+) -> hyper_rustls::HttpsConnector<hudsucker::hyper_util::client::legacy::connect::HttpConnector> {
+    hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(upstream_http_connector())
+}
+
 /// TLS config for the engine's own outbound hop - to the gateway for a
 /// rewritten request, and to the real provider for a passthrough path on an
 /// intercepted host.
@@ -2616,12 +2714,7 @@ where
                         return;
                     }
                 };
-                let https = hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_tls_config(tls)
-                    .https_or_http()
-                    .enable_http1()
-                    .enable_http2()
-                    .build();
+                let https = upstream_https_connector(tls);
                 // Supplying our own server builder to raise the h2 header
                 // limit. hudsucker's fallback builder only configures `http1()`,
                 // so h2 keeps the `h2` crate default
@@ -2652,6 +2745,10 @@ where
                     .with_listener(listener)
                     .with_ca(ca)
                     .with_http_connector(https)
+                    .with_client(upstream_client_builder(
+                        UPSTREAM_H2_PING_INTERVAL,
+                        UPSTREAM_H2_PING_TIMEOUT,
+                    ))
                     .with_server(server)
                     .with_http_handler(handler)
                     .with_graceful_shutdown(async move {
@@ -3990,5 +4087,168 @@ mod tests {
             .is_some_and(|a| a.contains("finish the check when it opens")));
         assert!(solve_advice(SolveOutcome::WindowFailed)
             .is_some_and(|a| a.contains("nothing on screen")));
+    }
+
+    /// A stand-in for the gateway's edge over h2c: it completes the HTTP/2
+    /// handshake, accepts the request, and never answers it. `answer_pings`
+    /// decides whether the connection is alive (PINGs ACKed, as CloudFront
+    /// does while a slow response is still being produced) or dead (nothing
+    /// comes back, the AG-1002 shape: a leg that dropped without a reset).
+    async fn silent_h2_edge(answer_pings: bool) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut preface = [0u8; 24];
+            sock.read_exact(&mut preface).await.unwrap();
+            // Server SETTINGS (empty), then ACK the client's.
+            sock.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
+            sock.write_all(&[0, 0, 0, 4, 1, 0, 0, 0, 0]).await.unwrap();
+            loop {
+                let mut head = [0u8; 9];
+                if sock.read_exact(&mut head).await.is_err() {
+                    return;
+                }
+                let len =
+                    usize::from(head[0]) << 16 | usize::from(head[1]) << 8 | usize::from(head[2]);
+                let mut payload = vec![0u8; len];
+                if sock.read_exact(&mut payload).await.is_err() {
+                    return;
+                }
+                let is_ping = head[3] == 6 && head[4] & 1 == 0;
+                if is_ping && answer_pings {
+                    let mut ack = vec![0, 0, 8, 6, 1, 0, 0, 0, 0];
+                    ack.extend_from_slice(&payload);
+                    if sock.write_all(&ack).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        addr
+    }
+
+    /// Sends one request through the engine's upstream client to `addr` and
+    /// reports how it ended within `budget`: `Some(true)` an error, `Some(false)`
+    /// a response, `None` still waiting.
+    fn request_outcome(
+        answer_pings: bool,
+        ping: Option<Duration>,
+        budget: Duration,
+    ) -> Option<bool> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let addr = silent_h2_edge(answer_pings).await;
+            let mut builder = upstream_client_builder(
+                ping.unwrap_or(UPSTREAM_H2_PING_INTERVAL),
+                ping.unwrap_or(UPSTREAM_H2_PING_TIMEOUT),
+            );
+            if ping.is_none() {
+                builder.http2_keep_alive_interval(None);
+            }
+            // h2c: the bench path negotiates h2 by ALPN, which a loopback
+            // plaintext socket cannot, so pin the protocol instead.
+            builder.http2_only(true);
+            let client =
+                builder.build(hudsucker::hyper_util::client::legacy::connect::HttpConnector::new());
+            let req = Request::builder()
+                .method("POST")
+                .uri(format!("http://{addr}/v1/messages"))
+                .body(http_body_util::Empty::<bytes::Bytes>::new())
+                .unwrap();
+            match tokio::time::timeout(budget, client.request(req)).await {
+                Ok(result) => Some(result.is_err()),
+                Err(_) => None,
+            }
+        })
+    }
+
+    #[test]
+    fn a_dead_h2_connection_to_the_gateway_fails_the_request_instead_of_hanging() {
+        // Production uses 20 s + 20 s; the mechanism is the same at 100 ms.
+        let outcome = request_outcome(
+            false,
+            Some(Duration::from_millis(100)),
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            outcome,
+            Some(true),
+            "an unanswered PING must fail the open request"
+        );
+    }
+
+    #[test]
+    fn a_live_but_slow_h2_response_is_not_cut_off_by_the_ping() {
+        // The edge ACKs every PING; the response itself takes longer than
+        // several PING rounds. That is extended thinking, and it must survive.
+        let outcome = request_outcome(
+            true,
+            Some(Duration::from_millis(100)),
+            Duration::from_millis(1500),
+        );
+        assert_eq!(
+            outcome, None,
+            "a connection that answers PINGs must keep waiting"
+        );
+    }
+
+    #[test]
+    fn without_the_ping_a_dead_connection_hangs_which_is_the_defect() {
+        // Control for the first test: hudsucker's own default client. Nothing
+        // ever ends the request, so the caller's own timer is all that is left.
+        let outcome = request_outcome(false, None, Duration::from_millis(1500));
+        assert_eq!(outcome, None);
+    }
+
+    /// h1 has no PING, so its liveness check is TCP keepalive on the socket
+    /// hudsucker's connector opens. Read back from a real connection made
+    /// through the same connector the engine hands hudsucker: without
+    /// `upstream_http_connector` the socket carries no SO_KEEPALIVE at all.
+    /// The probe itself cannot be exercised on loopback, where the kernel
+    /// always answers; what is pinned is that the OS is asked to send it.
+    #[test]
+    fn the_upstream_connector_turns_on_tcp_keepalive() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let tls = upstream_tls_config(aws_lc_rs::default_provider()).unwrap();
+            let mut connector = upstream_https_connector(tls);
+            let uri: Uri = format!("http://{addr}/").parse().unwrap();
+            let stream = tower_service::Service::call(&mut connector, uri)
+                .await
+                .unwrap();
+            let hyper_rustls::MaybeHttpsStream::Http(io) = stream else {
+                panic!("a plain http:// target must not be wrapped in TLS");
+            };
+            let sock = socket2::SockRef::from(io.inner());
+            assert!(
+                sock.keepalive().unwrap(),
+                "the upstream socket must have SO_KEEPALIVE"
+            );
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                assert_eq!(
+                    sock.tcp_keepalive_time().unwrap(),
+                    UPSTREAM_TCP_KEEPALIVE_IDLE
+                );
+                assert_eq!(
+                    sock.tcp_keepalive_interval().unwrap(),
+                    UPSTREAM_TCP_KEEPALIVE_INTERVAL
+                );
+                assert_eq!(
+                    sock.tcp_keepalive_retries().unwrap(),
+                    UPSTREAM_TCP_KEEPALIVE_RETRIES
+                );
+            }
+        });
     }
 }
