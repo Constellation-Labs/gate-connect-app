@@ -322,16 +322,20 @@ fn enabled_only(domains: &[ProxyDomain]) -> Vec<ProxyDomain> {
     domains.iter().filter(|d| d.enabled).cloned().collect()
 }
 
-/// How often the engine PINGs an HTTP/2 connection to the gateway while a
-/// request is open on it.
+/// How often the engine PINGs an upstream HTTP/2 connection while a request is
+/// open on it.
 const UPSTREAM_H2_PING_INTERVAL: Duration = Duration::from_secs(20);
 /// How long a PING may go unanswered before the connection is declared dead.
 const UPSTREAM_H2_PING_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The client hudsucker forwards every intercepted request with.
+/// The client hudsucker forwards every intercepted request with: rewritten
+/// requests to the gateway, and passthrough requests to the real provider on
+/// an intercepted host (api.anthropic.com, chatgpt.com behind Cloudflare, and
+/// so on; see [`upstream_tls_config`]). The PING below therefore reaches those
+/// servers too, not only the gateway's edge.
 ///
 /// hudsucker's own default sets only the two http1 header-case options below,
-/// so an h2 connection to the gateway had no liveness check at all: when the
+/// so an upstream h2 connection had no liveness check at all: when the
 /// CloudFront leg died without a reset reaching us, a request already written
 /// to it waited forever. No response headers, no error, so hudsucker never
 /// reached `handle_error` and the client got nothing until its own timer.
@@ -343,6 +347,19 @@ const UPSTREAM_H2_PING_TIMEOUT: Duration = Duration::from_secs(20);
 /// off), and the gateway's edge answers it itself, so a long silent response
 /// (extended thinking) is unaffected: only a connection that has stopped
 /// answering is failed, and hudsucker turns that into a 502 the client retries.
+///
+/// Timing: a dead connection is detected up to interval + timeout (about 40 s)
+/// after the last frame received from it, not 20 s.
+///
+/// Only a failure BEFORE the response headers becomes a 502. hudsucker reaches
+/// `handle_error` only while it is still waiting for them; once the headers are
+/// through, the same PING timeout ends the body stream, and the client sees a
+/// truncated response rather than an error status.
+///
+/// Not yet confirmed against the real edge: that CloudFront (and the
+/// providers' own servers, on passthrough) ACK a PING every 20 s on a stream
+/// that stays silent for a minute or more, without answering the PING rate
+/// with a GOAWAY. The tests below cover it against a mock edge only.
 fn upstream_client_builder(
     ping_interval: Duration,
     ping_timeout: Duration,
@@ -368,9 +385,16 @@ const UPSTREAM_TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 /// Unanswered probes before the OS resets the socket. With the two above, a
 /// dead idle socket fails 20 + 4 x 5 = 40 s after it last carried data: the
 /// same window as the h2 PING (20 s interval + 20 s timeout).
+///
+/// Ignored on Windows: hyper-util 0.1.20's `set_keepalive_retries` has no
+/// Windows arm, so Windows keeps its own fixed probe count (10 since Vista)
+/// and the window there is about 20 + 10 x 5 = 70 s. That is still well under
+/// Claude Code's 183 s first-byte window, so the fix holds on Windows too.
 const UPSTREAM_TCP_KEEPALIVE_RETRIES: u32 = 4;
 
-/// The TCP connector under the engine's TLS connector to the gateway.
+/// The TCP connector under the engine's upstream TLS connector, which opens
+/// every upstream connection: to the gateway for a rewritten request, and to
+/// the real provider for a passthrough one.
 ///
 /// HTTP/1.1 has no PING, so an h1 connection whose far side vanished without a
 /// reset waits for response headers forever, the same AG-1002 hang the h2
@@ -395,6 +419,15 @@ const UPSTREAM_TCP_KEEPALIVE_RETRIES: u32 = 4;
 /// is what sees that hop; nothing at the engine can, short of the gateway
 /// sending bytes before the provider answers.
 ///
+/// Known h1 gap, out of scope for AG-1002: keepalive only probes a socket with
+/// nothing unacknowledged in flight. If an h1 connection dies while request
+/// body bytes are still unacknowledged (Claude Code bodies run to hundreds of
+/// KB), the retransmission timeout governs instead, about 15 minutes on Linux
+/// with the default `tcp_retries2`. h2 is covered either way, because the PING
+/// timer runs regardless. On Linux, `HttpConnector::set_tcp_user_timeout`
+/// would close this gap; the AG-1002 hang was a request already fully written
+/// and waiting for headers, which keepalive does cover.
+///
 /// `enforce_http(false)` matches what `HttpsConnectorBuilder::build` sets on
 /// the connector it would otherwise create: the TLS layer above enforces the
 /// scheme.
@@ -418,6 +451,34 @@ fn upstream_https_connector(
         .enable_http1()
         .enable_http2()
         .wrap_connector(upstream_http_connector())
+}
+
+/// The `helper.log` line for a request hudsucker failed to forward. The
+/// client error's own `Display` is only its kind (`client error
+/// (SendRequest)`), so the source chain is appended: that is where the cause
+/// is named (`keep-alive timed out`, `connection reset`, ...).
+fn upstream_error_line(forwarded: Option<&str>, err: &(dyn std::error::Error + 'static)) -> String {
+    let mut cause = err.to_string();
+    let mut source = err.source();
+    while let Some(e) = source {
+        cause.push_str(": ");
+        cause.push_str(&e.to_string());
+        source = e.source();
+    }
+    format!(
+        "[gate-proxy] {} -> upstream failed, answering 502: {cause}",
+        forwarded.unwrap_or("?")
+    )
+}
+
+/// What the client gets for a request that could not be forwarded: the same
+/// empty 502 hudsucker's default `handle_error` returns, so overriding it to
+/// log changes nothing on the wire.
+fn upstream_error_response() -> hudsucker::hyper::Response<Body> {
+    hudsucker::hyper::Response::builder()
+        .status(hudsucker::hyper::StatusCode::BAD_GATEWAY)
+        .body(Body::empty())
+        .expect("a status and an empty body always build")
 }
 
 /// TLS config for the engine's own outbound hop - to the gateway for a
@@ -676,6 +737,13 @@ struct GateHandler {
     /// One-shot latch for the "unrecognised app shell" line in
     /// `handle_request`, shared across handler clones for the same reason.
     app_shell_unrecognised_logged: Arc<AtomicBool>,
+    /// What `handle_request` forwarded, as `<method> <host><path> -> <action>`,
+    /// so `handle_error` can name the request that failed: hudsucker hands it
+    /// only the client error, and its `HttpContext` carries just the peer
+    /// address. Path only, never the query, for the reason given where `path`
+    /// is taken. Per request for the same reason as
+    /// [`chatgpt_turn`](Self::chatgpt_turn).
+    forwarded: Option<String>,
 }
 
 impl GateHandler {
@@ -1008,6 +1076,7 @@ impl HttpHandler for GateHandler {
         // Likewise: only a successful OAuth-bearing rewrite below sets this.
         self.injected_oauth = false;
         self.sent_token = None;
+        self.forwarded = None;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
         // website, which shares their host (see `BROWSER_ROUTED`).
         // Classify before `decide` and hand it a narrowed rule set, so the
@@ -1356,7 +1425,32 @@ impl HttpHandler for GateHandler {
                 }
             }
         }
+        self.forwarded = Some(format!(
+            "{} {}{} -> {action}",
+            req.method(),
+            host.as_deref().unwrap_or("?"),
+            path,
+        ));
         req.into()
+    }
+
+    /// A request hudsucker could not forward: no connection, or one that died
+    /// before the response headers arrived (an unanswered h2 PING, a socket
+    /// reset by TCP keepalive). hudsucker's default answers the same empty 502
+    /// but records the failure only through `tracing`, which reaches stderr
+    /// only with `debug_log()` on, so `helper.log` stayed silent through every
+    /// AG-1002 hang. This line is unconditional: a failed upstream request is
+    /// rare, and it is the one thing the log must show.
+    ///
+    /// A connection that dies AFTER the headers never comes here: the client
+    /// gets a truncated body stream, not a 502.
+    async fn handle_error(
+        &mut self,
+        _ctx: &HttpContext,
+        err: hudsucker::hyper_util::client::legacy::Error,
+    ) -> hudsucker::hyper::Response<Body> {
+        eprintln!("{}", upstream_error_line(self.forwarded.as_deref(), &err));
+        upstream_error_response()
     }
 
     async fn handle_response(
@@ -2640,6 +2734,7 @@ where
         intercept: intercept_rx.clone(),
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
         app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
+        forwarded: None,
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -4129,24 +4224,25 @@ mod tests {
         addr
     }
 
-    /// Sends one request through the engine's upstream client to `addr` and
-    /// reports how it ended within `budget`: `Some(true)` an error, `Some(false)`
-    /// a response, `None` still waiting.
-    fn request_outcome(
+    /// The client error a request through the engine's upstream client to a
+    /// silent h2 edge ended with within `budget`: `Some(Err)` an error,
+    /// `Some(Ok)` a response, `None` still waiting. `ping` is the PING
+    /// (interval, timeout); `None` turns the PING off, as hudsucker's default
+    /// client has it.
+    fn request_result(
         answer_pings: bool,
-        ping: Option<Duration>,
+        ping: Option<(Duration, Duration)>,
         budget: Duration,
-    ) -> Option<bool> {
+    ) -> Option<Result<(), hudsucker::hyper_util::client::legacy::Error>> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async move {
             let addr = silent_h2_edge(answer_pings).await;
-            let mut builder = upstream_client_builder(
-                ping.unwrap_or(UPSTREAM_H2_PING_INTERVAL),
-                ping.unwrap_or(UPSTREAM_H2_PING_TIMEOUT),
-            );
+            let (interval, timeout) =
+                ping.unwrap_or((UPSTREAM_H2_PING_INTERVAL, UPSTREAM_H2_PING_TIMEOUT));
+            let mut builder = upstream_client_builder(interval, timeout);
             if ping.is_none() {
                 builder.http2_keep_alive_interval(None);
             }
@@ -4161,10 +4257,20 @@ mod tests {
                 .body(http_body_util::Empty::<bytes::Bytes>::new())
                 .unwrap();
             match tokio::time::timeout(budget, client.request(req)).await {
-                Ok(result) => Some(result.is_err()),
+                Ok(result) => Some(result.map(drop)),
                 Err(_) => None,
             }
         })
+    }
+
+    /// [`request_result`] reduced to how it ended: `Some(true)` an error,
+    /// `Some(false)` a response, `None` still waiting.
+    fn request_outcome(
+        answer_pings: bool,
+        ping: Option<(Duration, Duration)>,
+        budget: Duration,
+    ) -> Option<bool> {
+        request_result(answer_pings, ping, budget).map(|r| r.is_err())
     }
 
     #[test]
@@ -4172,7 +4278,7 @@ mod tests {
         // Production uses 20 s + 20 s; the mechanism is the same at 100 ms.
         let outcome = request_outcome(
             false,
-            Some(Duration::from_millis(100)),
+            Some((Duration::from_millis(100), Duration::from_millis(100))),
             Duration::from_secs(5),
         );
         assert_eq!(
@@ -4186,9 +4292,12 @@ mod tests {
     fn a_live_but_slow_h2_response_is_not_cut_off_by_the_ping() {
         // The edge ACKs every PING; the response itself takes longer than
         // several PING rounds. That is extended thinking, and it must survive.
+        // Frequent PINGs (100 ms) so the 1.5 s budget spans many rounds, but a
+        // 500 ms timeout: a single ACK delayed past 100 ms on a loaded CI
+        // runner would otherwise fail a connection that is alive.
         let outcome = request_outcome(
             true,
-            Some(Duration::from_millis(100)),
+            Some((Duration::from_millis(100), Duration::from_millis(500))),
             Duration::from_millis(1500),
         );
         assert_eq!(
@@ -4203,6 +4312,48 @@ mod tests {
         // ever ends the request, so the caller's own timer is all that is left.
         let outcome = request_outcome(false, None, Duration::from_millis(1500));
         assert_eq!(outcome, None);
+    }
+
+    /// What `handle_error` does with the PING failure above: one `[gate-proxy]`
+    /// line naming the request and the cause, and hudsucker's own empty 502.
+    /// The override itself takes an `HttpContext`, which only hudsucker can
+    /// build, so this drives the two halves it is made of with a real client
+    /// error rather than a constructed one.
+    #[test]
+    fn a_failed_upstream_request_is_logged_and_answered_with_an_empty_502() {
+        let err = match request_result(
+            false,
+            Some((Duration::from_millis(100), Duration::from_millis(100))),
+            Duration::from_secs(5),
+        ) {
+            Some(Err(err)) => err,
+            other => panic!("the dead connection must fail the request, got {other:?}"),
+        };
+        let line = upstream_error_line(
+            Some("POST api.anthropic.com/v1/messages -> rewrite->gateway"),
+            &err,
+        );
+        assert!(
+            line.starts_with(
+                "[gate-proxy] POST api.anthropic.com/v1/messages -> rewrite->gateway \
+                 -> upstream failed, answering 502: client error"
+            ),
+            "{line}"
+        );
+        // The cause sits in the source chain, not the client error's Display.
+        assert!(line.contains("keep-alive timed out"), "{line}");
+        assert!(
+            upstream_error_line(None, &err).starts_with("[gate-proxy] ? -> upstream failed"),
+            "a request with no memo still logs"
+        );
+
+        let res = upstream_error_response();
+        assert_eq!(res.status(), hudsucker::hyper::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            hudsucker::hyper::body::Body::size_hint(res.body()).exact(),
+            Some(0),
+            "the same empty body hudsucker's default answers"
+        );
     }
 
     /// h1 has no PING, so its liveness check is TCP keepalive on the socket
