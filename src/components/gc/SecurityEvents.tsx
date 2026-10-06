@@ -101,8 +101,13 @@ function Category({ value }: { value: string }) {
   const c = Object.hasOwn(CATEGORY, value) ? CATEGORY[value] : { label: value };
   return (
     <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
-      {c.icon && <Icon name={c.icon} size={20} className={GUARDRAIL_INK[c.icon]} />}
-      {c.label}
+      {c.icon && <Icon name={c.icon} size={20} className={`shrink-0 ${GUARDRAIL_INK[c.icon]}`} />}
+      {/* Truncated, with the gateway's string on hover: a category outside
+          the five prints as received and has no length bound, and the
+          column is fixed. */}
+      <span className="truncate" title={value}>
+        {c.label}
+      </span>
     </span>
   );
 }
@@ -120,7 +125,7 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
   return (
     <th
       scope="col"
-      className={`py-3 pl-4 text-left text-sm font-medium leading-5 text-base-muted-foreground ${className}`}
+      className={`whitespace-nowrap py-3 pl-4 text-left text-sm font-medium leading-5 text-base-muted-foreground ${className}`}
     >
       {children}
     </th>
@@ -263,174 +268,175 @@ export function SecurityEvents({
           * offline feed and a quiet machine now look the same here. Raised
           * with the decision, not overlooked. */}
         <CardHeader title="Security events" action={{ label: "View activity", onClick: onViewActivity }} />
-        {/* Fixed layout on a 900px floor, so a window narrower than the
-          * floor scrolls the table rather than crushing its columns. */}
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] table-fixed">
-            <thead>
-              {/* Measured 2026-10-06 at 1280x800, padding included, with
-                * `table-layout: auto; width: max-content` and the clamps removed:
-                *
-                *   column    need  width (of 900)
-                *   Time      124   15% = 135   "Dec 28, 10:59:59"
-                *   Security   87   11% =  99   "Flagged" pill
-                *   Category  118   14% = 126   "Credential" and its glyph
-                *   Tool      146   18% = 162   "Claude Desktop"; truncates
-                *   Model     257   30% = 270   a long Qwen id; truncates
-                *   Action    102   12% = 108   the xs View button
-                */}
+        <table className="w-full table-fixed">
+          <thead>
+            {/* Measured 2026-10-06 at 1280x800, padding included, with
+              * `table-layout: auto; width: max-content` and the clamps removed.
+              * No floor: the table is 974px at 1280 and 718px at the 1024
+              * window minimum, so the pixel figures below are of 900, between
+              * the two. At 718, Time and the Security pill run a few px into the
+              * next cell's padding and View takes its own right padding; the
+              * alternative was a floor that scrolls View out of sight.
+              *
+              *   column    need  width (of 900)
+              *   Time      124   15% = 135   "Dec 28, 10:59:59"
+              *   Security   87   11% =  99   "Flagged" pill
+              *   Category  118   14% = 126   "Credential" and its glyph; truncates
+              *   Tool      146   18% = 162   "Claude Desktop"; longer truncates
+              *   Model     257   30% = 270   a long Qwen id; longer truncates
+              *   Action    102   12% = 108   the xs View button
+              */}
+            <tr>
+              <Th className="w-[15%]">Time</Th>
+              <Th className="w-[11%]">Security</Th>
+              <Th className="w-[14%]">Category</Th>
+              <Th className="w-[18%]">Tool</Th>
+              <Th className="w-[30%]">Model</Th>
+              {/* The label inside, not `sr-only` on the cell: an absolutely
+                  positioned header no longer sets its column's width, and
+                  the column falls back to whatever share is left over. */}
+              <Th className="w-[12%]">
+                <span className="sr-only">Action</span>
+              </Th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <PendingRows />
+            ) : rows.length === 0 ? (
               <tr>
-                <Th className="w-[15%] whitespace-nowrap">Time</Th>
-                <Th className="w-[11%] whitespace-nowrap">Security</Th>
-                <Th className="w-[14%] whitespace-nowrap">Category</Th>
-                <Th className="w-[18%] whitespace-nowrap">Tool</Th>
-                <Th className="w-[30%] whitespace-nowrap">Model</Th>
-                {/* The label inside, not `sr-only` on the cell: an absolutely
-                    positioned header is not a cell, and a fixed table would
-                    lose this column's width with it. */}
-                <Th className="w-[12%] whitespace-nowrap">
-                  <span className="sr-only">Action</span>
-                </Th>
+                <td colSpan={6} className="px-4 pb-4">
+                  {unavailable ? (
+                    // AC6: cannot load. Says so, and offers the way out. Never
+                    // "No security events", which would be a claim about the
+                    // user's traffic made by a screen that failed to ask.
+                    <EmptyNote icon="triangleAlert">
+                      <span className="flex flex-col items-center gap-2">
+                        <span>Unavailable</span>
+                        <button
+                          type="button"
+                          onClick={onRetry}
+                          className="text-base-primary underline underline-offset-2"
+                        >
+                          Try again
+                        </button>
+                      </span>
+                    </EmptyNote>
+                  ) : historyUnavailable ? (
+                    // Live, empty, and unable to say the feed is empty: the
+                    // catch-up read is what would have answered that, and it
+                    // failed. Saying "No security events" here is the same
+                    // mistake `unavailable` above exists to prevent, one layer
+                    // down - a claim about the user's traffic made by a screen
+                    // whose question was refused.
+                    //
+                    // No Try again, deliberately, unlike the case above. That
+                    // one recovers because `retry` re-seeds and the read can
+                    // succeed. This one cannot: `Feed::retry_now` only wakes the
+                    // backoff between connection attempts, and the catch-up runs
+                    // once per connection off `hello` - so while the stream is
+                    // Live, which is exactly when this renders, a retry issues
+                    // no request and changes nothing. A button that reliably
+                    // does nothing is worse than no button; the next reconnect
+                    // is what fixes this, and the sentence says what is true
+                    // meanwhile. Giving the backfill a forced re-run is the real
+                    // fix and is a backend change, tracked separately.
+                    <EmptyNote icon="triangleAlert">
+                      Earlier events couldn’t be loaded
+                    </EmptyNote>
+                  ) : (
+                    // AC6: loaded, and there is nothing. A real answer.
+                    <EmptyNote icon="shieldCheck">No security events</EmptyNote>
+                  )}
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <PendingRows />
-              ) : rows.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 pb-4">
-                    {unavailable ? (
-                      // AC6: cannot load. Says so, and offers the way out. Never
-                      // "No security events", which would be a claim about the
-                      // user's traffic made by a screen that failed to ask.
-                      <EmptyNote icon="triangleAlert">
-                        <span className="flex flex-col items-center gap-2">
-                          <span>Unavailable</span>
-                          <button
-                            type="button"
-                            onClick={onRetry}
-                            className="text-base-primary underline underline-offset-2"
-                          >
-                            Try again
-                          </button>
+            ) : (
+              rows.map((e) => {
+                const action = ACTION_LABEL[e.action];
+                // The security bus passes the pipeline's `unknown` sentinel
+                // through on both columns, where the tool-events endpoint maps
+                // it to null; `attributed` makes the same reading here.
+                const provider = attributed(e.provider);
+                const model = attributed(e.model);
+                const label = model === null ? undefined : modelLabels?.(model);
+                return (
+                  // 56px rows with a full-width divider, 16px cells, `copy/14`
+                  // sans throughout (`1402:18003`). The time was mono 12px until
+                  // the 2026-09-29 redraw; a timestamp is a value, not machine
+                  // output, and CLAUDE.md's sans rule for identifier values
+                  // already said so. The frame draws a coloured tool logo
+                  // beside the tool (`1402:18014`, 20px) and the provider mark
+                  // beside the model (`1402:18017`, 20px); both are drawn, the
+                  // first by `ToolMark`, the second by `VendorMark` from the
+                  // provider, the id's namespace or the catalogue.
+                  <tr key={e.id} className="h-14 border-t border-base-border">
+                    <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
+                      {eventTime(e.at)}
+                    </td>
+                    <td className="whitespace-nowrap pl-4">
+                      <Pill className={action.badge}>{action.label}</Pill>
+                    </td>
+                    <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
+                      {e.category ? <Category value={e.category} /> : UNATTRIBUTED}
+                    </td>
+                    <td className="pl-4">
+                      <span className="flex items-center gap-2">
+                        {/* An unattributed row keeps the slot too, so its dash
+                            sits where the model cell's does. */}
+                        {e.tool === null ? (
+                          <span aria-hidden className={`shrink-0 ${MARK_SLOT[20]}`} />
+                        ) : (
+                          <ToolMark slug={e.tool} size={20} />
+                        )}
+                        {/* The slug on hover, as the model cell keeps its id. */}
+                        <span
+                          className="truncate text-sm leading-5 text-base-foreground"
+                          title={e.tool ?? undefined}
+                        >
+                          {e.tool === null
+                            ? UNATTRIBUTED
+                            : (toolNames?.get(e.tool) ?? clientNameFor(e.tool) ?? e.tool)}
                         </span>
-                      </EmptyNote>
-                    ) : historyUnavailable ? (
-                      // Live, empty, and unable to say the feed is empty: the
-                      // catch-up read is what would have answered that, and it
-                      // failed. Saying "No security events" here is the same
-                      // mistake `unavailable` above exists to prevent, one layer
-                      // down - a claim about the user's traffic made by a screen
-                      // whose question was refused.
-                      //
-                      // No Try again, deliberately, unlike the case above. That
-                      // one recovers because `retry` re-seeds and the read can
-                      // succeed. This one cannot: `Feed::retry_now` only wakes the
-                      // backoff between connection attempts, and the catch-up runs
-                      // once per connection off `hello` - so while the stream is
-                      // Live, which is exactly when this renders, a retry issues
-                      // no request and changes nothing. A button that reliably
-                      // does nothing is worse than no button; the next reconnect
-                      // is what fixes this, and the sentence says what is true
-                      // meanwhile. Giving the backfill a forced re-run is the real
-                      // fix and is a backend change, tracked separately.
-                      <EmptyNote icon="triangleAlert">
-                        Earlier events couldn’t be loaded
-                      </EmptyNote>
-                    ) : (
-                      // AC6: loaded, and there is nothing. A real answer.
-                      <EmptyNote icon="shieldCheck">No security events</EmptyNote>
-                    )}
-                  </td>
-                </tr>
-              ) : (
-                rows.map((e) => {
-                  const action = ACTION_LABEL[e.action];
-                  // The security bus passes the pipeline's `unknown` sentinel
-                  // through on both columns, where the tool-events endpoint maps
-                  // it to null; `attributed` makes the same reading here.
-                  const provider = attributed(e.provider);
-                  const model = attributed(e.model);
-                  const label = model === null ? undefined : modelLabels?.(model);
-                  return (
-                    // 56px rows with a full-width divider, 16px cells, `copy/14`
-                    // sans throughout (`1402:18003`). The time was mono 12px until
-                    // the 2026-09-29 redraw; a timestamp is a value, not machine
-                    // output, and CLAUDE.md's sans rule for identifier values
-                    // already said so. The frame draws a coloured tool logo
-                    // beside the tool (`1402:18014`, 20px) and the provider mark
-                    // beside the model (`1402:18017`, 20px); both are drawn, the
-                    // first by `ToolMark`, the second by `VendorMark` from the
-                    // provider, the id's namespace or the catalogue.
-                    <tr key={e.id} className="h-14 border-t border-base-border">
-                      <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
-                        {eventTime(e.at)}
-                      </td>
-                      <td className="whitespace-nowrap pl-4">
-                        <Pill className={action.badge}>{action.label}</Pill>
-                      </td>
-                      <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
-                        {e.category ? <Category value={e.category} /> : UNATTRIBUTED}
-                      </td>
-                      <td className="pl-4">
-                        <span className="flex items-center gap-2">
-                          {/* An unattributed row keeps the slot too, so its dash
-                              sits where the model cell's does. */}
-                          {e.tool === null ? (
-                            <span aria-hidden className={`shrink-0 ${MARK_SLOT[20]}`} />
-                          ) : (
-                            <ToolMark slug={e.tool} size={20} />
-                          )}
-                          {/* The slug on hover, as the model cell keeps its id. */}
-                          <span
-                            className="truncate text-sm leading-5 text-base-foreground"
-                            title={e.tool ?? undefined}
-                          >
-                            {e.tool === null
-                              ? UNATTRIBUTED
-                              : (toolNames?.get(e.tool) ?? clientNameFor(e.tool) ?? e.tool)}
-                          </span>
+                      </span>
+                    </td>
+                    <td className="pl-4">
+                      <span className="flex items-center gap-2">
+                        <VendorMark
+                          provider={provider}
+                          vendor={vendorFromModelId(model) ?? label?.vendor ?? null}
+                          size={20}
+                        />
+                        {/* Truncated inside the cell rather than on it, so the
+                            mark keeps its 20px while the name gives way. The id
+                            on hover: the text may be the catalogue's label. */}
+                        <span
+                          className="truncate text-sm leading-5 text-base-foreground"
+                          title={model ?? undefined}
+                        >
+                          {model === null ? UNATTRIBUTED : (label?.name ?? model)}
                         </span>
-                      </td>
-                      <td className="pl-4">
-                        <span className="flex items-center gap-2">
-                          <VendorMark
-                            provider={provider}
-                            vendor={vendorFromModelId(model) ?? label?.vendor ?? null}
-                            size={20}
-                          />
-                          {/* Truncated inside the cell rather than on it, so the
-                              mark keeps its 20px while the name gives way. The id
-                              on hover: the text may be the catalogue's label. */}
-                          <span
-                            className="truncate text-sm leading-5 text-base-foreground"
-                            title={model ?? undefined}
-                          >
-                            {model === null ? UNATTRIBUTED : (label?.name ?? model)}
-                          </span>
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap pl-4 pr-4 text-right">
-                        {/* Straight to the dashboard. This opened
-                            `SecurityEventDialog` - a summary of the same six
-                            fields the row already draws, with an "Open in
-                            dashboard" button under it - until product removed
-                            that step on 2026-09-23. The external-link icon was
-                            always here and was misleading while it opened a
-                            dialog; it is accurate now. */}
-                        {/* The `xs` Outline variant (`1402:18021`), not the `sm`
-                            the header button takes. */}
-                        <OutlineButton size="xs" onClick={() => onOpenInDashboard(e)} external>
-                          View
-                        </OutlineButton>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap pl-4 pr-4 text-right">
+                      {/* Straight to the dashboard. This opened
+                          `SecurityEventDialog` - a summary of the same six
+                          fields the row already draws, with an "Open in
+                          dashboard" button under it - until product removed
+                          that step on 2026-09-23. The external-link icon was
+                          always here and was misleading while it opened a
+                          dialog; it is accurate now. */}
+                      {/* The `xs` Outline variant (`1402:18021`), not the `sm`
+                          the header button takes. */}
+                      <OutlineButton size="xs" onClick={() => onOpenInDashboard(e)} external>
+                        View
+                      </OutlineButton>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </Card>
     </div>
   );

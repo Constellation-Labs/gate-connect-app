@@ -46,6 +46,10 @@ const blocked = {
 };
 
 test.describe("new UI security feed", () => {
+  // The window, not the 360x520 popover the config still defaults to: at the
+  // popover's width this table only ever renders scrolled sideways.
+  test.use({ viewport: { width: 1280, height: 800 } });
+
   test("the feed is the Overview's last section, and the rail has lost its entry", async ({
     boot,
   }) => {
