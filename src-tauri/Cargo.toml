@@ -34,6 +34,22 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSResponder", "block2"] }
 block2 = "0.6"
 
+# Relaunches outside another app's MSIX package (`leave_foreign_package` in
+# src/lib.rs; the detection is `gate_connect_core::env::in_foreign_package`).
+# The version the forwarder and tokio already link, so this adds bindings, not
+# a new crate.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Threading",
+  "Win32_System_WindowsProgramming",
+] }
+
+# `CommandLineToArgvW`, to round-trip the relaunch's quoting in a test.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell"] }
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-opener = "2"

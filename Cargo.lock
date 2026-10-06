@@ -1621,6 +1621,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "tracing-subscriber",
  "webpki-roots 1.0.7",
+ "windows-sys 0.61.2",
  "winreg 0.52.0",
 ]
 
@@ -1650,6 +1651,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
