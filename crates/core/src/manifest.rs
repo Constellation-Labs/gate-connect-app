@@ -13,8 +13,8 @@
 //!
 //! - [`check_routing`]: each integration's [`Mechanism`] and Gate models
 //!   support against the entry's `routing`.
-//! - [`check_domain_slugs`]: the proxy catalog's domain slugs against every
-//!   entry's `routing.proxy_domain`.
+//! - [`check_domain_slugs`]: the proxy catalog's domain slugs against the
+//!   `routing.proxy_domain` of the manifest's Works entries.
 //! - [`check_stamping_names`]: the slugs the request-stamping table emits
 //!   against every entry's `surfaces.client_tool_slug`.
 //!
@@ -46,6 +46,8 @@ pub struct Manifest {
 #[derive(Debug, Deserialize)]
 pub struct Harness {
     pub id: String,
+    /// `certified`, `works` or `unsupported`.
+    pub tier: String,
     pub routing: Routing,
     pub surfaces: Surfaces,
 }
@@ -124,7 +126,8 @@ pub enum Drift {
     IntegrationNotInManifest { tool: String },
     /// The manifest names a Gate Connect integration this app does not ship.
     ManifestIntegrationMissing { harness: String },
-    /// The proxy catalog has a domain no manifest entry names.
+    /// The proxy catalog has a domain no Works entry names: either no entry
+    /// names it, or the one that does promises less than Works.
     DomainNotInManifest { slug: String },
     /// A manifest entry names a domain the proxy catalog does not have.
     DomainNotInCatalog { harness: String, slug: String },
@@ -230,14 +233,20 @@ pub fn check_routing(manifest: &Manifest, tools: &[ToolRouting]) -> Vec<Drift> {
     drift
 }
 
-/// The proxy catalog's domain slugs against every `routing.proxy_domain`.
+/// The proxy catalog's domain slugs against the manifest's domains.
+///
+/// A catalog domain has to be named by a **Works** entry, not merely by some
+/// entry: a domain the app routes is a support claim, and an entry that names it
+/// at Unsupported would be the app routing something the gateway promises
+/// nothing for. The other direction holds for every entry, whatever its tier: a
+/// manifest domain the catalog does not have is a claim the app cannot honour.
 pub fn check_domain_slugs(manifest: &Manifest, catalog: &[&str]) -> Vec<Drift> {
     let mut drift = Vec::new();
     for &slug in catalog {
         let named = manifest
             .harnesses
             .iter()
-            .any(|h| h.routing.proxy_domain.as_deref() == Some(slug));
+            .any(|h| h.tier == "works" && h.routing.proxy_domain.as_deref() == Some(slug));
         if !named {
             drift.push(Drift::DomainNotInManifest {
                 slug: slug.to_string(),
@@ -356,19 +365,19 @@ mod tests {
               "schema_version": 1,
               "a_field_this_app_does_not_read": true,
               "harnesses": [
-                { "id": "relay-tool",
+                { "id": "relay-tool", "tier": "certified",
                   "routing": { "mechanism": "relay", "proxy_domain": null, "gate_models": true },
                   "surfaces": { "connect": { "mechanism": "relay", "source": "x.rs" },
                                 "client_tool_slug": "relay-tool" } },
-                { "id": "engine-tool",
+                { "id": "engine-tool", "tier": "certified",
                   "routing": { "mechanism": "proxy-engine", "proxy_domain": null },
                   "surfaces": { "connect": { "mechanism": "proxy-engine", "source": "y.rs" },
                                 "client_tool_slug": "engine-tool" } },
-                { "id": "desktop-app",
+                { "id": "desktop-app", "tier": "works",
                   "routing": { "mechanism": "proxy-engine", "proxy_domain": "example" },
                   "surfaces": { "connect": { "na": "carried by the domain toggle" },
                                 "client_tool_slug": { "na": "no integration" } } },
-                { "id": "manual-tool",
+                { "id": "manual-tool", "tier": "unsupported",
                   "routing": { "mechanism": "manual", "proxy_domain": null },
                   "surfaces": { "connect": null, "client_tool_slug": null } }
               ]
@@ -502,6 +511,18 @@ mod tests {
             check_domain_slugs(&fixture(), &[]),
             vec![Drift::DomainNotInCatalog {
                 harness: "desktop-app".into(),
+                slug: "example".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_domain_named_only_below_works_is_not_in_the_manifest() {
+        let mut m = fixture();
+        m.harnesses[2].tier = "unsupported".into();
+        assert_eq!(
+            check_domain_slugs(&m, &["example"]),
+            vec![Drift::DomainNotInManifest {
                 slug: "example".into()
             }]
         );
