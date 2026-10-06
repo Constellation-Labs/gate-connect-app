@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { useSecurityFeed } from "./lib/securityFeed";
 import type {
   Account,
@@ -44,6 +45,7 @@ import {
   setSecurityNotificationSound,
   setNotifications,
   setShareDiagnostics,
+  switchGateway,
 } from "./lib/api";
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
@@ -2759,7 +2761,6 @@ export function NewUiApp() {
     [openLink, openDashboard],
   );
 
-  const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
   /** A failed diagnostics write. Its own state because the write is not the
    *  setup hook's, and because it used to go to `setActionError` - which
    *  renders in `AppShell`, and `AppShell` is not on screen during setup. A
@@ -2769,6 +2770,13 @@ export function NewUiApp() {
   const [diagnosticsError, setDiagnosticsError] = useState<ClassifiedError | null>(
     null,
   );
+  /** A failed environment switch from the setup panes. Its own state for the
+   *  same reason as `diagnosticsError`: `setActionError` renders in `AppShell`. */
+  const [gatewaySwitchError, setGatewaySwitchError] = useState<ClassifiedError | null>(
+    null,
+  );
+  const setupError = gatewaySwitchError
+    ?? (setup.error ? classifyError(setup.error, "sign_in", account?.auth_mode) : null);
 
   // Before there is a usable credential there is nothing to navigate, so the
   // window is chrome plus one centred card rather than the shell with an empty
@@ -2790,7 +2798,26 @@ export function NewUiApp() {
     // A first attempt that failed partway has saved a URL but none of those, so
     // it keeps the picker.
     const establishedAccount = account?.auth_mode === "oauth" || Boolean(account?.org_id);
-    const gatewayPicker = !OFFERS_GATEWAY_CHOICE || establishedAccount ? undefined : (
+    // An established account still gets the picker, wired to `switch_gateway`
+    // instead: Settings is out of reach until setup finishes, so a gateway that
+    // refuses the session (an environment that does not trust this build's
+    // client yet) would otherwise leave no way back to one that works. Relaunch
+    // after, as Settings' own switch does.
+    const gatewayPicker = !OFFERS_GATEWAY_CHOICE ? undefined : establishedAccount ? (
+      <GatewayPicker
+        value={account?.gateway_base_url ?? setup.gateway}
+        servers={GATEWAY_SERVERS}
+        open={gatewayOpen}
+        onOpenChange={setGatewayOpen}
+        onSelect={(url) => {
+          if (setup.busy || url === account?.gateway_base_url) return;
+          setGatewaySwitchError(null);
+          void switchGateway(url)
+            .then(() => relaunch())
+            .catch((e) => setGatewaySwitchError(classifyError(e, "generic")));
+        }}
+      />
+    ) : (
       <GatewayPicker
         value={setup.gateway}
         servers={GATEWAY_SERVERS}
@@ -2856,6 +2883,7 @@ export function NewUiApp() {
             // way back to the sign-in choice is to drop it.
             onGoBack={() => void setup.signOut()}
             onUseDifferentAccount={() => void setup.signOut()}
+            gateway={gatewayPicker}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
