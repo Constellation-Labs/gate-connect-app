@@ -237,6 +237,10 @@ function failureCodeOf(text: string): string | null {
   }
 }
 
+/** Prefix of the error a gateway switch reports when the switch landed and
+ *  only the relaunch after it failed, so the copy can say the move is done. */
+export const SWITCHED_RELAUNCH_FAILED = "gateway switched; relaunch failed after moving to";
+
 export function classifyError(
   rawInput: unknown,
   context: ErrorContext,
@@ -248,6 +252,17 @@ export function classifyError(
 ): ClassifiedError {
   const raw = rawToString(rawInput);
   const lc = raw.toLowerCase();
+
+  // A gateway switch that landed and then could not relaunch. Ahead of every
+  // other branch: the relaunch error's own words could match any of them, and
+  // none would say the one thing that matters - the switch is done.
+  if (raw.startsWith(SWITCHED_RELAUNCH_FAILED)) {
+    return {
+      title: "Gateway switched, but Gate Connect couldn’t relaunch",
+      hint: "Quit Gate Connect and open it again to finish switching.",
+      raw,
+    };
+  }
 
   // Tauri command not registered / unavailable on this platform.
   if (
@@ -425,11 +440,17 @@ export function classifyError(
   if (lc.includes("401") || lc.includes("unauthorized")) {
     return {
       title: authMode === "oauth" ? "Gateway rejected your session" : "Gateway rejected the API key",
+      // Setup has no Settings to send anyone to: the sign-in and key panes are
+      // the remedy, and they are on screen.
       hint:
         authMode === "oauth"
-          ? "Sign in again from Settings."
+          ? context === "sign_in"
+            ? "Sign in again, or use a different account."
+            : "Sign in again from Settings."
           : authMode === "api_key"
-            ? "Replace your Gate API key in Settings."
+            ? context === "sign_in"
+              ? "Check that the key is for this gateway, then paste it again."
+              : "Replace your Gate API key in Settings."
             : "Open Settings and reconnect: sign in again, or replace your Gate API key.",
       raw,
     };

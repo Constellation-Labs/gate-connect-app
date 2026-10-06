@@ -26,6 +26,7 @@ import type {
 } from "./api";
 import { launchAtLoginStatus } from "./api";
 import { track, trackError } from "./analytics";
+import { SWITCHED_RELAUNCH_FAILED } from "./errors";
 
 /**
  * The Settings pane's side effects, for the new window UI.
@@ -432,11 +433,22 @@ export function useSettingsActions({
     setBusy(true);
     try {
       await switchGateway(url);
-      // Nothing below runs on success.
-      await relaunch();
     } catch (err) {
       onError(err);
       trackError(err, "generic");
+      setBusy(false);
+      return;
+    }
+    try {
+      // Nothing below runs on success.
+      await relaunch();
+    } catch (err) {
+      // The switch itself landed, so this is not the failure to retry: the
+      // dialog closes and the error says the move is done and needs a restart.
+      setPrompt(null);
+      const failed = new Error(`${SWITCHED_RELAUNCH_FAILED} ${url}: ${String(err)}`);
+      onError(failed);
+      trackError(failed, "generic");
     } finally {
       setBusy(false);
     }

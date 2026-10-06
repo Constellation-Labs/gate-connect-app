@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { useSecurityFeed } from "./lib/securityFeed";
 import type {
   Account,
@@ -45,7 +44,6 @@ import {
   setSecurityNotificationSound,
   setNotifications,
   setShareDiagnostics,
-  switchGateway,
 } from "./lib/api";
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
@@ -1922,6 +1920,17 @@ export function NewUiApp() {
     deviceNamed: prefs ? prefs.device_name !== null : undefined,
   });
 
+  /** A Settings action that failed while setup is on screen. `setActionError`
+   *  renders in `AppShell`, which setup does not show, so the one Settings
+   *  action setup offers (the gateway switch) reports here instead. The newest
+   *  error is the one shown: this is cleared whenever the stage moves or setup
+   *  reports an error of its own, so it can neither follow the user onto a
+   *  later pane nor hide a failure that came after it. */
+  const [setupActionError, setSetupActionError] = useState<ClassifiedError | null>(
+    null,
+  );
+  useEffect(() => setSetupActionError(null), [setup.stage.kind, setup.error]);
+
   const settings = useSettingsActions({
     account,
     proxyRunning: proxy?.running ?? false,
@@ -1936,7 +1945,11 @@ export function NewUiApp() {
     // which is exactly the case worth reporting - the session those configs
     // authenticate with has just ended.
     onTeardown: (reason) => void reportTeardown(reason),
-    onError: (e) => setActionError(classifyError(e, "generic")),
+    onError: (e) => {
+      const classified = classifyError(e, "generic");
+      if (setup.stage.kind === "ready") setActionError(classified);
+      else setSetupActionError(classified);
+    },
   });
 
   /**
@@ -2770,13 +2783,18 @@ export function NewUiApp() {
   const [diagnosticsError, setDiagnosticsError] = useState<ClassifiedError | null>(
     null,
   );
-  /** A failed environment switch from the setup panes. Its own state for the
-   *  same reason as `diagnosticsError`: `setActionError` renders in `AppShell`. */
-  const [gatewaySwitchError, setGatewaySwitchError] = useState<ClassifiedError | null>(
-    null,
-  );
-  const setupError = gatewaySwitchError
-    ?? (setup.error ? classifyError(setup.error, "sign_in", account?.auth_mode) : null);
+  // The key form is an API-key attempt whatever the stored account says: an
+  // OAuth user who falls back to a key and pastes a bad one has a bad key, not
+  // a refused session.
+  const setupError =
+    setupActionError ??
+    (setup.error
+      ? classifyError(
+          setup.error,
+          "sign_in",
+          setup.stage.kind === "api-key" ? "api_key" : account?.auth_mode,
+        )
+      : null);
 
   // Before there is a usable credential there is nothing to navigate, so the
   // window is chrome plus one centred card rather than the shell with an empty
@@ -2790,39 +2808,37 @@ export function NewUiApp() {
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
     // Wherever the build lists a choice (dev builds and pre-releases), so a
-    // tester can sign in straight to staging or dev, and only on a first run.
-    // The picker saves through `save_account`, which writes the URL and
-    // nothing else; an account that has been signed in before may have tools
+    // tester can sign in straight to staging or dev. On a first run the inline
+    // list saves through `save_account`, which writes the URL and nothing
+    // else; an account that has been signed in before may have tools
     // connected, a running engine and an org from the old environment, and
-    // moving it takes `switch_gateway` (Settings -> Gateway -> Change server).
-    // A first attempt that failed partway has saved a URL but none of those, so
-    // it keeps the picker.
-    const establishedAccount = account?.auth_mode === "oauth" || Boolean(account?.org_id);
-    // An established account still gets the picker, wired to `switch_gateway`
-    // instead: Settings is out of reach until setup finishes, so a gateway that
-    // refuses the session (an environment that does not trust this build's
-    // client yet) would otherwise leave no way back to one that works. Relaunch
-    // after, as Settings' own switch does.
-    const gatewayPicker = !OFFERS_GATEWAY_CHOICE ? undefined : establishedAccount ? (
+    // moving it takes `switch_gateway`. A first attempt that failed partway has
+    // saved a URL but none of those, so it keeps the inline list.
+    const establishedUrl =
+      account && (account.auth_mode === "oauth" || account.org_id)
+        ? account.gateway_base_url
+        : undefined;
+    // An established account still gets the line, but "change" opens Settings'
+    // own switch dialog rather than the inline list: Settings is out of reach
+    // until setup finishes, so a gateway that refuses the session (an
+    // environment that does not trust this build's client yet) would otherwise
+    // leave no way back to one that works. The dialog is the confirmation the
+    // switch needs - it forgets the key and disconnects tools - and its busy
+    // state is what stops a second switch while one is in flight.
+    const gatewayPicker = !OFFERS_GATEWAY_CHOICE ? undefined : (
       <GatewayPicker
-        value={account?.gateway_base_url ?? setup.gateway}
+        value={establishedUrl ?? setup.gateway}
         servers={GATEWAY_SERVERS}
-        open={gatewayOpen}
-        onOpenChange={setGatewayOpen}
-        onSelect={(url) => {
-          if (setup.busy || url === account?.gateway_base_url) return;
-          setGatewaySwitchError(null);
-          void switchGateway(url)
-            .then(() => relaunch())
-            .catch((e) => setGatewaySwitchError(classifyError(e, "generic")));
-        }}
-      />
-    ) : (
-      <GatewayPicker
-        value={setup.gateway}
-        servers={GATEWAY_SERVERS}
-        open={gatewayOpen}
-        onOpenChange={setGatewayOpen}
+        open={establishedUrl === undefined && gatewayOpen}
+        onOpenChange={
+          establishedUrl === undefined
+            ? setGatewayOpen
+            : (next) => {
+                if (!next) return;
+                setSetupActionError(null);
+                settings.openSwitchGateway();
+              }
+        }
         onSelect={setup.setGateway}
       />
     );
@@ -2960,6 +2976,17 @@ export function NewUiApp() {
             busy={teardownBusy}
             onRetry={() => void retryTeardown()}
             onCancel={() => setTeardown(null)}
+          />
+        )}
+        {settings.prompt?.kind === "switch-gateway" && (
+          <SwitchGatewayDialog
+            servers={GATEWAY_SERVERS}
+            selectedUrl={settings.prompt.selectedUrl}
+            currentUrl={account?.gateway_base_url ?? ""}
+            busy={settings.busy}
+            onSelect={settings.selectGateway}
+            onCancel={settings.dismissPrompt}
+            onConfirm={() => void settings.confirmSwitchGateway()}
           />
         )}
       </SetupLayout>
