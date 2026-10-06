@@ -63,6 +63,12 @@ jobs:
       # (2026-10-01). Bump them in their own PR, where a red run is the
       # upstream's doing and says so. Models stay unpinned on purpose: run.sh
       # resolves them at runtime because pinned model ids get retired.
+      #
+      # OpenClaw is the exception to "newest release": every 2026.9.x requires
+      # Node >=24.16, and this job runs Node 22. Unpinned, npm quietly fell
+      # back to the newest release whose `engines` accept Node 22 - the
+      # extended-stable line - so that is what every green run tested, and it
+      # is what is pinned. Moving to 2026.9.x means moving the job to Node 24.
       - name: Install AI CLIs
         shell: bash
         run: >-
@@ -70,7 +76,7 @@ jobs:
           @anthropic-ai/claude-code@2.1.286
           @openai/codex@0.159.3
           opencode-ai@1.18.34
-          openclaw@2026.9.7
+          openclaw@2026.8.35
 
       # Hermes is a Python agent installed via the bash install.sh, which
       # symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops the
