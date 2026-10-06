@@ -692,6 +692,19 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn cmd_proxy(command: ProxyCmd) -> Result<()> {
+    // Inside another app's MSIX package (a terminal in Claude Desktop's Code
+    // tab), Windows sends the CA and system-proxy writes to that app's private
+    // registry, and `status` would read that copy back. The app relaunches
+    // itself out; this command hosts the engine in the foreground, so it
+    // refuses instead.
+    #[cfg(target_os = "windows")]
+    if gate_connect_core::env::in_foreign_package() {
+        anyhow::bail!(
+            "started inside another app's package (a terminal in Claude Desktop?). \
+             Windows would send Gate's proxy and CA writes to that app's private \
+             registry. Run it from a terminal outside the app."
+        );
+    }
     let mgr = proxy::manager();
     // This process exits the moment the command finishes, so its lifetime must
     // not bound the routing lifetime. Without this the Linux daemon reverted

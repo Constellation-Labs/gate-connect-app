@@ -515,6 +515,28 @@ pub fn hermes_config_path() -> Result<PathBuf> {
     Ok(hermes_config_dir()?.join("config.yaml"))
 }
 
+/// Whether this process runs inside an MSIX package. Gate is never packaged,
+/// so any package is someone else's: the parent's, inherited because a
+/// packaged app (Claude from the Store, Windows Terminal) started us. Inside
+/// one, Windows redirects HKCU and `%LOCALAPPDATA%` writes into that package's
+/// private copy, so the system proxy, the CA and the login item would reach
+/// that app alone.
+///
+/// If Gate ever ships as MSIX itself, this has to learn its own package name:
+/// as written, every launch would read as foreign.
+#[cfg(target_os = "windows")]
+pub fn in_foreign_package() -> bool {
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
+    let mut len = 0u32;
+    // SAFETY: a zero-length query; Windows writes only `len` and returns
+    // "buffer too small" when there is a package to name.
+    let status = unsafe { GetCurrentPackageFullName(&mut len, std::ptr::null_mut()) };
+    // Only the packaged answer counts: an unexpected error is not evidence of
+    // a package, and reading it as one would relaunch for nothing.
+    status == ERROR_INSUFFICIENT_BUFFER
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
