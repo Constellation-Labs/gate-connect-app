@@ -588,6 +588,7 @@ export function OrgPickerPane({
   onContinue,
   onGoBack,
   onUseDifferentAccount,
+  gateway,
   busy,
   error,
 }: {
@@ -600,6 +601,9 @@ export function OrgPickerPane({
    *  rather than sideways into the key form. */
   onGoBack: () => void;
   onUseDifferentAccount: () => void;
+  /** Slot for the gateway selector, as on the sign-in panes. A gateway that
+   *  refuses the session strands the user here, with Settings out of reach. */
+  gateway?: ReactNode;
   busy?: boolean;
   error?: ReactNode;
 }) {
@@ -650,6 +654,8 @@ export function OrgPickerPane({
           </div>
         </>
       )}
+
+      {gateway}
     </SetupBody>
   );
 }

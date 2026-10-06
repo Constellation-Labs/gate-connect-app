@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { backendErrorContext, classifyError } from "./errors";
+import { backendErrorContext, classifyError, SWITCHED_RELAUNCH_FAILED } from "./errors";
 
 // These tests assert the *contract* of classifyError rather than exact copy,
 // so they stay green as the wording is tuned. The load-bearing guarantees:
@@ -34,6 +34,26 @@ describe("classifyError", () => {
     it("classifies a 401 as a rejected API key", () => {
       const result = classifyError("HTTP 401 Unauthorized", "save_api_key");
       expect(result.title.toLowerCase()).toContain("api key");
+    });
+
+    it("titles a 401 by the account's auth mode", () => {
+      const raw = "gateway /v1/me/orgs returned 401 Unauthorized";
+      expect(classifyError(raw, "generic", "oauth").title).toBe("Gateway rejected your session");
+      expect(classifyError(raw, "generic", "api_key").title).toBe("Gateway rejected the API key");
+    });
+
+    it("sends a 401 in setup to the panes on screen, not to Settings", () => {
+      // Settings is unreachable until setup finishes.
+      const raw = "HTTP 401 Unauthorized";
+      expect(classifyError(raw, "sign_in", "oauth").hint).not.toContain("Settings");
+      expect(classifyError(raw, "sign_in", "api_key").hint).not.toContain("Settings");
+      expect(classifyError(raw, "generic", "oauth").hint).toContain("Settings");
+    });
+
+    it("says a switch landed when only its relaunch failed", () => {
+      const raw = `${SWITCHED_RELAUNCH_FAILED} https://gw.example: 401 Unauthorized`;
+      const result = classifyError(raw, "generic", "oauth");
+      expect(result.title).toBe("Gateway switched, but Gate Connect couldn’t relaunch");
     });
 
     it("classifies a cancelled system prompt without naming one OS", () => {

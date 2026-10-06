@@ -3,6 +3,7 @@ import type { Mock } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 import type { Account, Org } from "./api";
 import { useSettingsActions } from "./useSettingsActions";
+import { classifyError } from "./errors";
 
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 vi.mock("./api", () => {
@@ -652,6 +653,28 @@ describe("useSettingsActions: changing the gateway", () => {
     expect(onError).toHaveBeenCalled();
     expect(relaunch).not.toHaveBeenCalled();
     expect(api.current!.prompt?.kind).toBe("switch-gateway");
+  });
+
+  it("reports a failed relaunch as a switch that landed", async () => {
+    // The switch already moved the account, so the dialog closes rather than
+    // offering a retry, and the error is the one that says to restart.
+    (switchGateway as Mock).mockResolvedValue(undefined);
+    (relaunch as Mock).mockRejectedValueOnce(new Error("process plugin unavailable"));
+    const { api, onError } = harness();
+
+    act(() => api.current!.openSwitchGateway());
+    act(() => api.current!.selectGateway("https://gw-staging.example"));
+    await act(async () => {
+      await api.current!.confirmSwitchGateway();
+    });
+
+    expect(switchGateway).toHaveBeenCalledWith("https://gw-staging.example");
+    expect(api.current!.prompt).toBeNull();
+    const reported = (onError as Mock).mock.calls[0][0] as Error;
+    expect(classifyError(reported, "generic").title).toBe(
+      "Gateway switched, but Gate Connect couldn’t relaunch",
+    );
+    expect(api.current!.busy).toBe(false);
   });
 });
 
