@@ -78,6 +78,12 @@ socket2 = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
 sha1 = "0.10"
+# `env::in_foreign_package`, shared by the app and the CLI. The version the
+# forwarder and tokio already link.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_Packaging_Appx",
+] }
 
 # Test-only. The proxy end-to-end tests (`tests/proxy_e2e.rs`,
 # `tests/relay_e2e.rs`) mint a throwaway CA with `rcgen`, run a tiny loopback

@@ -899,20 +899,6 @@ fn register_application_restart() {
     }
 }
 
-/// Whether this process runs inside an MSIX package. Gate is never packaged,
-/// so any package is someone else's: the parent's, inherited because a
-/// packaged app (Claude from the Store, Windows Terminal) started us.
-#[cfg(target_os = "windows")]
-fn in_foreign_package() -> bool {
-    use windows_sys::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
-    use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
-    let mut len = 0u32;
-    // SAFETY: a zero-length query; Windows writes only `len` and returns
-    // either "no package" or "buffer too small".
-    let status = unsafe { GetCurrentPackageFullName(&mut len, std::ptr::null_mut()) };
-    status != APPMODEL_ERROR_NO_PACKAGE
-}
-
 /// Get out of another app's package before touching anything, by starting
 /// this same executable again outside it. Returns whether that relaunch is
 /// running, in which case the caller exits.
@@ -936,11 +922,16 @@ pub fn leave_foreign_package() -> bool {
     /// Set on the relaunch, so a child that is somehow still inside carries on
     /// rather than relaunching forever.
     const RELAUNCHED: &str = "GATE_CONNECT_LEFT_PACKAGE";
-    if !in_foreign_package() {
+    if !gate_connect_core::env::in_foreign_package() {
+        // Out, whether or not it took a relaunch: the marker has done its
+        // job, and leaving it set would hand it to everything we start.
+        std::env::remove_var(RELAUNCHED);
         return false;
     }
     if std::env::var_os(RELAUNCHED).is_some() {
-        eprintln!("[gate] still inside another app's package after relaunching out of it; carrying on");
+        eprintln!(
+            "[gate] still inside another app's package after relaunching out of it; carrying on"
+        );
         return false;
     }
     std::env::set_var(RELAUNCHED, "1");
@@ -977,12 +968,13 @@ fn relaunch_outside_package() -> anyhow::Result<()> {
     use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
 
     let exe = std::env::current_exe().context("locating our executable")?;
-    let mut command_line = quote_windows_arg(&exe.to_string_lossy());
-    for arg in std::env::args().skip(1) {
-        command_line.push(' ');
-        command_line.push_str(&quote_windows_arg(&arg));
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().collect::<Vec<u16>>();
+    let mut command_line = quote_windows_arg(&wide(exe.as_os_str()));
+    for arg in std::env::args_os().skip(1) {
+        command_line.push(b' ' as u16);
+        command_line.extend(quote_windows_arg(&wide(&arg)));
     }
-    let mut command_line: Vec<u16> = command_line.encode_utf16().chain([0]).collect();
+    command_line.push(0);
     let application: Vec<u16> = exe.as_os_str().encode_wide().chain([0]).collect();
 
     // SAFETY: the attribute list is sized by the first call and lives in
@@ -995,7 +987,10 @@ fn relaunch_outside_package() -> anyhow::Result<()> {
         let mut list = vec![0u8; size];
         let attrs = list.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
         if InitializeProcThreadAttributeList(attrs, 1, 0, &mut size) == 0 {
-            anyhow::bail!("InitializeProcThreadAttributeList: {}", std::io::Error::last_os_error());
+            anyhow::bail!(
+                "InitializeProcThreadAttributeList: {}",
+                std::io::Error::last_os_error()
+            );
         }
         let policy: u32 = PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
         let updated = UpdateProcThreadAttribute(
@@ -1041,31 +1036,36 @@ fn relaunch_outside_package() -> anyhow::Result<()> {
 
 /// One argument quoted for a Windows command line, by the rules
 /// `CommandLineToArgvW` and the MSVC runtime parse it back with: quotes only
-/// when needed, backslashes doubled only where they precede a quote.
+/// when needed, backslashes doubled only where they precede a quote. In UTF-16
+/// units, so an argument that is not valid Unicode reaches the child as it
+/// reached us.
 #[cfg(any(target_os = "windows", test))]
-fn quote_windows_arg(arg: &str) -> String {
-    if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\u{b}', '"']) {
-        return arg.to_string();
+fn quote_windows_arg(arg: &[u16]) -> Vec<u16> {
+    const QUOTE: u16 = b'"' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+    const NEEDS_QUOTES: [u16; 5] = [b' ' as u16, b'\t' as u16, b'\n' as u16, 0x0b, QUOTE];
+    if !arg.is_empty() && !arg.iter().any(|u| NEEDS_QUOTES.contains(u)) {
+        return arg.to_vec();
     }
-    let mut out = String::from('"');
+    let mut out = vec![QUOTE];
     let mut backslashes = 0;
-    for c in arg.chars() {
-        match c {
-            '\\' => backslashes += 1,
-            '"' => {
-                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
-                out.push('"');
+    for &u in arg {
+        match u {
+            BACKSLASH => backslashes += 1,
+            QUOTE => {
+                out.extend(std::iter::repeat_n(BACKSLASH, backslashes * 2 + 1));
+                out.push(QUOTE);
                 backslashes = 0;
             }
             _ => {
-                out.extend(std::iter::repeat_n('\\', backslashes));
-                out.push(c);
+                out.extend(std::iter::repeat_n(BACKSLASH, backslashes));
+                out.push(u);
                 backslashes = 0;
             }
         }
     }
-    out.extend(std::iter::repeat_n('\\', backslashes * 2));
-    out.push('"');
+    out.extend(std::iter::repeat_n(BACKSLASH, backslashes * 2));
+    out.push(QUOTE);
     out
 }
 
@@ -4565,21 +4565,75 @@ fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
 mod tests {
     use super::*;
 
+    fn quote(arg: &str) -> String {
+        String::from_utf16(&quote_windows_arg(
+            &arg.encode_utf16().collect::<Vec<u16>>(),
+        ))
+        .unwrap()
+    }
+
     /// The relaunch out of a foreign package rebuilds our command line, so
-    /// every argument has to come back as itself.
+    /// every argument has to be written the way the MSVC rules read it back.
     #[test]
-    fn quote_windows_arg_round_trips_through_the_msvc_rules() {
-        assert_eq!(quote_windows_arg("--silent"), "--silent");
-        assert_eq!(quote_windows_arg(""), "\"\"");
+    fn quote_windows_arg_follows_the_msvc_rules() {
+        assert_eq!(quote("--silent"), "--silent");
+        assert_eq!(quote(""), "\"\"");
         assert_eq!(
-            quote_windows_arg(r"C:\Users\New\AppData\Local\Gate Connect\gate-connect-desktop.exe"),
+            quote(r"C:\Users\New\AppData\Local\Gate Connect\gate-connect-desktop.exe"),
             r#""C:\Users\New\AppData\Local\Gate Connect\gate-connect-desktop.exe""#
         );
         // Backslashes double only before a quote, including the closing one.
-        assert_eq!(quote_windows_arg(r"a dir\"), r#""a dir\\""#);
-        assert_eq!(quote_windows_arg(r#"say "hi""#), r#""say \"hi\"""#);
-        assert_eq!(quote_windows_arg(r#"a\"b"#), r#""a\\\"b""#);
-        assert_eq!(quote_windows_arg(r"no\space"), r"no\space");
+        assert_eq!(quote(r"a dir\"), r#""a dir\\""#);
+        assert_eq!(quote(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(quote(r#"a\"b"#), r#""a\\\"b""#);
+        assert_eq!(quote(r"no\space"), r"no\space");
+    }
+
+    /// The same cases through Windows' own parser, plus an argument that is
+    /// not valid Unicode: each one has to come back as itself.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn quote_windows_arg_round_trips_through_command_line_to_argv() {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+        let lone_surrogate = vec![b'a' as u16, 0xd800, b' ' as u16, b'b' as u16];
+        let args: Vec<Vec<u16>> = [
+            "--silent",
+            "",
+            r"C:\Gate Connect\gate.exe",
+            r"a dir\",
+            r#"say "hi""#,
+            r#"a\"b"#,
+            r"no\space",
+            "gate-connect://callback?code=1&state=2",
+        ]
+        .iter()
+        .map(|a| a.encode_utf16().collect())
+        .chain([lone_surrogate])
+        .collect();
+        let mut line: Vec<u16> = "gate.exe".encode_utf16().collect();
+        for arg in &args {
+            line.push(b' ' as u16);
+            line.extend(quote_windows_arg(arg));
+        }
+        line.push(0);
+        let mut count = 0i32;
+        // SAFETY: `line` is NUL-terminated; the array Windows returns holds
+        // `count` NUL-terminated strings and is freed once, after reading.
+        let parsed: Vec<Vec<u16>> = unsafe {
+            let argv = CommandLineToArgvW(line.as_ptr(), &mut count);
+            assert!(!argv.is_null());
+            let parsed = (0..count as usize)
+                .map(|i| {
+                    let p = *argv.add(i);
+                    let len = (0..).take_while(|&j| *p.add(j) != 0).count();
+                    std::slice::from_raw_parts(p, len).to_vec()
+                })
+                .collect();
+            LocalFree(argv as _);
+            parsed
+        };
+        assert_eq!(parsed[1..], args[..]);
     }
 
     /// An offline tick is no verdict: it keeps the flag where it was, so a
