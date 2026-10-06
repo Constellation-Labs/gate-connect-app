@@ -891,7 +891,7 @@ async fn activity_cached_tool_overviews(
     .map_err(|e| format!("cached tool activity join error: {e}"))
 }
 
-/// One page of a section's recent requests, for the app pane's feed (AG-574).
+/// The first page of a section's recent requests, for the app pane's feed (AG-574).
 ///
 /// `tools` is required and non-empty, unlike on the overview: the feed is always
 /// about named senders, and the gateway refuses a request that names none. Each
@@ -901,16 +901,11 @@ async fn activity_cached_tool_overviews(
 async fn activity_tool_events(
     install_id: Option<String>,
     tools: Vec<String>,
-    cursor: Option<String>,
 ) -> Result<String, String> {
     let clients = gate_connect_core::activity::feed_clients(&tools)?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::tool_events_json(
-            install_id.as_deref(),
-            &clients,
-            cursor.as_deref(),
-        )
-        .map_err(envelope)
+        gate_connect_core::activity::tool_events_json(install_id.as_deref(), &clients)
+            .map_err(envelope)
     })
     .await
     .map_err(|e| format!("activity tool events join error: {e}"))?

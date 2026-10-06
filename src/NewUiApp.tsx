@@ -89,7 +89,7 @@ import {
   OFFERS_GATEWAY_CHOICE,
   isListedGateway,
 } from "./lib/config";
-import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
+import { NO_DASHBOARD, dashboardLinks, viewActivityApps } from "./lib/dashboard";
 import type { DashboardLinks } from "./lib/dashboard";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -768,10 +768,7 @@ export function NewUiApp() {
    * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
    * better information. The Overview's org-wide read refreshes on any of it;
    * the open pane's reads only when one of its senders is among them, so Codex
-   * traffic does not re-read the Claude pane and claude.ai traffic does. The
-   * feed is left alone once the user has paged into it: `reload` puts page one
-   * back, and taking pages away from someone reading them is worse than a
-   * stale first page.
+   * traffic does not re-read the Claude pane and claude.ai traffic does.
    * Each hook's `reload` is a no-op while that hook is disabled.
    */
   const refreshActivity = (tools: (string | null)[] | null) => {
@@ -784,7 +781,7 @@ export function NewUiApp() {
     if (installsFailure !== null || unattributedMachine) reloadInstalls();
     if (openClients !== null && (tools === null || openClients.some((c) => tools.includes(c)))) {
       toolActivity.reload();
-      if (!toolEvents.paged) toolEvents.reload();
+      toolEvents.reload();
     }
     if (openTool !== null && (tools === null || tools.includes(openTool))) modelFeed.reload();
   };
@@ -3532,9 +3529,16 @@ export function NewUiApp() {
             (!installsResolved ||
               (toolEvents.view === null && toolEvents.failure === null))
           }
-          onLoadMore={
-            toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined
-          }
+          // This app's traffic on this machine over the last 24h: the feed's
+          // own filters on a tool pane, the desktop app's and website's names
+          // on a domain pane. See `viewActivityApps` for when there is none.
+          onViewActivity={(() => {
+            if (view.kind !== "app") return undefined;
+            const apps = viewActivityApps({ machineKnown, section: view.slug, tool: openTool });
+            if (!apps) return undefined;
+            return () =>
+              openDashboard((d) => d.messages({ apps, device: currentInstallId }));
+          })()}
           // Each half reports its own read. Deriving the feed's flag from the
           // overview's state let a feed that answered - and answered empty - be
           // reported as unreadable because the *chart* had not landed, which is
@@ -3687,6 +3691,11 @@ export function NewUiApp() {
             // helper already reports both failures the same way.
             onOpenInDashboard: (event) =>
               openDashboard((d) => d.message(event.requestId)),
+            // This installation's list, which is the scope the feed's stream
+            // is opened with. Org-wide when the gateway does not know the
+            // machine, rather than no button.
+            onViewActivity: () =>
+              openDashboard((d) => d.security({ device: currentInstallId })),
             modelLabels,
             toolNames,
           }}

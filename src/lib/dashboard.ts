@@ -79,6 +79,49 @@ export function dashboardOrigin(gatewayBaseUrl: string | null | undefined): stri
   return `https://app${first.slice("gateway".length)}${GATE_SUFFIX}`;
 }
 
+/**
+ * The `client_tool` names a section's desktop-app and website traffic is stored
+ * under, for the "View activity" link on a pane with no installed tool behind
+ * it (Claude without Claude Code, ChatGPT without Codex).
+ *
+ * These are what `client_tool` in `crates/core/src/proxy/mod.rs` stamps from the
+ * vendor's own headers: `anthropic-client-platform` for Claude's app and
+ * claude.ai, `originator` / `oai-*` on chatgpt.com. They are not `ToolId`s, so
+ * the app's own feed cannot read them back, but the dashboard filters on them
+ * like any other. A section with no entry here (OpenAI API, whose traffic names
+ * no app) gets no link: nothing it routes carries a name to filter on.
+ */
+export const SECTION_SURFACE_CLIENTS: Readonly<Record<string, readonly string[]>> = {
+  claude: ["claude-desktop", "claude-web"],
+  chatgpt: ["chatgpt", "chatgpt-web"],
+};
+
+/**
+ * The `client_tool` names an app pane's "View activity" filters Messages by, or
+ * `null` when the pane gets no button.
+ *
+ * A pane with an installed tool links to that tool, which is the slug its own
+ * feed is read with. A pane without one links to its section's
+ * {@link SECTION_SURFACE_CLIENTS}, and a section with no entry there has no
+ * name to filter on. None at all while the gateway does not know this machine:
+ * the link is scoped to it, and an unscoped list would be the whole org's.
+ */
+export function viewActivityApps({
+  machineKnown,
+  section,
+  tool,
+}: {
+  machineKnown: boolean;
+  /** The open pane's section id. */
+  section: string;
+  /** The section's installed config tool, or null. */
+  tool: string | null;
+}): readonly string[] | null {
+  if (!machineKnown) return null;
+  if (tool !== null) return [tool];
+  return SECTION_SURFACE_CLIENTS[section] ?? null;
+}
+
 /** Every dashboard destination the app links to, for one gateway. */
 export interface DashboardLinks {
   /** The dashboard itself. */
@@ -98,6 +141,19 @@ export interface DashboardLinks {
   support: string;
   /** One request's detail in the security feed, by request id. */
   message: (requestId: string) => string;
+  /**
+   * The Messages list, filtered to what a Recent activity card draws, for its
+   * "View activity" button.
+   *
+   * `apps` are `client_tool` slugs: what this app stamps on `x-gate-client`
+   * for every request it routes, and the values the card's own feed sends as
+   * `tool` to `/v1/me/tool-events`. `device` is the install id the feed is
+   * scoped by, and `timeRange=24h` is the feed's own window.
+   */
+  messages: (filter: { apps: readonly string[]; device?: string | null }) => string;
+  /** The Security list for one installation, for the Security events card's
+   *  "View activity" button. The feed behind that card is scoped by the same id. */
+  security: (filter: { device?: string | null }) => string;
 }
 
 /**
@@ -122,5 +178,14 @@ export function dashboardLinks(gatewayBaseUrl: string | null | undefined): Dashb
     savings: `${origin}/token-savings`,
     support: `${origin}/overview`,
     message: (requestId: string) => `${origin}/messages/${encodeURIComponent(requestId)}`,
+    messages: ({ apps, device }) => {
+      const params = new URLSearchParams();
+      if (apps.length > 0) params.set("app", apps.join(","));
+      if (device) params.set("device", device);
+      params.set("timeRange", "24h");
+      return `${origin}/messages?${params}`;
+    },
+    security: ({ device }) =>
+      device ? `${origin}/security?${new URLSearchParams({ device })}` : `${origin}/security`,
   };
 }

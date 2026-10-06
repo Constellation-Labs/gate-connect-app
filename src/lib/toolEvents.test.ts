@@ -25,13 +25,12 @@ function raw(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function envelope(events: ReturnType<typeof raw>[], nextCursor: string | null = null) {
+function envelope(events: ReturnType<typeof raw>[]) {
   return {
     generatedAt: "2026-08-19T04:20:00.000Z",
     window: { from: "2026-08-18T04:20:00.000Z", to: "2026-08-19T04:20:00.000Z" },
     toolScope: { tool: "claude-code" },
     events,
-    nextCursor,
   };
 }
 
@@ -321,11 +320,6 @@ describe("adaptEvents", () => {
     // Seconds specifically: an agent sends several requests a minute, and without
     // them four rows read as the same instant (Figma 116:30951).
     expect(time).toMatch(/\d{2}:\d{2}:\d{2}/);
-  });
-
-  it("carries the cursor through, and reports its absence", () => {
-    expect(adaptEvents(envelope([raw()], "b3Vy")).nextCursor).toBe("b3Vy");
-    expect(adaptEvents(envelope([raw()])).nextCursor).toBeNull();
   });
 
   it("reads an absent events array as an empty feed", () => {

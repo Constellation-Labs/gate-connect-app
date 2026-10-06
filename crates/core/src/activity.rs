@@ -93,7 +93,7 @@ fn installations_endpoint(gateway_base_url: &str) -> String {
 /// failed fetch.
 pub fn overview_json(install_id: Option<&str>, clients: &[&str]) -> Result<String, Failure> {
     let install_id = install_id.filter(|s| !s.is_empty());
-    let query = scoped_query(install_id, clients, None);
+    let query = scoped_query(install_id, clients);
     // The account before the request, so the reply is held under the account it
     // was asked for or not at all - see `activity_cache::store_for`.
     let taken = crate::activity_cache::scope_now();
@@ -132,7 +132,7 @@ pub fn cached_tool_overviews_json(
     crate::activity_cache::load_tools(install_id.filter(|s| !s.is_empty()))
 }
 
-/// Fetch one page of a section's recent requests, as raw JSON (AG-574).
+/// Fetch the first page of a section's recent requests, as raw JSON (AG-574).
 ///
 /// `clients` is every sender the pane covers - the Claude pane asks for Claude
 /// Code, the desktop app and claude.ai at once - and goes out as one `tool`
@@ -140,37 +140,28 @@ pub fn cached_tool_overviews_json(
 /// at least one, and a name the engine cannot stamp would read back empty
 /// rather than fail.
 ///
-/// `cursor` is the previous page's `nextCursor`, passed back unchanged. It is
-/// opaque on purpose - the gateway owns its shape, and its keyset spans the
-/// whole set - so this only forwards it.
+/// Only the first page: the app shows the newest rows and hands the rest of the
+/// list to the dashboard, so it never asks for a `cursor`.
 ///
 /// Deliberately not cached. The held reading in [`crate::activity_cache`] is one
 /// slot, and spending it on a feed that changes every request would evict the
 /// overview it exists for.
-pub fn tool_events_json(
-    install_id: Option<&str>,
-    clients: &[&str],
-    cursor: Option<&str>,
-) -> Result<String, Failure> {
+pub fn tool_events_json(install_id: Option<&str>, clients: &[&str]) -> Result<String, Failure> {
     get_json(
         Endpoint::ToolEvents,
-        &scoped_query(install_id.filter(|s| !s.is_empty()), clients, cursor),
+        &scoped_query(install_id.filter(|s| !s.is_empty()), clients),
     )
 }
 
 /// The query both scoped reads send: one `tool` pair per client, then the
-/// installation and the cursor when there are any.
+/// installation when there is one.
 fn scoped_query<'a>(
     install_id: Option<&'a str>,
     clients: &[&'a str],
-    cursor: Option<&'a str>,
 ) -> Vec<(&'static str, &'a str)> {
     let mut query: Vec<(&'static str, &'a str)> = clients.iter().map(|c| ("tool", *c)).collect();
     if let Some(id) = install_id {
         query.push(("installId", id));
-    }
-    if let Some(c) = cursor.filter(|s| !s.is_empty()) {
-        query.push(("cursor", c));
     }
     query
 }
@@ -326,31 +317,21 @@ mod tests {
     }
 
     #[test]
-    fn one_tool_pair_per_client_then_the_installation_and_the_cursor() {
+    fn one_tool_pair_per_client_then_the_installation() {
         assert_eq!(
             scoped_query(
                 Some("install-7"),
                 &["claude-code", "claude-desktop", "claude-web"],
-                Some("c-2"),
             ),
             vec![
                 ("tool", "claude-code"),
                 ("tool", "claude-desktop"),
                 ("tool", "claude-web"),
                 ("installId", "install-7"),
-                ("cursor", "c-2"),
             ]
         );
-        // Page one: no cursor pair at all, and an empty one is page one too.
-        assert_eq!(
-            scoped_query(Some("install-7"), &["codex"], None),
-            vec![("tool", "codex"), ("installId", "install-7")]
-        );
-        assert_eq!(
-            scoped_query(None, &["codex"], Some("")),
-            vec![("tool", "codex")]
-        );
+        assert_eq!(scoped_query(None, &["codex"]), vec![("tool", "codex")]);
         // The org-wide overview sends nothing.
-        assert!(scoped_query(None, &[], None).is_empty());
+        assert!(scoped_query(None, &[]).is_empty());
     }
 }
