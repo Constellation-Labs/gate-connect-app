@@ -142,9 +142,10 @@ describe("what a row shows, and what it must not", () => {
         ],
       }),
     );
-    const phi = screen.getByText("PHI");
+    // The parent: the label is its own span, so it can truncate beside the glyph.
+    const phi = screen.getByText("PHI").parentElement!;
     expect(phi.querySelector("svg")).toBeTruthy();
-    const other = screen.getByText("Other");
+    const other = screen.getByText("Other").parentElement!;
     expect(other.querySelector("svg")).toBeNull();
   });
 

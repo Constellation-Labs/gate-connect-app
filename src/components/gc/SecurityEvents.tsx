@@ -101,8 +101,13 @@ function Category({ value }: { value: string }) {
   const c = Object.hasOwn(CATEGORY, value) ? CATEGORY[value] : { label: value };
   return (
     <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
-      {c.icon && <Icon name={c.icon} size={20} className={GUARDRAIL_INK[c.icon]} />}
-      {c.label}
+      {c.icon && <Icon name={c.icon} size={20} className={`shrink-0 ${GUARDRAIL_INK[c.icon]}`} />}
+      {/* Truncated, with the gateway's string on hover: a category outside
+          the five prints as received and has no length bound, and the
+          column is fixed. */}
+      <span className="truncate" title={value}>
+        {c.label}
+      </span>
     </span>
   );
 }
@@ -120,7 +125,7 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
   return (
     <th
       scope="col"
-      className={`py-3 pl-4 text-left text-sm font-medium leading-5 text-base-muted-foreground ${className}`}
+      className={`whitespace-nowrap py-3 pl-4 text-left text-sm font-medium leading-5 text-base-muted-foreground ${className}`}
     >
       {children}
     </th>
@@ -263,15 +268,36 @@ export function SecurityEvents({
           * offline feed and a quiet machine now look the same here. Raised
           * with the decision, not overlooked. */}
         <CardHeader title="Security events" action={{ label: "View activity", onClick: onViewActivity }} />
-        <table className="w-full">
+        <table className="w-full table-fixed">
           <thead>
+            {/* Measured 2026-10-06 at 1280x800, padding included, with
+              * `table-layout: auto; width: max-content` and the clamps removed.
+              * No floor: the table is 974px at 1280 and 718px at the 1024
+              * window minimum, so the pixel figures below are of 900, between
+              * the two. At 718, Time and the Security pill run a few px into the
+              * next cell's padding and View takes its own right padding; the
+              * alternative was a floor that scrolls View out of sight.
+              *
+              *   column    need  width (of 900)
+              *   Time      124   15% = 135   "Dec 28, 10:59:59"
+              *   Security   87   11% =  99   "Flagged" pill
+              *   Category  118   14% = 126   "Credential" and its glyph; truncates
+              *   Tool      146   18% = 162   "Claude Desktop"; longer truncates
+              *   Model     257   30% = 270   a long Qwen id; longer truncates
+              *   Action    102   12% = 108   the xs View button
+              */}
             <tr>
-              <Th>Time</Th>
-              <Th>Security</Th>
-              <Th>Category</Th>
-              <Th>Tool</Th>
-              <Th>Model</Th>
-              <Th className="sr-only">Action</Th>
+              <Th className="w-[15%]">Time</Th>
+              <Th className="w-[11%]">Security</Th>
+              <Th className="w-[14%]">Category</Th>
+              <Th className="w-[18%]">Tool</Th>
+              <Th className="w-[30%]">Model</Th>
+              {/* The label inside, not `sr-only` on the cell: an absolutely
+                  positioned header no longer sets its column's width, and
+                  the column falls back to whatever share is left over. */}
+              <Th className="w-[12%]">
+                <span className="sr-only">Action</span>
+              </Th>
             </tr>
           </thead>
           <tbody>
@@ -347,13 +373,13 @@ export function SecurityEvents({
                     <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
                       {eventTime(e.at)}
                     </td>
-                    <td className="pl-4">
+                    <td className="whitespace-nowrap pl-4">
                       <Pill className={action.badge}>{action.label}</Pill>
                     </td>
-                    <td className="pl-4 text-sm leading-5 text-base-foreground">
+                    <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
                       {e.category ? <Category value={e.category} /> : UNATTRIBUTED}
                     </td>
-                    <td className="max-w-0 pl-4">
+                    <td className="pl-4">
                       <span className="flex items-center gap-2">
                         {/* An unattributed row keeps the slot too, so its dash
                             sits where the model cell's does. */}
@@ -373,7 +399,7 @@ export function SecurityEvents({
                         </span>
                       </span>
                     </td>
-                    <td className="max-w-0 pl-4">
+                    <td className="pl-4">
                       <span className="flex items-center gap-2">
                         <VendorMark
                           provider={provider}
@@ -391,7 +417,7 @@ export function SecurityEvents({
                         </span>
                       </span>
                     </td>
-                    <td className="pl-4 pr-4 text-right">
+                    <td className="whitespace-nowrap pl-4 pr-4 text-right">
                       {/* Straight to the dashboard. This opened
                           `SecurityEventDialog` - a summary of the same six
                           fields the row already draws, with an "Open in
