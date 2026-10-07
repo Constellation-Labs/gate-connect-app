@@ -299,6 +299,9 @@ export interface BackendState {
      *  the explanation for a tool that just stopped working. */
     credits: {
       plan: string;
+      /** Optional because a gateway that predates gate#1167 omits it, and the
+       *  default fixture is that gateway. */
+      enterpriseEnabled?: boolean;
       paygEnabled: boolean;
       balanceCents: number | null;
       lowBalanceThresholdCents: number | null;

@@ -22,6 +22,28 @@ test.describe("new UI settings", () => {
     await expect(launch).toHaveAttribute("aria-checked", "true");
   });
 
+  test("an Enterprise org reads Enterprise, not Pro", async ({ boot }) => {
+    // The gateway reports an Enterprise org as `paid`, with the entitlement
+    // beside the plan, and `paid` alone is what drew "Pro" here.
+    const app = await boot({
+      toolModels: {
+        credits: {
+          plan: "paid",
+          enterpriseEnabled: true,
+          paygEnabled: false,
+          balanceCents: null,
+          lowBalanceThresholdCents: null,
+          autoTopupArmed: false,
+        },
+      },
+    });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await expect(app.page.getByText("Enterprise", { exact: true })).toBeVisible();
+    await expect(app.page.getByText("Pro", { exact: true })).toHaveCount(0);
+  });
+
   // Figma labels this field "New device name", copy-pasted from the rename
   // dialog. "New API key" is a decided exception to "the file wins" - see
   // `ReplaceApiKeyDialog`. Do not "fix" this back to match the frame.
