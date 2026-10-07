@@ -3413,7 +3413,7 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
-          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
+          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug), 24)}
           // The header tile above is black, so `logo` stays monochrome; the
           // App-default row's tile is light and draws the vendor's own colour.
           //

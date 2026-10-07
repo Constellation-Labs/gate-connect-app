@@ -100,7 +100,7 @@ export function AppPane({
    * line: "Protected" or "Not protected", with no reason behind it.
    */
   status?: AppStatus;
-  /** 16px brand mark for the header tile. */
+  /** 24px brand mark for the header tile. */
   logo?: ReactNode;
   /**
    * The app vendor's full-colour mark, for the App-default row alone.
@@ -118,7 +118,7 @@ export function AppPane({
    * no single vendor.
    *
    * Separate from `logo` only because of the size: `logo` is the pane header's,
-   * drawn at 16 into a 44px black tile, and this row's tile is 36px around a
+   * drawn at 24 into a 44px black tile, and this row's tile is 36px around a
    * 20px glyph. Sharing one prop put two sizes in one slot.
    */
   appFallbackMark?: ReactNode;
