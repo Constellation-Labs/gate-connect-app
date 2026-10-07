@@ -122,7 +122,8 @@ export function hintForMember(key: string): string | undefined {
  * The proxy rows are named for the surface under their vendor heading ("API",
  * "Chat", "Subscription"), which is right in a list and meaningless in a
  * sentence: "API isn't routed" does not tell anyone which program to look at.
- * Config tools are absent because their name already is the program.
+ * Config tools are absent: their row label is a surface too ("CLI"), but the
+ * tool carries its product name, which is the program.
  */
 const SURFACE_NAMES: Readonly<Record<string, string>> = {
   anthropic: "Claude Desktop",
@@ -133,7 +134,7 @@ const SURFACE_NAMES: Readonly<Record<string, string>> = {
 
 /** A member's name for use in a sentence. See {@link SURFACE_NAMES}. */
 export function surfaceName(m: GroupMember): string {
-  return SURFACE_NAMES[m.key] ?? m.name;
+  return SURFACE_NAMES[m.key] ?? m.tool?.product_name ?? m.name;
 }
 
 /**
