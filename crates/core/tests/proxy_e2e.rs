@@ -1612,6 +1612,7 @@ async fn an_unreachable_gateway_is_answered_with_an_empty_502() {
             gateway_base_url: format!("http://127.0.0.1:{dead_port}"),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
+            billing_mode: Default::default(),
             org_id: String::new(),
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
