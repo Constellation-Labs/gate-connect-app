@@ -130,7 +130,6 @@ import type { DialogOrganization } from "./components/gc/dialogs";
 import {
   reopenSubjects,
   ApplyChangesDialog,
-  CloseAppsDialog,
   ModelPickerDialog,
   TeardownLeftBehindDialog,
   UseGateModelDialog,
@@ -1435,7 +1434,7 @@ export function NewUiApp() {
   });
 
   /**
-   * The reopen flow draws a dialog for the offer and the confirmation only.
+   * The reopen flow draws a dialog for the offer only.
    * `work` runs with nothing on screen, so the rail carries it, and a CLI
    * waiting for its user to reopen it can stay there indefinitely. It used to
    * end on a "Change is ready" dialog once every tool verified; that dialog is
@@ -3228,14 +3227,9 @@ export function NewUiApp() {
         ) : runningApps.stage?.kind === "offer" ? (
           <ApplyChangesDialog
             tools={reopenSubjects(runningApps.stage.tools)}
-            onCloseApps={runningApps.goToConfirm}
-            onReopenLater={runningApps.dismiss}
-          />
-        ) : runningApps.stage?.kind === "confirm" ? (
-          <CloseAppsDialog
-            tools={reopenSubjects(runningApps.stage.tools)}
-            onGoBack={runningApps.goBack}
+            closing={runningApps.busy}
             onCloseApps={() => void runningApps.closeApps()}
+            onReopenLater={runningApps.dismiss}
           />
         ) : modelOverlay?.kind === "picker" ? (
           <ModelPickerDialog

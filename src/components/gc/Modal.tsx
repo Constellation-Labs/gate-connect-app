@@ -24,21 +24,30 @@ export type ModalTone = "warning" | "success" | "danger" | "neutral";
 export interface ModalButton {
   label: string;
   onClick: () => void;
-  /** On the PRIMARY: filled red rather than filled blue, and focus opens on
-   *  the secondary instead.
+  /** Filled red on either button.
    *
-   *  On the SECONDARY: appearance is unchanged (its class never consults
-   *  this) and it only moves initial focus to the primary. That case exists
-   *  because `ApplyChangesDialog` draws the destructive action as the
-   *  *secondary* - the frame makes "No, I will reopen later" the filled
-   *  primary (`130:58448`, `Variant=Default`) and "Yes, close affected apps"
-   *  the outline one (`130:58447`, `Variant=Outline`) - which is the one
-   *  arrangement the primary-only rule below could not protect. */
+   *  On the PRIMARY focus opens on the secondary instead. On the SECONDARY it
+   *  moves initial focus to the primary. That case exists because
+   *  `ApplyChangesDialog` draws the destructive action as the *secondary*: the
+   *  frame (`1336:13885`) puts a filled red "Yes, close affected apps"
+   *  (`Variant=Destructive`) beside a filled blue "No, I will reopen later",
+   *  and the blue one is the safe choice that focus should land on. */
   destructive?: boolean;
   /** Refused, not hidden: the reset dialog gates its primary behind a
    * checkbox, and a button that vanishes tells the user less than one that
    * stays put and explains itself by staying dim. */
   disabled?: boolean;
+  /** In flight: a spinner before the label, and refused like `disabled`. */
+  busy?: boolean;
+}
+
+/** The filled red both buttons draw when `destructive`. */
+const DESTRUCTIVE_BUTTON =
+  "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600";
+
+/** The busy spinner, sized to the 20px label line. */
+function ButtonSpinner() {
+  return <Icon name="loaderCircle" size={16} className="animate-spin" />;
 }
 
 /**
@@ -319,14 +328,23 @@ export function Modal({
               <button
                 ref={safeRef}
                 type="button"
-                onClick={secondary.disabled ? undefined : secondary.onClick}
-                aria-disabled={secondary.disabled || undefined}
-                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-                  secondary.disabled
+                onClick={
+                  secondary.disabled || secondary.busy ? undefined : secondary.onClick
+                }
+                aria-disabled={secondary.disabled || secondary.busy || undefined}
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                  secondary.destructive
+                    ? DESTRUCTIVE_BUTTON
+                    : "border border-base-input bg-base-card text-base-primary shadow-base-btn focus-visible:outline-base-primary"
+                } ${
+                  secondary.disabled || secondary.busy
                     ? "cursor-not-allowed opacity-45"
-                    : "hover:bg-gray-50"
+                    : secondary.destructive
+                      ? ""
+                      : "hover:bg-gray-50"
                 }`}
               >
+                {secondary.busy && <ButtonSpinner />}
                 {secondary.label}
               </button>
             )}
@@ -334,16 +352,17 @@ export function Modal({
               <button
                 ref={primaryRef}
                 type="button"
-                onClick={primary.disabled ? undefined : primary.onClick}
-                aria-disabled={primary.disabled || undefined}
+                onClick={primary.disabled || primary.busy ? undefined : primary.onClick}
+                aria-disabled={primary.disabled || primary.busy || undefined}
                 className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
-                  primary.disabled ? "cursor-not-allowed opacity-45" : ""
+                  primary.disabled || primary.busy ? "cursor-not-allowed opacity-45" : ""
                 } ${
                   primary.destructive
-                    ? "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600"
+                    ? DESTRUCTIVE_BUTTON
                     : "border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] text-base-primary-foreground shadow-base-btn-primary hover:bg-blue-ribbon-800 focus-visible:outline-base-primary"
                 }`}
               >
+                {primary.busy && <ButtonSpinner />}
                 {primary.label}
               </button>
             )}

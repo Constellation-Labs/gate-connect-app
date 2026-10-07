@@ -24,6 +24,7 @@ export type IconName =
   | "eyeOff"
   | "check"
   | "refresh"
+  | "loaderCircle"
   | "trash"
   | "info"
   | "x"
@@ -168,6 +169,8 @@ const PATHS: Record<IconName, JSX.Element> = {
     </>
   ),
   check: <path d="M20 6 9 17l-5-5" />,
+  // A busy button's spinner (`ApplyChangesDialog` while it closes apps).
+  loaderCircle: <path d="M21 12a9 9 0 1 1-6.219-8.56" />,
   refresh: (
     <>
       <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />

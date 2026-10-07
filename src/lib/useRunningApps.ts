@@ -30,10 +30,11 @@ import {
  * something done quietly: closing an editor mid-session is the user's call, not
  * ours, and the user is the only one who can start it again.
  *
- * Three stages: offer, confirm and work. The
- * offer's primary is the *passive* option ("I will reopen later"), the
- * destructive one is deliberately the secondary, and only after a second
- * confirmation does anything actually get killed.
+ * Two stages: offer and work. The offer is the one question: its primary is
+ * the *passive* option ("I will reopen later") and the destructive one is
+ * deliberately the secondary. It used to be followed by a second confirmation
+ * before anything was killed; the frame (`App/Codex/apply-changes`) asks once,
+ * and so does this.
  *
  * **The work stage watches rather than assumes.** Closing a process proves
  * nothing about the route that replaces it, so each tool is followed from
@@ -62,8 +63,6 @@ const WATCH_MS = 3000;
 export type RunningAppsStage =
   /** Affected apps are running; offer to close them. */
   | { kind: "offer"; tools: ReopenTool[]; slugs?: string[] }
-  /** "Close affected apps" pressed; confirm before signalling anything. */
-  | { kind: "confirm"; tools: ReopenTool[]; slugs?: string[] }
   /** Signalled. Each tool is now followed to its own conclusion. */
   | { kind: "work"; tools: ReopenTool[]; slugs?: string[] };
 
@@ -77,8 +76,6 @@ export interface RunningApps {
    * them asks about every tool, which only the master toggle means.
    */
   offerAfterChange: (slugs?: string[]) => Promise<void>;
-  goToConfirm: () => void;
-  goBack: () => void;
   closeApps: () => Promise<void>;
   /** Move one row, for an action the shell owns: a retried write, a tool put
    *  back on its own defaults. Scoped to one slug on purpose - AG-566 AC 10
@@ -223,16 +220,6 @@ export function useRunningApps({
     [commit, nameMap, verdictMap],
   );
 
-  const goToConfirm = useCallback(() => {
-    const s = stageRef.current;
-    if (s?.kind === "offer") commit({ kind: "confirm", tools: s.tools, slugs: s.slugs });
-  }, [commit]);
-
-  const goBack = useCallback(() => {
-    const s = stageRef.current;
-    if (s?.kind === "confirm") commit({ kind: "offer", tools: s.tools, slugs: s.slugs });
-  }, [commit]);
-
   const markStage = useCallback(
     (slug: string, next: ReopenStage, error?: string) => {
       for (const t of stageRef.current?.tools ?? []) {
@@ -323,15 +310,13 @@ export function useRunningApps({
   }, []);
 
   const closeApps = useCallback(async () => {
-    if (stage?.kind !== "confirm" || busy) return;
+    if (stage?.kind !== "offer" || busy) return;
     setBusy(true);
-    const tools = stage.tools;
+    const { tools, slugs } = stage;
     waited.current = new Map();
-    commit({
-      kind: "work",
-      slugs: stage.slugs,
-      tools: tools.map((t) => ({ ...t, stage: "closing" as ReopenStage })),
-    });
+    // The offer stays up, its close button spinning on `busy`, until the
+    // signal has been sent: the frame (`App/Codex/applying-changes`) draws the
+    // dialog through the close rather than handing it straight to the rail.
     try {
       // The same filter the offer was built from, narrowed to the rows on
       // screen. Killing a wider set than the one the user agreed to would
@@ -341,10 +326,14 @@ export function useRunningApps({
       // Not "done": the signal was sent, and whether the process went, came
       // back and routes is what the watch is for. The rows Gate can relaunch go
       // to `reopening`; the rest wait for the user.
-      commitTools((t) => ({
-        ...t,
-        stage: t.canReopen ? "reopening" : "awaiting_reopen",
-      }));
+      commit({
+        kind: "work",
+        slugs,
+        tools: tools.map((t) => ({
+          ...t,
+          stage: t.canReopen ? "reopening" : "awaiting_reopen",
+        })),
+      });
       // Ask for the reopen only where something said it could be reopened, so a
       // set of CLIs makes no call at all rather than one that returns 0. The
       // backend waits for the old instances to exit before launching, which is
@@ -368,15 +357,19 @@ export function useRunningApps({
       // Every row failed together: the command signals the whole set, so
       // nothing here can say which one it stopped at.
       const detail = err instanceof Error ? err.message : String(err);
-      commitTools((t) => ({
-        ...t,
-        stage: "close_failed" as ReopenStage,
-        error: detail,
-      }));
+      commit({
+        kind: "work",
+        slugs,
+        tools: tools.map((t) => ({
+          ...t,
+          stage: "close_failed" as ReopenStage,
+          error: detail,
+        })),
+      });
     } finally {
       setBusy(false);
     }
-  }, [stage, busy, onError, commit, commitTools]);
+  }, [stage, busy, onError, commit]);
 
   const dismiss = useCallback(() => commit(null), [commit]);
 
@@ -384,8 +377,6 @@ export function useRunningApps({
     stage,
     busy,
     offerAfterChange,
-    goToConfirm,
-    goBack,
     closeApps,
     markStage,
     checkNow,

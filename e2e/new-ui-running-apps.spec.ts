@@ -4,8 +4,8 @@ import { test, expect } from "./fixtures";
  * What happens after a tool's config is rewritten while that tool is running.
  *
  * The sequence only exists because Gate can close an app but cannot reopen it,
- * so what these tests care about is that **nothing is killed without two
- * answers**, and that walking away leaves the saved config alone.
+ * so what these tests care about is that **nothing is killed without an
+ * answer**, and that walking away leaves the saved config alone.
  */
 const CLAUDE_CODE = {
   slug: "claude-code",
@@ -114,7 +114,7 @@ test.describe("new UI running apps", () => {
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
-  test("killing anything takes two answers", async ({ boot }) => {
+  test("closing takes one answer", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [CLAUDE_CODE],
@@ -122,36 +122,16 @@ test.describe("new UI running apps", () => {
     });
 
     await app.routeApp("Claude");
-    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
-
-    // Still nothing closed: this is the confirmation, not the action.
-    await expect(app.page.getByRole("heading", { name: "Close affected apps now?" })).toBeVisible();
+    // Nothing closed by the offer itself.
     expect(await app.lastCall("close_running_agents")).toBeNull();
 
-    await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
+    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
 
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
     // Closed is not applied: Gate cannot reopen a terminal tool, so there is
     // no all-clear to show. The flow ends and the rail carries the outcome.
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    await expect(app.page.getByRole("heading", { name: "Change is ready" })).toHaveCount(0);
-  });
-
-  test("backing out of the confirmation closes nothing", async ({ boot }) => {
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: [CLAUDE_CODE],
-      runningAgentNames: ["claude"],
-    });
-
-    await app.routeApp("Claude");
-    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
-    await app.page.getByRole("button", { name: "No, I will close later" }).click();
-
-    await expect(
-      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
-    ).toBeVisible();
-    expect(await app.lastCall("close_running_agents")).toBeNull();
+    await expect(app.page.getByRole("heading", { name: "Close affected apps now?" })).toHaveCount(0);
   });
 
   test("reopening later keeps the config that was just saved", async ({ boot }) => {
@@ -234,22 +214,6 @@ test.describe("new UI running apps", () => {
     await expect(dialog).toContainText("reopen Codex yourself");
   });
 
-  test("the confirmation asks for a save it cannot check itself", async ({ boot }) => {
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: [CODEX],
-      runningAgentNames: ["codex"],
-    });
-
-    await app.routeApp("ChatGPT / Codex");
-    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
-
-    const dialog = app.page.getByRole("dialog");
-    await expect(dialog).toContainText("Save your work before continuing");
-    await expect(dialog).toContainText("cannot tell whether");
-    await expect(dialog).toContainText("You reopen Codex yourself");
-  });
-
   test("a tool that comes back ends the flow with nothing drawn", async ({ boot }) => {
     // AG-566 AC 8 (it is the reopen that gets checked) is pinned in
     // `useRunningApps.test.tsx`: "does not call a closed tool verified" and
@@ -266,7 +230,6 @@ test.describe("new UI running apps", () => {
 
     await app.routeApp("ChatGPT / Codex");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
-    await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
 

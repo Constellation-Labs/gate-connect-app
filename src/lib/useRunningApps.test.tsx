@@ -87,12 +87,11 @@ function harness() {
   return { api, onError, onNothingRunning };
 }
 
-/** Walk to the confirmation, which is the only place closing is possible. */
-async function toConfirm(api: { current: ReturnType<typeof useRunningApps> | null }) {
+/** Open the offer, which is the one place closing is possible. */
+async function toOffer(api: { current: ReturnType<typeof useRunningApps> | null }) {
   await act(async () => {
     await api.current!.offerAfterChange();
   });
-  act(() => api.current!.goToConfirm());
 }
 
 /** The slugs a stage is about, which is all most assertions here care about. */
@@ -226,7 +225,7 @@ describe("useRunningApps: when to say anything", () => {
       verdict("claude-code", "needs_attention", "reopen_required"),
     ]);
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     expect(api.current!.stage!.tools.map((t) => t.name)).toEqual([
       "Claude Code",
@@ -283,27 +282,13 @@ describe("useRunningApps: when to say anything", () => {
   });
 });
 
-describe("useRunningApps: closing takes two answers", () => {
-  it("does not signal anything from the offer", async () => {
+describe("useRunningApps: closing takes one answer", () => {
+  it("does not signal anything just by offering", async () => {
     const { api } = harness();
 
-    await act(async () => {
-      await api.current!.offerAfterChange();
-    });
-    act(() => api.current!.goToConfirm());
-
-    expect(api.current!.stage?.kind).toBe("confirm");
-    expect(closeRunningAgents).not.toHaveBeenCalled();
-  });
-
-  it("backs out to the offer without closing anything", async () => {
-    const { api } = harness();
-    await toConfirm(api);
-
-    act(() => api.current!.goBack());
+    await toOffer(api);
 
     expect(api.current!.stage?.kind).toBe("offer");
-    expect(slugsOf(api)).toEqual(["codex"]);
     expect(closeRunningAgents).not.toHaveBeenCalled();
   });
 
@@ -321,7 +306,7 @@ describe("useRunningApps: closing takes two answers", () => {
     expect(closeRunningAgents).not.toHaveBeenCalled();
   });
 
-  it("closes only from the confirmation, and then waits for the user", async () => {
+  it("closes from the offer, and then waits for the user", async () => {
     // Gate cannot reopen a terminal tool, so a closed one lands on the stage
     // that says the next move is theirs - not on a claim that it is routing.
     (runningAgents as Mock)
@@ -331,7 +316,7 @@ describe("useRunningApps: closing takes two answers", () => {
       })
       .mockResolvedValue({ scanned_names: ["codex"], agents: [] });
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -353,7 +338,7 @@ describe("useRunningApps: closing takes two answers", () => {
       })
       .mockResolvedValue({ scanned_names: ["codex"], agents: [] });
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -372,7 +357,7 @@ describe("useRunningApps: closing takes two answers", () => {
       .mockResolvedValue({ scanned_names: ["Claude"], agents: [] });
     (routingVerdicts as Mock).mockResolvedValue([verdict("anthropic", "on")]);
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -397,7 +382,7 @@ describe("useRunningApps: closing takes two answers", () => {
     (routingVerdicts as Mock).mockResolvedValue([verdict("anthropic", "on")]);
     (reopenRunningAgents as Mock).mockRejectedValue(new Error("no such bundle"));
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -406,11 +391,8 @@ describe("useRunningApps: closing takes two answers", () => {
     expect(stagesOf(api)).toEqual(["reopening"]);
   });
 
-  it("cannot close from the offer stage", async () => {
+  it("cannot close with no offer open", async () => {
     const { api } = harness();
-    await act(async () => {
-      await api.current!.offerAfterChange();
-    });
 
     await act(async () => {
       await api.current!.closeApps();
@@ -425,7 +407,7 @@ describe("useRunningApps: closing takes two answers", () => {
     // for that tool alone.
     (closeRunningAgents as Mock).mockRejectedValue(new Error("permission denied"));
     const { api, onError } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -455,7 +437,7 @@ describe("useRunningApps: following a tool back", () => {
       .mockResolvedValue({ scanned_names: ["codex"], agents: [] });
     (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "on")]);
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -477,7 +459,7 @@ describe("useRunningApps: following a tool back", () => {
       });
     (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "on")]);
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -500,7 +482,7 @@ describe("useRunningApps: following a tool back", () => {
       });
     (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "off")]);
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -529,7 +511,7 @@ describe("useRunningApps: following a tool back", () => {
     // What the real backend sends: no row for this slug at all.
     (routingVerdicts as Mock).mockResolvedValue([]);
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();
@@ -547,7 +529,7 @@ describe("useRunningApps: following a tool back", () => {
       agents: [agent("codex", "codex", 10), agent("claude-code", "claude", 11)],
     });
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
     await act(async () => {
       await api.current!.closeApps();
     });
@@ -600,24 +582,6 @@ describe("useRunningApps: which tool it is talking about", () => {
     await act(async () => {
       await api.current!.offerAfterChange(["codex"]);
     });
-    act(() => api.current!.goToConfirm());
-
-    await act(async () => {
-      await api.current!.closeApps();
-    });
-
-    expect(closeRunningAgents).toHaveBeenCalledWith(["codex"]);
-  });
-
-  it("keeps the filter across a trip back to the offer", async () => {
-    // Backing out and confirming again must not widen the set.
-    const { api } = harness();
-    await act(async () => {
-      await api.current!.offerAfterChange(["codex"]);
-    });
-    act(() => api.current!.goToConfirm());
-    act(() => api.current!.goBack());
-    act(() => api.current!.goToConfirm());
 
     await act(async () => {
       await api.current!.closeApps();
@@ -634,7 +598,7 @@ describe("useRunningApps: which tool it is talking about", () => {
       agents: [agent("codex", "codex", 10), agent("claude-code", "claude", 11)],
     });
     const { api } = harness();
-    await toConfirm(api);
+    await toOffer(api);
 
     await act(async () => {
       await api.current!.closeApps();

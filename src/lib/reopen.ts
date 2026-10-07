@@ -70,8 +70,7 @@ export type ReopenStage =
  */
 export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   applying: "Writing this tool's configuration.",
-  reopen_required:
-    "Running, and still using the settings it started with.",
+  reopen_required: "Running now. It will keep its current route until closed.",
   closing: "Asking this tool to close so it can pick up its new configuration.",
   awaiting_reopen:
     "Closed. Open it again and Gate will check its route.",
@@ -104,11 +103,6 @@ export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
  * cost with no reading behind it.
  */
 export const REOPEN_IDLE_WATCH_MS = 10_000;
-
-/** Why any of this is necessary, in one sentence. Shared by every surface that
- *  raises the flow, so the reason cannot be phrased two ways. */
-export const WHY_REOPEN =
-  "A tool reads its configuration when it starts, so one that was already running keeps the settings it launched with until it is opened again.";
 
 /**
  * Waiting on the person, not on Gate.
