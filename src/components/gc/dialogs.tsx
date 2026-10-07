@@ -4,13 +4,7 @@ import { Icon } from "./Icon";
 import { providerMarkFor } from "./ProviderMark";
 import { ErrorDetails } from "./banners";
 import { Skeleton } from "./base";
-import {
-  compatibility,
-  explain,
-  isPinned,
-  needsOf,
-  pinnedModels,
-} from "../../lib/modelCompatibility";
+import { isPinned, pinnedModels } from "../../lib/modelCompatibility";
 import { brandMarkFor } from "./BrandMark";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import { MAX_GATE_MODELS } from "../../lib/toolModels";
@@ -711,8 +705,45 @@ export interface GateModelOption {
   /** Who makes the model, for the glyph, the provider filter and grouping in the
    *  reader's head. */
   vendor: string;
-  /** Capabilities the gateway advertises; `modelCompatibility` reads them. */
+  /** The gateway's display name ("Mistral Large"), which search matches
+   *  alongside the id: nobody types `mistral-large` to find it. Optional
+   *  because the catalogue already falls back to the id when discovery gave
+   *  none (`adaptModels`), and a row without one still searches by id. */
+  name?: string;
+  /** Capabilities the gateway advertises. */
   tags: string[];
+}
+
+/**
+ * The search box, as words.
+ *
+ * Lower-cased, with the separators an id is written in (`-`, `_`, `/`, `.`)
+ * read as spaces, so "mistral large", "mistral-large" and "Mistral Large" are
+ * the same query. Empty when nothing was typed.
+ */
+export function searchWords(query: string): string[] {
+  return query.toLowerCase().split(/[\s\-_/.]+/).filter((w) => w.length > 0);
+}
+
+/**
+ * Does every word of the search appear somewhere in this model?
+ *
+ * "Contains words", not a prefix or an exact id: each word has to be found in
+ * the id, the display name or the vendor, in any order, so "large mistral"
+ * finds `mistralai/mistral-large` and "opus" finds every Opus. The staging
+ * catalogue is several hundred rows and the ids are the gateway's, not the
+ * user's vocabulary; a search that only knew the id sent people to type
+ * `mistral-large` (alpha.13 feedback, 2026-10-07).
+ */
+export function matchesSearch(
+  model: { id: string; vendor: string; name?: string },
+  words: string[],
+): boolean {
+  if (words.length === 0) return true;
+  const haystack = `${model.id} ${model.name ?? ""} ${model.vendor}`
+    .toLowerCase()
+    .replace(/[\-_/.]+/g, " ");
+  return words.every((w) => haystack.includes(w));
 }
 
 /**
@@ -791,16 +822,6 @@ export function ModelPickerDialog({
 }) {
   const [query, setQuery] = useState("");
   const [vendor, setVendor] = useState("all");
-  /**
-   * Show models this app cannot be served with (AG-590).
-   *
-   * Off by default, because offering a model that fails costs a prompt to find
-   * out and reports itself as a provider error nobody can act on. Available at
-   * all because the freeform-tool rule is empirical and will date: a model that
-   * starts working would otherwise be unreachable, with no way for the user to
-   * tell us the list is wrong.
-   */
-  const [showAll, setShowAll] = useState(false);
   /** The dialog opens on its search field: with a catalogue this long, typing is
    *  the first thing to do. */
   const searchRef = useRef<HTMLInputElement>(null);
@@ -813,10 +834,6 @@ export function ModelPickerDialog({
     [models],
   );
 
-  // What this app can actually be served with. Computed over the whole catalogue
-  // rather than the filtered view, so the count of what was set aside is about
-  // the app and not about the current search.
-  const needs = useMemo(() => needsOf(appSlug), [appSlug]);
   /**
    * Models to float to the top, in development only.
    *
@@ -826,12 +843,6 @@ export function ModelPickerDialog({
    */
   const pinned = useMemo(() => pinnedModels(appSlug), [appSlug]);
 
-  // What this app can be served with, computed over the whole catalogue rather
-  // than the filtered view, so the count of what was set aside is about the app
-  // and not about the current search.
-  const usable = useMemo(() => models.filter((m) => compatibility(m, needs).ok), [models, needs]);
-  const setAside = models.length - usable.length;
-
   /**
    * Chosen models with no row to clear them from (AG-592).
    *
@@ -840,49 +851,30 @@ export function ModelPickerDialog({
    * abandoning the whole selection. Shown at the top, marked, and removable,
    * which is the recovery the ticket asks for.
    *
-   * **Two ways to have no row, not one.** Originally this meant a model the
-   * catalogue had dropped. AG-590's compatibility filter added a second: a model
-   * still in the catalogue that this app cannot be served with is filtered out
-   * of `usable`, so it is equally unreachable while it stays in the draft,
-   * counted by the selection counter and written straight back on Save. That is the
-   * same trap, reintroduced through a different door, so both take the same
-   * exit.
-   *
-   * Keyed on what is reachable rather than on catalogue membership. Under "Show
-   * anyway" an incompatible model does have a row, so it drops out of here and
-   * is cleared inline like any other. Search and the vendor filter are
-   * deliberately not considered: narrowing the view must not make a chosen model
-   * look unavailable.
+   * Keyed on catalogue membership. The picker used to hold back models the
+   * compatibility table said the app could not use, which was a second way to
+   * have no row; every model the gateway lists is offered now (team decision,
+   * 2026-10-07), so a catalogue drop is the only way left. Search and the
+   * vendor filter are deliberately not considered: narrowing the view must not
+   * make a chosen model look unavailable.
    */
   const missing = useMemo(() => {
-    const reachable = new Set((showAll ? models : usable).map((m) => m.id));
+    const reachable = new Set(models.map((m) => m.id));
     // Derived from the DRAFT, not from what is stored: clearing one has to make
     // the row go, and deriving from the stored set left it on screen still
     // marked enabled while the footer count disagreed. Its absence afterwards is
     // also what satisfies "an unavailable model cannot be selected" - there is no
     // row left to re-check.
     return draft.filter((id) => !reachable.has(id));
-  }, [models, usable, showAll, draft]);
+  }, [models, draft]);
 
-  // The reason to name, when there is one shared reason worth naming. Two
-  // different causes in one sentence would explain neither.
-  const asideReason = useMemo(() => {
-    const reasons = new Set(
-      models.map((m) => compatibility(m, needs).reason).filter((r) => r !== undefined),
-    );
-    return reasons.size === 1 ? [...reasons][0]! : null;
-  }, [models, needs]);
-
-  const needle = query.trim().toLowerCase();
   const shown = useMemo(() => {
-    const base = showAll ? models : usable;
-    const matched = base
+    const words = searchWords(query);
+    const matched = models
       .filter(
         (m) =>
           (vendor === "all" || m.vendor === vendor) &&
-          (needle === "" ||
-            m.id.toLowerCase().includes(needle) ||
-            m.vendor.toLowerCase().includes(needle)),
+          matchesSearch(m, words),
       )
       // "Current models will sort alphabetically, left to right using their
       // provider. Example. Anthropic > DeepSeek > Moonshot" - written on the
@@ -891,13 +883,18 @@ export function ModelPickerDialog({
       // order rather than falling back to whatever the gateway listed.
       .sort((a, b) => a.vendor.localeCompare(b.vendor) || a.id.localeCompare(b.id));
 
-    // The dev pin list floats above that ordering rather than replacing it: a
-    // plain partition, so the alphabetical rule still holds within each group.
-    // Sorting on a boolean with `Array.sort` would not guarantee that.
-    if (pinned.length === 0) return matched;
-    const top = matched.filter((m) => isPinned(m, pinned));
-    return top.length === 0 ? matched : [...top, ...matched.filter((m) => !isPinned(m, pinned))];
-  }, [models, usable, showAll, needle, vendor, pinned]);
+    // The chosen rows float above that ordering, and the dev pin list above
+    // the rest (team decision, 2026-10-07: "keep the selected ones on top").
+    // Plain partitions rather than a boolean sort, so the alphabetical rule
+    // still holds within each group. Read from the draft, so a row moves up
+    // as it is checked and back down as it is cleared.
+    const picked = new Set(draft);
+    const chosenRows = matched.filter((m) => picked.has(m.id));
+    const rest = matched.filter((m) => !picked.has(m.id));
+    const pinnedRows = rest.filter((m) => isPinned(m, pinned));
+    const others = rest.filter((m) => !isPinned(m, pinned));
+    return [...chosenRows, ...pinnedRows, ...others];
+  }, [models, query, vendor, pinned, draft]);
 
   /**
    * One selectable row.
@@ -906,8 +903,8 @@ export function ModelPickerDialog({
    * drift between them in the one control this dialog exists for.
    *
    * Every row is identical. The list carries no ranking of its own: what the
-   * catalogue offers is offered, and the dev pin list changes the order without
-   * changing how a row is drawn.
+   * catalogue offers is offered, and the chosen rows and the dev pin list
+   * change the order without changing how a row is drawn.
    */
   const renderRow = (model: (typeof models)[number]) => {
     const selected = chosen.includes(model.id);
@@ -1178,32 +1175,6 @@ export function ModelPickerDialog({
             </p>
           )}
 
-          {/* Never hidden silently. The rule that sets models aside is partly
-           *  empirical - see `modelCompatibility` - so it will date, and a user
-           *  looking for a model that is missing needs to be told it was a
-           *  decision rather than an omission, and be able to overrule it. */}
-          {setAside > 0 && (
-            <p className="flex flex-wrap items-baseline gap-x-2 text-base-xs leading-4 text-base-muted-foreground">
-              {/* The sentence follows the override. Under "Show anyway" these
-                *  rows ARE on screen, so "not shown" contradicts both the list
-                *  and the "Hide them" control beside it. The reason is worth
-                *  saying in either state: it is why they were set apart at all,
-                *  and it is the same sentence whether or not they are visible. */}
-              <span>
-                {setAside} {setAside === 1 ? "model is" : "models are"}{" "}
-                {showAll ? "shown but cannot serve this app" : "not shown"}
-                {asideReason ? `: ${explain(asideReason, appName)}` : "."}
-              </span>
-              <button
-                type="button"
-                onClick={() => setShowAll((v) => !v)}
-                className="rounded-sm font-medium text-base-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-              >
-                {showAll ? "Hide them" : "Show anyway"}
-              </button>
-            </p>
-          )}
-
           {missing.length > 0 && (
             <ul className="flex flex-col gap-px">
               {missing.map((id) => {
@@ -1263,14 +1234,20 @@ export function ModelPickerDialog({
             // within it, so the edge of the list stays visible when it runs past
             // the fold. The inner element scrolls, not the border, so that edge
             // holds still while the contents move.
-            <div className="rounded-md border border-base-border p-2">
+            //
+            // The card gives way before the dialog body does. It used to be a
+            // fixed 22rem, so on a short window the body scrolled as well and
+            // the note under the list sat behind a second scrollbar (alpha.13
+            // feedback, 2026-10-07). `min-h-32` is the floor it shrinks to;
+            // the body scrolls only past that.
+            <div className="flex min-h-32 flex-col rounded-md border border-base-border p-2">
               <div
                 role={multiple ? "group" : "radiogroup"}
                 aria-label="Gate model"
-                className="flex max-h-[22rem] flex-col overflow-y-auto"
+                className="flex min-h-0 max-h-[22rem] flex-col overflow-y-auto"
               >
-                {/* One flat list, in the order the gateway returned it, with
-                  * the dev pin list floated to the top when there is one. No
+                {/* One flat list, by provider then id, with the chosen rows
+                  * floated to the top and the dev pin list under them. No
                   * headings: the catalogue decides what is offered, and this
                   * dialog does not second-guess it. */}
                 {shown.map(renderRow)}

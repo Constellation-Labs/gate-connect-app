@@ -1,5 +1,4 @@
 import { test, expect } from "./fixtures";
-import type { Page } from "@playwright/test";
 
 /**
  * Choosing which model an app runs on (AG-588).
@@ -315,6 +314,58 @@ test.describe("new UI model picker search and set", () => {
     await expect(dialog.getByRole("checkbox")).toHaveCount(1);
     await expect(dialog.getByText("2 of 4 models selected")).toBeVisible();
     await expect(dialog.getByText("No models enabled")).toHaveCount(0);
+  });
+
+  test("search matches the display name, with a space where the id has a dash", async ({
+    boot,
+  }) => {
+    // "mistral large" found nothing: the search knew the id alone, and the id
+    // is `mistralai/mistral-large` (alpha.13 feedback, 2026-10-07).
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue: [
+          ...many,
+          { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
+          { id: "mistralai/mistral-small", owned_by: "mistralai", name: "Mistral Small", tags: ["tool-use"] },
+        ],
+      },
+    });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("searchbox").fill("mistral large");
+    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
+    await expect(dialog.getByRole("checkbox", { name: "mistralai/mistral-large" })).toBeVisible();
+
+    // Words in any order, and the id's own spelling still works.
+    await dialog.getByRole("searchbox").fill("large mistral");
+    await expect(dialog.getByRole("checkbox", { name: "mistralai/mistral-large" })).toBeVisible();
+    await dialog.getByRole("searchbox").fill("mistral-large");
+    await expect(dialog.getByRole("checkbox", { name: "mistralai/mistral-large" })).toBeVisible();
+  });
+
+  test("keeps the chosen models at the top of the list", async ({ boot }) => {
+    // The list is by provider then id, so DeepSeek sits above OpenAI. Checking
+    // GPT-5 moves it to the top; clearing it sends it back (alpha.13 feedback,
+    // 2026-10-07: "keep the selected ones on top").
+    const app = await boot({ ...base, toolModels: { catalogue: many } });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    const rows = dialog.getByRole("checkbox");
+    await expect(rows).toHaveCount(4);
+    await expect(rows.first()).toHaveAccessibleName("anthropic/claude-opus-5");
+
+    await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
+    await expect(rows.first()).toHaveAccessibleName("openai/gpt-5");
+    await expect(rows.nth(1)).toHaveAccessibleName("anthropic/claude-opus-5");
+
+    await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
+    await expect(rows.first()).toHaveAccessibleName("anthropic/claude-opus-5");
+    await expect(rows.last()).toHaveAccessibleName("openai/gpt-5");
   });
 
   test("says so when a search matches nothing, rather than showing an empty list", async ({
@@ -800,21 +851,15 @@ test.describe("new UI model feedback", () => {
 });
 
 /**
- * Only the models this app can actually be served with (AG-590, AG-729).
+ * Every model the gateway lists is offered (team decision, 2026-10-07).
  *
- * The case that cost a real prompt on staging: Codex was offered `gpt-4o`, which
- * carries the `tool-use` tag and still could not serve it, because Codex sent
- * freeform tools. That one is fixed at the source now - Gate writes a model
- * that has not been seen to take freeform tools into Codex's catalog without
- * them (`integrations/codex.rs`) - so a freeform refusal no longer holds a
- * model back from Codex. A model with no tool use at all still is.
- *
- * AG-729 split the answer into three. Only a model MEASURED failing is held
- * back; a model nobody ever tried is offered below an "Unverified" divider,
- * because the old boolean called that a refusal and quietly shrank the
- * catalogue to the one family anybody had swept.
+ * The picker used to hold back models the compatibility table said the app
+ * could not use, under a "N models are not shown" line with a "Show anyway"
+ * link. The alpha.13 round asked for both to go: show them all, and drop the
+ * copy. What is pinned here is that nothing is held back any more, whatever
+ * the tags or the gateway's own verdicts say.
  */
-test.describe("new UI model picker compatibility", () => {
+test.describe("new UI model picker offers the whole catalogue", () => {
   const codexTools = [
     {
       slug: "codex",
@@ -825,15 +870,10 @@ test.describe("new UI model picker compatibility", () => {
       status: { kind: "connected" as const },
     },
   ];
-  /**
-   * Rows as a gateway serving AG-729's `tool_shapes` sends them, covering all
-   * three states: verified, refuted, and never tried.
-   */
+  /** Rows covering every state the old filter distinguished: verified,
+   *  refuted, untagged for tools, and never tried. */
   const mixed = [
     {
-      // In KNOWN_GOOD: a real Codex request was run against this one. Shape
-      // evidence alone no longer promotes a model, so a fixture that wants a
-      // VERIFIED row has to name a pairing somebody actually ran.
       id: "openai/gpt-5.6-terra",
       owned_by: "openai",
       name: "GPT-5.6 Terra",
@@ -848,69 +888,10 @@ test.describe("new UI model picker compatibility", () => {
       tool_shapes: { freeform: { verdict: "fails", checked: "2026-08-28" } },
     },
     { id: "openai/gpt-3-5-turbo-instruct", owned_by: "openai", name: "Instruct", tags: ["vision"] },
-    // Nothing known about this one. It must be OFFERED, below the divider.
     { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
   ];
 
-  /** Open Codex's picker. Four tests below need the same three clicks. */
-  const openPicker = async (app: { page: Page }) => {
-    await app.page.getByRole("button", { name: "Codex" }).first().click();
-    await app.page.getByRole("radio", { name: /Gate model/ }).click();
-    return app.page.getByRole("dialog");
-  };
-
-      test("counts only the measured failures as held back", async ({ boot }) => {
-    // The count line covers only what was measured failing. Anything offered is
-    // visibly in the list, so calling it "not shown" would be false.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: codexTools,
-      toolModels: { catalogue: mixed },
-    });
-    const dialog = await openPicker(app);
-
-    // Only the model with no tool use: the freeform refusal no longer counts.
-    await expect(dialog.getByText(/1 model is not shown/)).toBeVisible();
-  });
-
-  test("offers a model that refuses freeform tools, since Codex is sent function tools", async ({
-    boot,
-  }) => {
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: codexTools,
-      toolModels: { catalogue: mixed.filter((m) => m.id !== "openai/gpt-3-5-turbo-instruct") },
-    });
-    const dialog = await openPicker(app);
-
-    await expect(dialog.getByText("GPT-4o")).toBeVisible();
-    await expect(dialog.getByText(/not shown/)).toHaveCount(0);
-  });
-
-  test("treats an older gateway's silence as offered, not as a refusal", async ({ boot }) => {
-    // No `tool_shapes` anywhere: the local fallback answers, and everything
-    // outside the families it knows about is OFFERED rather than hidden.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: codexTools,
-      toolModels: {
-        catalogue: [
-          { id: "openai/gpt-5.6-terra", owned_by: "openai", name: "GPT-5.6 Terra", tags: ["tool-use"] },
-          { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
-        ],
-      },
-    });
-    const dialog = await openPicker(app);
-
-    // Both offered. Nothing was measured failing, so nothing is held back, and
-    // a shape nobody has a verdict on is not a refusal.
-    await expect(dialog.getByRole("checkbox")).toHaveCount(2);
-    await expect(dialog.getByText(/not shown/)).toHaveCount(0);
-  });
-
-  test("lets the user overrule it, because the rule will date", async ({ boot }) => {
-    // The freeform-tool rule is empirical. A model that starts working would be
-    // unreachable if this were a hard filter, with no way to tell us so.
+  test("lists every model, with no held-back count and no override link", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: codexTools,
@@ -918,21 +899,15 @@ test.describe("new UI model picker compatibility", () => {
     });
     await app.page.getByRole("button", { name: "Codex" }).first().click();
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
-
     const dialog = app.page.getByRole("dialog");
-    await dialog.getByRole("button", { name: "Show anyway" }).click();
 
     await expect(dialog.getByRole("checkbox")).toHaveCount(4);
-    await expect(dialog.getByRole("checkbox", { name: "openai/gpt-4o" })).toBeVisible();
-
-    // The sentence follows the override. Saying "not shown" here would
-    // contradict both the rows on screen and the "Hide them" control beside it,
-    // and nothing asserted this state before, which is how it drifted.
+    await expect(dialog.getByRole("checkbox", { name: "openai/gpt-3-5-turbo-instruct" })).toBeVisible();
     await expect(dialog.getByText(/not shown/)).toHaveCount(0);
-    await expect(dialog.getByText(/cannot serve this app/)).toBeVisible();
+    await expect(dialog.getByText(/cannot serve this app/)).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Show anyway" })).toHaveCount(0);
   });
-
-    });
+});
 
 /**
  * Gate models live in the tool's own config now (Codex's `config.toml`,

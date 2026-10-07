@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ModelPickerDialog } from "./dialogs";
+import { ModelPickerDialog, matchesSearch, searchWords } from "./dialogs";
 
 /**
  * `ModelPickerDialog`'s two selection modes (design, 2026-09-04).
@@ -369,5 +369,84 @@ describe("the model picker, at the limit", () => {
     renderPicker({ multiple: false });
     expect(screen.queryByRole("button", { name: "Clear selections" })).toBeNull();
     expect(screen.queryByText(/models selected/)).toBeNull();
+  });
+});
+
+describe("the model picker's search", () => {
+  const large = { id: "mistralai/mistral-large", vendor: "mistralai", name: "Mistral Large" };
+  const small = { id: "mistralai/mistral-small", vendor: "mistralai", name: "Mistral Small" };
+  const opus = { id: "anthropic/claude-opus-5", vendor: "anthropic", name: "Claude Opus 5" };
+
+  it("reads an id's separators as spaces, so the dashed and spaced forms are one query", () => {
+    expect(searchWords("Mistral Large")).toEqual(["mistral", "large"]);
+    expect(searchWords("mistral-large")).toEqual(["mistral", "large"]);
+    expect(searchWords("  mistralai/mistral_large.v2 ")).toEqual(["mistralai", "mistral", "large", "v2"]);
+    expect(searchWords("   ")).toEqual([]);
+  });
+
+  it("matches when every word is found, in any order, in the id, name or vendor", () => {
+    expect(matchesSearch(large, searchWords("mistral large"))).toBe(true);
+    expect(matchesSearch(large, searchWords("large mistral"))).toBe(true);
+    expect(matchesSearch(large, searchWords("mistral-large"))).toBe(true);
+    expect(matchesSearch(small, searchWords("mistral large"))).toBe(false);
+    expect(matchesSearch(opus, searchWords("opus"))).toBe(true);
+    expect(matchesSearch(opus, searchWords("anthropic 5"))).toBe(true);
+    expect(matchesSearch(opus, searchWords("opus 6"))).toBe(false);
+  });
+
+  it("matches the display name alone, for a row whose id says something else", () => {
+    const terra = { id: "openai/gpt-5.6-terra", vendor: "openai", name: "GPT-5.6 Terra" };
+    expect(matchesSearch(terra, searchWords("terra"))).toBe(true);
+    expect(matchesSearch({ ...terra, name: undefined }, searchWords("gpt 5"))).toBe(true);
+  });
+
+  it("matches everything on an empty search", () => {
+    expect(matchesSearch(large, [])).toBe(true);
+  });
+
+  it("narrows the rows by name, with a space where the id has a dash", () => {
+    renderPicker({
+      models: [...CATALOGUE, { id: "mistralai/mistral-large", vendor: "mistralai", name: "Mistral Large", tags: [] }],
+      selectedIds: [],
+    });
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "mistral large" } });
+    expect(screen.getAllByRole("checkbox").map((r) => r.getAttribute("aria-label") ?? r.textContent)).toEqual([
+      "mistralai/mistral-large",
+    ]);
+  });
+});
+
+describe("the model picker's order", () => {
+  const names = () => screen.getAllByRole("checkbox").map((r) => r.textContent);
+
+  it("lists by provider then id, with the chosen rows first", () => {
+    renderPicker({ selectedIds: ["openai/gpt-5"] });
+    expect(names()).toEqual(["openai/gpt-5", "anthropic/claude-opus-5", "moonshot/kimi-k3"]);
+  });
+
+  it("moves a row up as it is checked and back down as it is cleared", () => {
+    renderPicker({ selectedIds: [] });
+    expect(names()).toEqual(["anthropic/claude-opus-5", "moonshot/kimi-k3", "openai/gpt-5"]);
+    fireEvent.click(box("openai/gpt-5"));
+    expect(names()).toEqual(["openai/gpt-5", "anthropic/claude-opus-5", "moonshot/kimi-k3"]);
+    fireEvent.click(box("moonshot/kimi-k3"));
+    // Alphabetical within the chosen group, not click order.
+    expect(names()).toEqual(["moonshot/kimi-k3", "openai/gpt-5", "anthropic/claude-opus-5"]);
+    fireEvent.click(box("openai/gpt-5"));
+    expect(names()).toEqual(["moonshot/kimi-k3", "anthropic/claude-opus-5", "openai/gpt-5"]);
+  });
+
+  it("offers every model the catalogue lists, whatever its tags say", () => {
+    renderPicker({
+      models: [
+        { id: "openai/gpt-3-5-turbo-instruct", vendor: "openai", tags: ["vision"] },
+        { id: "openai/gpt-5", vendor: "openai", tags: ["tool-use"] },
+      ],
+      selectedIds: [],
+      appSlug: "codex",
+    });
+    expect(names()).toEqual(["openai/gpt-3-5-turbo-instruct", "openai/gpt-5"]);
+    expect(screen.queryByText(/not shown/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show anyway" })).toBeNull();
   });
 });
