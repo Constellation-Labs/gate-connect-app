@@ -886,15 +886,22 @@ export function ModelPickerDialog({
     // The chosen rows float above that ordering, and the dev pin list above
     // the rest (team decision, 2026-10-07: "keep the selected ones on top").
     // Plain partitions rather than a boolean sort, so the alphabetical rule
-    // still holds within each group. Read from the draft, so a row moves up
-    // as it is checked and back down as it is cleared.
-    const picked = new Set(draft);
+    // still holds within each group.
+    //
+    // Partitioned on the selection as it was when the dialog OPENED
+    // (`selectedIds`), not on the live draft. Reordering off the draft moved a
+    // row out from under the pointer: halfway down a few hundred rows, checking
+    // one sent it to the top out of view and slid the next row into the spot
+    // just clicked, so a quick second click checked a model nobody read
+    // (review, #427). The applied set is on top every time the picker opens,
+    // and a row stays where it is while it is being checked or cleared.
+    const picked = new Set(selectedIds);
     const chosenRows = matched.filter((m) => picked.has(m.id));
     const rest = matched.filter((m) => !picked.has(m.id));
     const pinnedRows = rest.filter((m) => isPinned(m, pinned));
     const others = rest.filter((m) => !isPinned(m, pinned));
     return [...chosenRows, ...pinnedRows, ...others];
-  }, [models, query, vendor, pinned, draft]);
+  }, [models, query, vendor, pinned, selectedIds]);
 
   /**
    * One selectable row.

@@ -424,16 +424,22 @@ describe("the model picker's order", () => {
     expect(names()).toEqual(["openai/gpt-5", "anthropic/claude-opus-5", "moonshot/kimi-k3"]);
   });
 
-  it("moves a row up as it is checked and back down as it is cleared", () => {
-    renderPicker({ selectedIds: [] });
-    expect(names()).toEqual(["anthropic/claude-opus-5", "moonshot/kimi-k3", "openai/gpt-5"]);
-    fireEvent.click(box("openai/gpt-5"));
-    expect(names()).toEqual(["openai/gpt-5", "anthropic/claude-opus-5", "moonshot/kimi-k3"]);
-    fireEvent.click(box("moonshot/kimi-k3"));
-    // Alphabetical within the chosen group, not click order.
+  it("orders the applied set alphabetically within the top group, not by selection order", () => {
+    renderPicker({ selectedIds: ["openai/gpt-5", "moonshot/kimi-k3"] });
     expect(names()).toEqual(["moonshot/kimi-k3", "openai/gpt-5", "anthropic/claude-opus-5"]);
+  });
+
+  it("holds the order from when it opened while rows are checked and cleared", () => {
+    // Reordering on the live draft moved a row out from under the pointer
+    // (review, #427): the applied set is on top when the picker opens, and a
+    // row stays put while it is being toggled.
+    renderPicker({ selectedIds: ["openai/gpt-5"] });
+    const opened = ["openai/gpt-5", "anthropic/claude-opus-5", "moonshot/kimi-k3"];
+    expect(names()).toEqual(opened);
+    fireEvent.click(box("moonshot/kimi-k3"));
+    expect(names()).toEqual(opened);
     fireEvent.click(box("openai/gpt-5"));
-    expect(names()).toEqual(["moonshot/kimi-k3", "anthropic/claude-opus-5", "openai/gpt-5"]);
+    expect(names()).toEqual(opened);
   });
 
   it("offers every model the catalogue lists, whatever its tags say", () => {

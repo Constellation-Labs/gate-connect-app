@@ -1,6 +1,13 @@
 /**
  * Which Gate models an app can actually be served with (AG-590, AG-729).
  *
+ * TODO(2026-10-07): the picker no longer asks. It offers every model the
+ * gateway lists (alpha.13 feedback), so `needsOf`, `compatibility` and
+ * `explain` below are reached only by this module's own tests. They are kept
+ * for now in case the verdicts find another surface (a hint on the row, say);
+ * if none appears, remove them and their tests, and leave `pinnedModels` /
+ * `isPinned`, which the picker's dev ordering still uses.
+ *
  * The picker offers the whole catalogue - 344 models on staging - and most of
  * them cannot serve most apps. Choosing one costs the user a prompt to find out,
  * and the failure arrives as a raw provider error about a field they have never

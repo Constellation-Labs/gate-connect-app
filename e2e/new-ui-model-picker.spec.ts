@@ -346,26 +346,37 @@ test.describe("new UI model picker search and set", () => {
     await expect(dialog.getByRole("checkbox", { name: "mistralai/mistral-large" })).toBeVisible();
   });
 
-  test("keeps the chosen models at the top of the list", async ({ boot }) => {
-    // The list is by provider then id, so DeepSeek sits above OpenAI. Checking
-    // GPT-5 moves it to the top; clearing it sends it back (alpha.13 feedback,
-    // 2026-10-07: "keep the selected ones on top").
-    const app = await boot({ ...base, toolModels: { catalogue: many } });
+  test("opens with the applied models at the top, and holds that order while toggling", async ({
+    boot,
+  }) => {
+    // The list is by provider then id, so Anthropic sits above OpenAI. An
+    // applied GPT-5 opens on top (alpha.13 feedback, 2026-10-07: "keep the
+    // selected ones on top"). Checking or clearing a row does not move it:
+    // reordering on the live draft pulled rows out from under the pointer
+    // (review, #427).
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue: many,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: ["openai/gpt-5"] } },
+      },
+    });
     await openApp(app);
-    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    await app.page.getByRole("button", { name: "Choose models" }).click();
 
     const dialog = app.page.getByRole("dialog");
     const rows = dialog.getByRole("checkbox");
     await expect(rows).toHaveCount(4);
-    await expect(rows.first()).toHaveAccessibleName("anthropic/claude-opus-5");
+    await expect(rows.first()).toHaveAccessibleName("openai/gpt-5");
+    await expect(rows.nth(1)).toHaveAccessibleName("anthropic/claude-opus-5");
 
-    await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
+    await dialog.getByRole("checkbox", { name: "anthropic/claude-opus-5" }).click();
     await expect(rows.first()).toHaveAccessibleName("openai/gpt-5");
     await expect(rows.nth(1)).toHaveAccessibleName("anthropic/claude-opus-5");
 
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
-    await expect(rows.first()).toHaveAccessibleName("anthropic/claude-opus-5");
-    await expect(rows.last()).toHaveAccessibleName("openai/gpt-5");
+    await expect(rows.first()).toHaveAccessibleName("openai/gpt-5");
   });
 
   test("says so when a search matches nothing, rather than showing an empty list", async ({

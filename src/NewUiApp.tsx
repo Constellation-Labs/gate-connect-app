@@ -3248,8 +3248,8 @@ export function NewUiApp() {
             // per tool and `apps` is keyed that way, so the pane's own section
             // id found nothing here and every dialog read "This app".
             appName={appFor(apps, openTool ?? "")?.name ?? "This app"}
-            // The slug, not the display name: compatibility is keyed on the tool
-            // the preferences use, and two apps can share a name.
+            // The slug, not the display name: the dev-only pin list is keyed on
+            // the tool the preferences use, and two apps can share a name.
             appSlug={openTool}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
