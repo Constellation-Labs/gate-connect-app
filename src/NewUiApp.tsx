@@ -3076,12 +3076,11 @@ export function NewUiApp() {
       // neutral: a browser left open across the trust change rejects every
       // host Gate intercepts - the same failure `ReopenAlert` warns about for
       // a tool - and the failure variants are faults outright. See
-      // `NoteBanner`'s `tone`.
+      // `NoteBanner`.
       <NoteBanner
         title={browserRestart.title}
         body={browserRestart.body}
         onDismiss={() => setBrowserRestart(null)}
-        tone="warning"
       />
     ) : undefined;
 

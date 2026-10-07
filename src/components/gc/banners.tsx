@@ -274,49 +274,32 @@ export function ReopenAlert({
  * rather than about the pane that happens to be open, dismissible because the
  * user is the only one who knows when they have acted on it.
  *
- * Neutral by default, for the reason `PaneNote` gives below: advice with
- * nothing for Gate to re-check afterwards, which drawn amber would read as a
- * fault. `tone="warning"` is for advice that *is* a fault if ignored - the
- * browser-certificate note is the one caller. A browser left open across a
- * trust change rejects every host Gate intercepts, which is exactly what
- * `ReopenAlert` warns about for a tool, and that card is amber; its failure
- * variants (no certutil, a store that refused) are faults outright. Drawn
- * neutral, it read as a footnote beside cards that said less. The tone reuses
- * the drawn amber `StatusTile` the routing banner's unhappy states carry, on
- * the same strip, rather than inventing a palette.
+ * Amber, for the one caller it has: the browser-certificate note. A browser left
+ * open across a trust change rejects every host Gate intercepts, which is exactly
+ * what `ReopenAlert` warns about for a tool, and its failure variants (no
+ * certutil, a store that refused) are faults outright. It had a neutral default
+ * as well, which nothing drew, and was removed on 2026-10-07 with `PaneNote`'s.
  *
- * Not in the Figma. The file draws `banner/update`, `banner/routing`,
- * `banner/partly-routing` and the alert rows, and nothing neutral at this width,
- * so the frame geometry is borrowed from the routing banner (full-bleed strip,
- * hairline bottom border, 16/12 padding, a 16px tile beside a two-line stack)
- * with `base/*` inks in place of the amber.
+ * Not in the Figma. The frame geometry is borrowed from the routing banner
+ * (full-bleed strip, hairline bottom border, 16/12 padding) with the drawn amber
+ * `StatusTile` its unhappy states carry.
  */
 export function NoteBanner({
   title,
   body,
   onDismiss,
-  tone = "neutral",
 }: {
   title: string;
   body: string;
   onDismiss: () => void;
-  tone?: "neutral" | "warning";
 }) {
   return (
     <div
       role="status"
       className="w-full border-b border-base-border bg-base-card px-4 py-3"
     >
-      <div className={`flex w-full gap-3 ${tone === "warning" ? "items-center" : "items-start"}`}>
-        {tone === "warning" ? (
-          <StatusTile tone="amber" icon="triangleAlert" size={32} />
-        ) : (
-          <Icon
-            name="info"
-            size={16}
-            className="mt-0.5 shrink-0 text-neutral-500"
-          />
-        )}
+      <div className="flex w-full items-center gap-3">
+        <StatusTile tone="amber" icon="triangleAlert" size={32} />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium leading-5 text-base-foreground">
             {title}

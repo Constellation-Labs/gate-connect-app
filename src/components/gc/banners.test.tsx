@@ -152,21 +152,14 @@ describe("AlertBanner", () => {
 });
 
 /**
- * The shell note, neutral by default and amber when what it says is a fault if
- * ignored - the browser-certificate note, which sits beside `ReopenAlert` and
- * means the same thing for a browser.
+ * The shell note: amber, because its one caller - the browser-certificate note -
+ * means for a browser what `ReopenAlert` means for a tool.
  */
 describe("NoteBanner", () => {
   const props = { title: "Browsers already open need reopening", body: "Quit and reopen.", onDismiss: () => {} };
 
-  it("draws the info glyph and no tile by default", () => {
+  it("draws the amber warning tile", () => {
     const { container } = render(<NoteBanner {...props} />);
-    expect(container.querySelector(".from-amber-50")).toBeNull();
-    expect(screen.getByText(props.title)).toBeTruthy();
-  });
-
-  it("draws the amber warning tile when it is a warning", () => {
-    const { container } = render(<NoteBanner {...props} tone="warning" />);
     expect(container.querySelector(".from-amber-50.border-amber-300")).not.toBeNull();
     expect(screen.getByRole("status").textContent).toContain(props.body);
   });
