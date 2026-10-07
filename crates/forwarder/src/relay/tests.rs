@@ -489,6 +489,46 @@ async fn a_payg_request_gets_an_error_not_a_credentialless_request() {
         .starts_with("GET /api/x "));
 }
 
+/// On a pay-as-you-go account a tool that brings its own key still goes direct
+/// under it: OpenCode always does, and only the engine was swapping it for
+/// Gate's. Refusing it would break a tool that works without Gate.
+#[tokio::test]
+async fn a_payg_account_request_with_its_own_key_goes_direct() {
+    let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let port = start_relay_with(services(Some(dead_port()), table(origin_port), true)).await;
+
+    let reply = roundtrip(
+        port,
+        b"POST /__gate/t/opencode/anthropic/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+          x-api-key: sk-ant-own\r\nContent-Length: 2\r\n\r\n{}",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    let seen = String::from_utf8(seen.await.unwrap()).unwrap();
+    assert!(seen.contains("x-api-key: sk-ant-own\r\n"), "{seen}");
+}
+
+/// A Gate key is not the provider's: sent direct it would hand the Gate key to
+/// the provider, which refuses it anyway. It gets the pay-as-you-go error, and
+/// so does an empty bearer.
+#[tokio::test]
+async fn a_payg_request_with_a_gate_key_or_an_empty_bearer_is_refused() {
+    let (origin_port, _seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let port = start_relay_with(services(Some(dead_port()), table(origin_port), true)).await;
+
+    for credential in [
+        &b"Authorization: Bearer sk-gw-abc"[..],
+        b"Authorization: Bearer ",
+    ] {
+        let mut request =
+            b"POST /__gate/t/codex/anthropic/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n".to_vec();
+        request.extend_from_slice(credential);
+        request.extend_from_slice(b"\r\nContent-Length: 2\r\n\r\n{}");
+        let reply = roundtrip(port, &request).await;
+        assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
+    }
+}
+
 /// A relay of ours on the engine port gets the connection, byte for byte,
 /// on the same connection it proved itself on.
 #[tokio::test]

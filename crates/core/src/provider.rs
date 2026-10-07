@@ -1070,6 +1070,9 @@ pub struct QuitTeardown {
     pub managed: usize,
     /// Display names of the tools that still name Gate afterwards.
     pub failed: Vec<String>,
+    /// The tools this sweep took Gate out of. What a tool does once Gate is
+    /// gone depends on the account's billing, and the quit notice says so.
+    pub removed: Vec<ToolId>,
 }
 
 /// [`snapshot_and_disable_everything`] for the app's exit, which gives up
@@ -1111,6 +1114,7 @@ fn snapshot_and_disable_everything_locked() -> QuitTeardown {
         ));
     }
     let mut failed = Vec::new();
+    let mut removed = Vec::new();
     for integ in registry::registry() {
         if !matches!(
             integ.status(),
@@ -1138,9 +1142,15 @@ fn snapshot_and_disable_everything_locked() -> QuitTeardown {
                 integ.display_name()
             ));
             failed.push(integ.display_name().to_string());
+        } else {
+            removed.push(integ.id());
         }
     }
-    QuitTeardown { managed, failed }
+    QuitTeardown {
+        managed,
+        failed,
+        removed,
+    }
 }
 
 /// Add `slugs` to the swept-tools snapshot so the startup restore reconnects

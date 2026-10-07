@@ -33,9 +33,13 @@
 //! - **Not a way to spend Gate's credential.** The forwarder has none. Every
 //!   `x-gate-*` header is stripped, not only the ones the relay stamps.
 //! - **Not a way to send a pay-as-you-go request without its credential.** A
-//!   tool on Gate pay-as-you-go sends no provider key - Gate was going to
-//!   supply the provider and the bill - so those slugs get a 503 that says to
-//!   open Gate Connect, not a request the provider will refuse.
+//!   tool on Gate pay-as-you-go may send no provider key - Codex's PAYG config
+//!   sends none, because Gate was going to supply the provider and the bill - so
+//!   such a request on those slugs gets a 503 that says to open Gate Connect,
+//!   not a request the provider will refuse. A request that does carry its own
+//!   key (OpenCode always does; the engine swapped it for Gate's) goes direct
+//!   under it, as it would on BYOK. A Gate key in that slot is not a provider
+//!   key: it gets the 503 too, rather than being handed to the provider.
 //! - **Not reachable from a web page.** The same `Host` / `Origin` loopback
 //!   boundary the engine's relay applies, from the same definition.
 //! - **Not handed to a stranger.** The engine side has to answer a proof on a
@@ -624,6 +628,26 @@ fn text<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Option<Option<&'a s
         .map(|(_, v)| std::str::from_utf8(v).ok())
 }
 
+/// Whether the request carries a credential of the provider's own: a
+/// non-empty `Authorization` or `x-api-key` that is not a Gate key. The
+/// gateway draws the same line, reading any non-`sk-gw-` token in that slot as
+/// the tool's own.
+fn carries_provider_credential(headers: &[(String, Vec<u8>)]) -> bool {
+    ["authorization", "x-api-key"].iter().any(|name| {
+        text(headers, name).flatten().is_some_and(|value| {
+            let token = value.trim();
+            // A bare `Bearer` is an empty one: the parser trims the space.
+            let token = token
+                .get(..6)
+                .filter(|scheme| scheme.eq_ignore_ascii_case("bearer"))
+                .map(|_| &token[6..])
+                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+                .map_or(token, str::trim_start);
+            !token.is_empty() && !token.starts_with("sk-gw-")
+        })
+    })
+}
+
 /// Body framing from a head's headers, strictly: at most one
 /// `Transfer-Encoding` and one `Content-Length`, a length of digits only, and a
 /// transfer coding list with `chunked` exactly once, last. Twice is forbidden
@@ -1060,7 +1084,10 @@ async fn serve_direct(mut client: TcpStream, services: &Services) -> Result<()> 
         }
     };
     let upstream = &services.table[plan.upstream];
-    if PAYG_ELIGIBLE_SLUGS.contains(&upstream.slug.as_str()) && (services.payg)() {
+    if PAYG_ELIGIBLE_SLUGS.contains(&upstream.slug.as_str())
+        && !carries_provider_credential(&headers)
+        && (services.payg)()
+    {
         respond_payg(&mut client).await;
         return Ok(());
     }
