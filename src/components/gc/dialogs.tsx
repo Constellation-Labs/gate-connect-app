@@ -44,7 +44,7 @@ import {
 
 export interface DialogApp {
   name: string;
-  /** 16px product mark. Falls back to a cube while the marks are unexported. */
+  /** 20px product mark, for the dialog's 36px tile. Falls back to a cube. */
   icon?: ReactNode;
 }
 
@@ -56,7 +56,7 @@ export interface DialogApp {
  * copy of them is how two surfaces end up disagreeing about one tool.
  */
 export type DialogReopenTool = ReopenTool & {
-  /** 16px product mark. Falls back to a cube while the marks are unexported. */
+  /** 20px product mark, for the dialog's 36px tile. Falls back to a cube. */
   icon?: ReactNode;
 };
 
@@ -71,12 +71,11 @@ function toolIcon(tool: DialogReopenTool): ReactNode {
 /**
  * Whether this row has routes to draw at all.
  *
- * Callers ask BEFORE building the element, because `ModalSubject` guards on the
- * `details` prop rather than on what it renders: `{details && <div class="mt-1"
- * …>}`. A truthy element whose render returns `null` still produces the
- * wrapper, and since the text column is a flex item the `mt-1` cannot collapse,
- * so every reopen row gained a dead 4px in shipped builds - on the one dialog
- * whose height was the reported bug. Same in dev whenever a row has no routes.
+ * Callers ask BEFORE rendering the `mt-1` wrapper around the pair, rather than
+ * leaving it to what `RoutePair` renders. A wrapper around an element that
+ * renders `null` still takes its margin, and since the text column is a flex
+ * item the `mt-1` cannot collapse, so every reopen row gained a dead 4px in
+ * shipped builds - on the one dialog whose height was the reported bug.
  *
  * **The caller's check is the contract; `RoutePair`'s own is a backstop.** With
  * every current call site asking first, the component's early return is
@@ -550,7 +549,10 @@ export function ApplyChangesDialog({
               )}
             </div>
             {/* `mono/label-12` on `green-200` / `green-800`, 24px tall
-                (`1336:13900`). */}
+                (`1336:13900`). Not `ModalSubject`'s green pill, which is
+                `green-100` / `green-900` at 20px: that one has not been checked
+                against the review dialog's own frame, so it is left alone
+                rather than assumed to be this. */}
             <span className="shrink-0 rounded-control bg-green-200 px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label text-green-800">
               Open
             </span>

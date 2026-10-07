@@ -391,6 +391,83 @@ describe("useRunningApps: closing takes one answer", () => {
     expect(stagesOf(api)).toEqual(["reopening"]);
   });
 
+  it("keeps the offer up, spinning, until the close returns", async () => {
+    // The frame (`App/Codex/applying-changes`) draws the dialog through the
+    // close; the rail takes over only once the signal has been sent.
+    let finish!: (n: number) => void;
+    (closeRunningAgents as Mock).mockReturnValue(
+      new Promise<number>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { api } = harness();
+    await toOffer(api);
+
+    let closing!: Promise<void>;
+    act(() => {
+      closing = api.current!.closeApps();
+    });
+    const stage = api.current!.stage;
+    expect(stage?.kind).toBe("offer");
+    expect(stage?.kind === "offer" && stage.closing).toBe(true);
+
+    await act(async () => {
+      finish(1);
+      await closing;
+    });
+    expect(api.current!.stage?.kind).toBe("work");
+  });
+
+  it("does not close twice for a second press mid-close", async () => {
+    (closeRunningAgents as Mock).mockReturnValue(new Promise<number>(() => {}));
+    const { api } = harness();
+    await toOffer(api);
+
+    act(() => {
+      void api.current!.closeApps();
+    });
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(closeRunningAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an offer that replaced it mid-close on screen", async () => {
+    // A second scan landing during the close is a question the user has not
+    // answered: it must not be swapped for the first close's progress, and it
+    // must not inherit that close's spinner.
+    let finish!: (n: number) => void;
+    (closeRunningAgents as Mock).mockReturnValue(
+      new Promise<number>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { api } = harness();
+    await toOffer(api);
+    let closing!: Promise<void>;
+    act(() => {
+      closing = api.current!.closeApps();
+    });
+
+    (runningAgents as Mock).mockResolvedValue({
+      scanned_names: ["claude"],
+      agents: [agent("claude-code", "claude", 11)],
+    });
+    await act(async () => {
+      await api.current!.offerAfterChange(["claude-code"]);
+    });
+    await act(async () => {
+      finish(1);
+      await closing;
+    });
+
+    const stage = api.current!.stage;
+    expect(stage?.kind).toBe("offer");
+    expect(stage?.kind === "offer" && stage.closing).toBeFalsy();
+    expect(slugsOf(api)).toEqual(["claude-code"]);
+  });
+
   it("cannot close with no offer open", async () => {
     const { api } = harness();
 
@@ -416,7 +493,8 @@ describe("useRunningApps: closing takes one answer", () => {
     expect(onError).toHaveBeenCalled();
     expect(stagesOf(api)).toEqual(["close_failed"]);
     expect(api.current!.stage!.tools[0].error).toContain("permission denied");
-    expect(api.current!.busy).toBe(false);
+    // Nothing is left spinning: the failure is the work stage's to show.
+    expect(api.current!.stage?.kind).toBe("work");
   });
 });
 

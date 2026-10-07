@@ -3227,7 +3227,7 @@ export function NewUiApp() {
         ) : runningApps.stage?.kind === "offer" ? (
           <ApplyChangesDialog
             tools={reopenSubjects(runningApps.stage.tools)}
-            closing={runningApps.busy}
+            closing={runningApps.stage.closing}
             onCloseApps={() => void runningApps.closeApps()}
             onReopenLater={runningApps.dismiss}
           />

@@ -41,9 +41,10 @@ export interface ModalButton {
   busy?: boolean;
 }
 
-/** The filled red both buttons draw when `destructive`. */
+/** The filled red both buttons draw when `destructive`. Its hover is applied
+ *  separately, and only to a live button. */
 const DESTRUCTIVE_BUTTON =
-  "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600";
+  "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive focus-visible:outline-red-600";
 
 /** The busy spinner, sized to the 20px label line. */
 function ButtonSpinner() {
@@ -332,6 +333,7 @@ export function Modal({
                   secondary.disabled || secondary.busy ? undefined : secondary.onClick
                 }
                 aria-disabled={secondary.disabled || secondary.busy || undefined}
+                aria-busy={secondary.busy || undefined}
                 className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   secondary.destructive
                     ? DESTRUCTIVE_BUTTON
@@ -340,7 +342,7 @@ export function Modal({
                   secondary.disabled || secondary.busy
                     ? "cursor-not-allowed opacity-45"
                     : secondary.destructive
-                      ? ""
+                      ? "hover:bg-red-700"
                       : "hover:bg-gray-50"
                 }`}
               >
@@ -354,8 +356,13 @@ export function Modal({
                 type="button"
                 onClick={primary.disabled || primary.busy ? undefined : primary.onClick}
                 aria-disabled={primary.disabled || primary.busy || undefined}
+                aria-busy={primary.busy || undefined}
                 className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
-                  primary.disabled || primary.busy ? "cursor-not-allowed opacity-45" : ""
+                  primary.disabled || primary.busy
+                    ? "cursor-not-allowed opacity-45"
+                    : primary.destructive
+                      ? "hover:bg-red-700"
+                      : ""
                 } ${
                   primary.destructive
                     ? DESTRUCTIVE_BUTTON
@@ -390,27 +397,15 @@ export function ModalSubject({
   title,
   description,
   variant = "subject",
-  details,
   pill,
 }: {
   /** 16px mark, brand or glyph. */
   icon: ReactNode;
   title: string;
   description?: string;
-  /** A second line under the description, for a subject that has to carry more
-   *  than a sentence - the reopen step names two routes, and that does not fit
-   *  in `description`, which truncates to one line by design. Wraps rather than
-   *  truncating: it is the content of the step. (Who reopens the tool used to
-   *  live here too; it is said once in the note now.)
-   *
-   *  **Pass `undefined`, not an element that renders `null`.** The guard below
-   *  is on this prop, so a truthy element still draws the `mt-1` wrapper, and in
-   *  a flex column that margin cannot collapse. `dialogs.tsx` decides before
-   *  building the element for exactly this reason. */
-  details?: ReactNode;
   /**
    * `subject` names a thing and describes it: bold name over grey detail, used
-   * for the drifted app and the running process. `identity` inverts that for
+   * for the drifted app. `identity` inverts that for
    * the model row, where the vendor is the quiet label and the model id is the
    * thing being named.
    */
@@ -446,11 +441,6 @@ export function ModalSubject({
           >
             {description}
           </p>
-        )}
-        {details && (
-          <div className="mt-1 text-base-xs leading-4 text-neutral-600">
-            {details}
-          </div>
         )}
       </div>
       {pill && (

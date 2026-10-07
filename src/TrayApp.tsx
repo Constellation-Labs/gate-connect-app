@@ -435,9 +435,16 @@ export function TrayApp() {
    * Registering this in capture would race that trap and sometimes hide the
    * window out from under an unanswered question.
    */
+  /** Whether the apply-changes dialog is closing apps, for the handler below,
+   *  which is registered before `runningApps` exists. That dialog refuses
+   *  Escape while it closes by leaving `onDismiss` unset, so the trap lets the
+   *  key bubble here, and hiding the popover would take the dialog away
+   *  mid-close. */
+  const closingAppsRef = useRef(false);
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (closingAppsRef.current) return;
       if (menuOpen) {
         // The menu's own handler covers Escape while focus is inside it; this is
         // the case where focus has since moved elsewhere in the popover.
@@ -533,6 +540,8 @@ export function TrayApp() {
     onNothingRunning: () => void refreshVerdicts(),
     nameFor: (slug) => tools.find((t) => t.slug === slug)?.product_name,
   });
+  closingAppsRef.current =
+    runningApps.stage?.kind === "offer" && runningApps.stage.closing === true;
 
   /**
    * The reopen flow draws a dialog for the offer only.
@@ -1031,7 +1040,7 @@ export function TrayApp() {
           ) : runningApps.stage?.kind === "offer" ? (
             <ApplyChangesDialog
               tools={reopenSubjects(runningApps.stage.tools)}
-              closing={runningApps.busy}
+              closing={runningApps.stage.closing}
               onCloseApps={() => void runningApps.closeApps()}
               onReopenLater={runningApps.dismiss}
             />

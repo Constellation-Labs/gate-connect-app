@@ -1841,10 +1841,10 @@ rather than `ModalSubject`/`ModalNote`: this frame draws a 36px tile around a
 foreground ink, 12px apart. The subtitle keeps "makes the change active" over
 the frame's "new route", because a model change raises the same dialog.
 
-`src/components/gc/dialogs.tsx` holds the six concrete dialogs -
+`src/components/gc/dialogs.tsx` holds the five concrete dialogs -
 `SwitchOrganizationDialog`, `OrganizationSwitchedDialog`, `ReviewConfigDialog`,
-`ApplyChangesDialog`, `CloseAppsDialog`, `UseGateModelDialog`. A seventh,
-`ChangeReadyDialog`, went on 2026-09-30 (#389). Copy lives with them rather than in the shell, so it stays
+`ApplyChangesDialog`, `UseGateModelDialog`. `ChangeReadyDialog` went on
+2026-09-30 (#389), and `CloseAppsDialog` on 2026-10-07. Copy lives with them rather than in the shell, so it stays
 next to the design it came from and the shell supplies only names and handlers.
 
 `ModalSubject` grew a `variant`: `subject` names a thing and describes it (bold
@@ -2764,8 +2764,10 @@ the flow's slugs, and `routing_verdicts`. Three things fell out of it:
   rows drawn as `Claude`, or as the raw key.
 
 The rest, briefly: the offer step names each tool's route in use, requested
-route, running state and who reopens it (AC 1); the confirmation asks for a save
-and says plainly that Gate cannot tell whether anything is unsaved (AC 2); the
+route, running state and who reopens it (AC 1); the confirmation that asked for
+a save and said Gate cannot tell whether anything is unsaved (AC 2) went on
+2026-10-07 with the second dialog, and the user decided no save notice replaces
+it; the
 result separates applied-and-verified, waiting for a manual reopen, could not
 close, configuration failed and verification failed (AC 9); and each unresolved
 row carries its own actions - Reopen tool, Retry application, Retry verification,

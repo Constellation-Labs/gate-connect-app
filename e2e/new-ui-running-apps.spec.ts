@@ -131,7 +131,6 @@ test.describe("new UI running apps", () => {
     // Closed is not applied: Gate cannot reopen a terminal tool, so there is
     // no all-clear to show. The flow ends and the rail carries the outcome.
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    await expect(app.page.getByRole("heading", { name: "Close affected apps now?" })).toHaveCount(0);
   });
 
   test("reopening later keeps the config that was just saved", async ({ boot }) => {
@@ -154,7 +153,7 @@ test.describe("new UI running apps", () => {
   test("says nothing about a tool whose config was not touched", async ({ boot }) => {
     // The regression: the probe asked about every tool, so switching Codex on
     // offered to close a running `claude` that nothing had reconfigured - and
-    // the confirmation behind that offer would have killed it.
+    // answering that offer would have killed it.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [CLAUDE_CODE, CODEX],

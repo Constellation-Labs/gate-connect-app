@@ -61,14 +61,16 @@ import {
 const WATCH_MS = 3000;
 
 export type RunningAppsStage =
-  /** Affected apps are running; offer to close them. */
-  | { kind: "offer"; tools: ReopenTool[]; slugs?: string[] }
+  /** Affected apps are running; offer to close them. `closing` while the close
+   *  request for exactly this offer is in flight, which is what the dialog's
+   *  spinner reads: on the stage rather than beside it, so an offer that
+   *  replaces this one mid-close does not inherit the spinner. */
+  | { kind: "offer"; tools: ReopenTool[]; slugs?: string[]; closing?: boolean }
   /** Signalled. Each tool is now followed to its own conclusion. */
   | { kind: "work"; tools: ReopenTool[]; slugs?: string[] };
 
 export interface RunningApps {
   stage: RunningAppsStage | null;
-  busy: boolean;
   /**
    * Probe, and open the sequence only if something is actually running.
    *
@@ -112,7 +114,6 @@ export function useRunningApps({
   nameFor?: (slug: string) => string | undefined;
 } = {}): RunningApps {
   const [stage, setStage] = useState<RunningAppsStage | null>(null);
-  const [busy, setBusy] = useState(false);
   /**
    * The stage, mirrored where the watch can read it.
    *
@@ -310,13 +311,22 @@ export function useRunningApps({
   }, []);
 
   const closeApps = useCallback(async () => {
-    if (stage?.kind !== "offer" || busy) return;
-    setBusy(true);
-    const { tools, slugs } = stage;
-    waited.current = new Map();
-    // The offer stays up, its close button spinning on `busy`, until the
-    // signal has been sent: the frame (`App/Codex/applying-changes`) draws the
-    // dialog through the close rather than handing it straight to the rail.
+    const offer = stageRef.current;
+    if (offer?.kind !== "offer" || offer.closing) return;
+    const { tools, slugs } = offer;
+    // The offer stays up, its close button spinning, until the signal has been
+    // sent: the frame (`App/Codex/applying-changes`) draws the dialog through
+    // the close rather than handing it straight to the rail.
+    const closing: RunningAppsStage = { ...offer, closing: true };
+    commit(closing);
+    /** Hand over to the watch, unless another offer has replaced this one
+     *  while the close was in flight: that one is a question the user has not
+     *  answered yet, and overwriting it would take it off screen unasked. */
+    const toWork = (stageFor: (t: ReopenTool) => ReopenTool) => {
+      if (stageRef.current !== closing) return;
+      waited.current = new Map();
+      commit({ kind: "work", slugs, tools: tools.map(stageFor) });
+    };
     try {
       // The same filter the offer was built from, narrowed to the rows on
       // screen. Killing a wider set than the one the user agreed to would
@@ -326,56 +336,44 @@ export function useRunningApps({
       // Not "done": the signal was sent, and whether the process went, came
       // back and routes is what the watch is for. The rows Gate can relaunch go
       // to `reopening`; the rest wait for the user.
-      commit({
-        kind: "work",
-        slugs,
-        tools: tools.map((t) => ({
-          ...t,
-          stage: t.canReopen ? "reopening" : "awaiting_reopen",
-        })),
-      });
-      // Ask for the reopen only where something said it could be reopened, so a
-      // set of CLIs makes no call at all rather than one that returns 0. The
-      // backend waits for the old instances to exit before launching, which is
-      // why this is awaited and not fired alongside the close.
-      const reopenable = [
-        ...new Set(tools.filter((t) => t.canReopen).map((t) => t.slug)),
-      ];
-      if (reopenable.length > 0) {
-        // Failing to put an app back is not a failed close: the close already
-        // happened, the routing change already landed, and the row's own watch
-        // is what decides whether it came back. Reported, not thrown.
-        await reopenRunningAgents(reopenable).catch((err) => {
-          onError?.(err);
-          trackError(err, "close_agents");
-        });
-      }
-      await tickRef.current();
+      toWork((t) => ({
+        ...t,
+        stage: t.canReopen ? "reopening" : "awaiting_reopen",
+      }));
     } catch (err) {
       onError?.(err);
       trackError(err, "close_agents");
       // Every row failed together: the command signals the whole set, so
       // nothing here can say which one it stopped at.
       const detail = err instanceof Error ? err.message : String(err);
-      commit({
-        kind: "work",
-        slugs,
-        tools: tools.map((t) => ({
-          ...t,
-          stage: "close_failed" as ReopenStage,
-          error: detail,
-        })),
-      });
-    } finally {
-      setBusy(false);
+      toWork((t) => ({ ...t, stage: "close_failed" as ReopenStage, error: detail }));
+      return;
     }
-  }, [stage, busy, onError, commit]);
+    // Ask for the reopen only where something said it could be reopened, so a
+    // set of CLIs makes no call at all rather than one that returns 0. The
+    // backend waits for the old instances to exit before launching, which is
+    // why this is awaited and not fired alongside the close. Asked even when a
+    // newer offer took over: these processes are closed either way, and the
+    // user agreed to Gate putting them back.
+    const reopenable = [
+      ...new Set(tools.filter((t) => t.canReopen).map((t) => t.slug)),
+    ];
+    if (reopenable.length > 0) {
+      // Failing to put an app back is not a failed close: the close already
+      // happened, the routing change already landed, and the row's own watch
+      // is what decides whether it came back. Reported, not thrown.
+      await reopenRunningAgents(reopenable).catch((err) => {
+        onError?.(err);
+        trackError(err, "close_agents");
+      });
+    }
+    await tickRef.current();
+  }, [onError, commit]);
 
   const dismiss = useCallback(() => commit(null), [commit]);
 
   return {
     stage,
-    busy,
     offerAfterChange,
     closeApps,
     markStage,

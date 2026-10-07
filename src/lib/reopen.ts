@@ -4,9 +4,9 @@ import type { RunningAgent, Verdict } from "./api";
  * The vocabulary of the reopen flow: what a tool is doing right now, what the
  * result was, and the one thing left to do about it.
  *
- * Why a module rather than JSX: the same readings appear in three places - the
- * confirmation's subject list, the progress dialog and the pane's reopen card -
- * and AG-566 requires them to agree. A row assembled twice is a row
+ * Why a module rather than JSX: the same readings appear in more than one place -
+ * the apply-changes dialog's rows and the pane's reopen card - and AG-566
+ * requires them to agree. A row assembled twice is a row
  * that says "Verifying" on one surface and "Reopen required" on another for the
  * same tool, which is the class of bug `lib/groups.ts` documents one level up.
  * `lib/recovery.ts` exists for the same reason, and this file follows its shape.
