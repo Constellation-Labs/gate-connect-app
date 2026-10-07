@@ -1824,19 +1824,27 @@ The seven, and how they map onto the template:
 | Switch organization | neutral | (radio list instead) | Cancel / Switch organization |
 | Organization switched | success | - | Done |
 | Review `<app>` configuration | warning | `DETECTED` amber | Keep existing config / Replace config and protect |
-| Apply changes to running apps | warning | `OPEN` green | Close affected apps / I will reopen later |
-| Close affected apps now? | warning | `OPEN` green | Go back / **Close `<app>`** (red) |
+| Apply changes to running apps | warning | `OPEN` green | **Yes, close affected apps** (red) / No, I will reopen later |
+| ~~Close affected apps now?~~ | warning | `OPEN` green | Go back / Close `<app>` (red). Removed 2026-10-07: the frame (`1336:13885`) asks once, so Apply changes closes directly |
 | ~~Change is ready~~ | success | - | Done. Removed 2026-09-30 (#389): not in the Figma, and `134:61659` no longer exists |
 | Use a Gate model for `<app>`? | neutral | `PAYG` | Keep App default / Use Gate credits |
 
 Note that "Apply changes to running apps" makes the *less* destructive option
-primary: `I will reopen later` is the filled button, `Close affected apps` the
-outline one.
+primary: `No, I will reopen later` is the filled blue button and takes initial
+focus. Since 2026-10-07 (`1336:13885`) `Yes, close affected apps` is the
+secondary drawn filled red, and it is the only question: there is no second
+confirmation. While the close is in flight the dialog stays up, the red button
+spins and reads "Closing apps", and both buttons and Escape are refused
+(`App/Codex/applying-changes`). The row and note are drawn by the dialog itself
+rather than `ModalSubject`/`ModalNote`: this frame draws a 36px tile around a
+20px glyph, a 12px muted description, a `green-200` pill and a bordered note in
+foreground ink, 12px apart. The subtitle keeps "makes the change active" over
+the frame's "new route", because a model change raises the same dialog.
 
-`src/components/gc/dialogs.tsx` holds the six concrete dialogs -
+`src/components/gc/dialogs.tsx` holds the five concrete dialogs -
 `SwitchOrganizationDialog`, `OrganizationSwitchedDialog`, `ReviewConfigDialog`,
-`ApplyChangesDialog`, `CloseAppsDialog`, `UseGateModelDialog`. A seventh,
-`ChangeReadyDialog`, went on 2026-09-30 (#389). Copy lives with them rather than in the shell, so it stays
+`ApplyChangesDialog`, `UseGateModelDialog`. `ChangeReadyDialog` went on
+2026-09-30 (#389), and `CloseAppsDialog` on 2026-10-07. Copy lives with them rather than in the shell, so it stays
 next to the design it came from and the shell supplies only names and handlers.
 
 `ModalSubject` grew a `variant`: `subject` names a thing and describes it (bold
@@ -1968,7 +1976,7 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    `useRouting`: that hook's prompt is a *gate* that blocks a write until
    answered, and this is the opposite, a sequence that follows a write and can be
    walked away from without changing what was saved. Nothing is signalled without
-   two answers, and a failed scan stays silent rather than defaulting to showing
+   an answer (two until 2026-10-07, when the confirmation went), and a failed scan stays silent rather than defaulting to showing
    (the popover defaults the other way, but it is choosing whether to show
    advice; this offers to kill processes). The e2e fixture gained
    `runningAgentNames`, since it stubbed only the count probes.
@@ -2756,8 +2764,10 @@ the flow's slugs, and `routing_verdicts`. Three things fell out of it:
   rows drawn as `Claude`, or as the raw key.
 
 The rest, briefly: the offer step names each tool's route in use, requested
-route, running state and who reopens it (AC 1); the confirmation asks for a save
-and says plainly that Gate cannot tell whether anything is unsaved (AC 2); the
+route, running state and who reopens it (AC 1); the confirmation that asked for
+a save and said Gate cannot tell whether anything is unsaved (AC 2) went on
+2026-10-07 with the second dialog, and the user decided no save notice replaces
+it; the
 result separates applied-and-verified, waiting for a manual reopen, could not
 close, configuration failed and verification failed (AC 9); and each unresolved
 row carries its own actions - Reopen tool, Retry application, Retry verification,
