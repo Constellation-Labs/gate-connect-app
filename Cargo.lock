@@ -1619,6 +1619,7 @@ dependencies = [
  "time",
  "tokio",
  "toml_edit 0.22.27",
+ "tower-service",
  "tracing-subscriber",
  "webpki-roots 1.0.7",
  "windows-sys 0.61.2",

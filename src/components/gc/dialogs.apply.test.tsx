@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ApplyChangesDialog } from "./dialogs";
 import type { DialogReopenTool } from "./dialogs";
 
@@ -108,5 +108,57 @@ describe("ApplyChangesDialog route pair", () => {
 
     expect(screen.getByTestId("codex-mark")).toBeTruthy();
     expect(screen.queryByText("cube")).toBeNull();
+  });
+});
+
+/**
+ * The one question, and its in-flight state (`1336:13885`,
+ * `App/Codex/applying-changes`). With the second confirmation gone, these are
+ * what stand between a stray key and the user's running apps.
+ */
+describe("ApplyChangesDialog closing", () => {
+  it("opens with focus on the safe button, not the red one", () => {
+    renderOffer();
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "No, I will reopen later" }),
+    );
+  });
+
+  it("closes from the first answer", () => {
+    const onCloseApps = vi.fn();
+    render(
+      <ApplyChangesDialog tools={[codex]} onCloseApps={onCloseApps} onReopenLater={noop} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Yes, close affected apps" }));
+
+    expect(onCloseApps).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses both buttons and Escape while it closes", () => {
+    const onCloseApps = vi.fn();
+    const onReopenLater = vi.fn();
+    render(
+      <ApplyChangesDialog
+        tools={[codex]}
+        closing
+        onCloseApps={onCloseApps}
+        onReopenLater={onReopenLater}
+      />,
+    );
+
+    const busy = screen.getByRole("button", { name: "Closing apps" });
+    const later = screen.getByRole("button", { name: "No, I will reopen later" });
+    expect(busy.getAttribute("aria-disabled")).toBe("true");
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    expect(later.getAttribute("aria-disabled")).toBe("true");
+
+    fireEvent.click(busy);
+    fireEvent.click(later);
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(onCloseApps).not.toHaveBeenCalled();
+    expect(onReopenLater).not.toHaveBeenCalled();
   });
 });

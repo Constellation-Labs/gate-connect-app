@@ -9,7 +9,7 @@ import { brandMarkFor } from "./BrandMark";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import { MAX_GATE_MODELS } from "../../lib/toolModels";
 import type { ReopenTool } from "../../lib/reopen";
-import { REOPEN_STAGE_DETAIL, WHY_REOPEN } from "../../lib/reopen";
+import { REOPEN_STAGE_DETAIL } from "../../lib/reopen";
 import {
   Modal,
   ModalCheckbox,
@@ -26,7 +26,7 @@ import {
  * shell only supplies names and handlers.
  *
  * Routing flows: switch organization, organization switched, review config,
- * apply changes, close affected apps, change ready, use a Gate model.
+ * apply changes, use a Gate model.
  * Settings flows: rename device, replace API key, disconnect Gate, reset, and
  * the diagnostics report.
  *
@@ -38,7 +38,7 @@ import {
 
 export interface DialogApp {
   name: string;
-  /** 16px product mark. Falls back to a cube while the marks are unexported. */
+  /** 20px product mark, for the dialog's 36px tile. Falls back to a cube. */
   icon?: ReactNode;
 }
 
@@ -50,7 +50,7 @@ export interface DialogApp {
  * copy of them is how two surfaces end up disagreeing about one tool.
  */
 export type DialogReopenTool = ReopenTool & {
-  /** 16px product mark. Falls back to a cube while the marks are unexported. */
+  /** 20px product mark, for the dialog's 36px tile. Falls back to a cube. */
   icon?: ReactNode;
 };
 
@@ -59,18 +59,17 @@ function toolLabel(tools: DialogReopenTool[]): string {
 }
 
 function toolIcon(tool: DialogReopenTool): ReactNode {
-  return tool.icon ?? <Icon name="cube" size={16} />;
+  return tool.icon ?? <Icon name="cube" size={20} />;
 }
 
 /**
  * Whether this row has routes to draw at all.
  *
- * Callers ask BEFORE building the element, because `ModalSubject` guards on the
- * `details` prop rather than on what it renders: `{details && <div class="mt-1"
- * …>}`. A truthy element whose render returns `null` still produces the
- * wrapper, and since the text column is a flex item the `mt-1` cannot collapse,
- * so every reopen row gained a dead 4px in shipped builds - on the one dialog
- * whose height was the reported bug. Same in dev whenever a row has no routes.
+ * Callers ask BEFORE rendering the `mt-1` wrapper around the pair, rather than
+ * leaving it to what `RoutePair` renders. A wrapper around an element that
+ * renders `null` still takes its margin, and since the text column is a flex
+ * item the `mt-1` cannot collapse, so every reopen row gained a dead 4px in
+ * shipped builds - on the one dialog whose height was the reported bug.
  *
  * **The caller's check is the contract; `RoutePair`'s own is a backstop.** With
  * every current call site asking first, the component's early return is
@@ -456,25 +455,31 @@ export function ReviewConfigDialog({
 }
 
 /**
- * Step one of the reopen conversation: which running tools are still on their
- * old route, and what happens if they are left that way.
+ * The reopen conversation's one question: which running tools are still on
+ * their old route, and what happens if they are left that way. "Yes, close
+ * affected apps" closes them straight away; there is no second confirmation,
+ * because the frame (`App/Codex/apply-changes`) draws none.
  *
- * Note the button weighting: the design makes "I will reopen later" the filled
- * primary and "Close affected apps" the outline secondary, which is the reverse
- * of the usual arrangement. Deliberate - the quiet option is the safe one here.
+ * Note the button weighting: the frame (`1336:13885`) draws "Close affected
+ * apps" filled red on the left and "I will reopen later" filled blue on the
+ * right, so the destructive action is the *secondary* and initial focus goes to
+ * the safe one. While the close is in flight (`closing`) the red button spins
+ * and reads "Closing apps", and neither button nor Escape does anything: the
+ * frame (`App/Codex/applying-changes`) dims both.
  *
  * Each row carries what AG-566 AC 1 asks of this step: the route the tool is
  * using now, the route its saved configuration asks for, that it is running,
  * and who can reopen it. The last one is read from the backend
- * (`RunningAgent.can_reopen`) rather than written into the copy, because it is
- * the sentence the next dialog has to keep.
+ * (`RunningAgent.can_reopen`) rather than written into the copy.
  */
 export function ApplyChangesDialog({
   tools,
+  closing = false,
   onCloseApps,
   onReopenLater,
 }: {
   tools: DialogReopenTool[];
+  closing?: boolean;
   onCloseApps: () => void;
   onReopenLater: () => void;
 }) {
@@ -485,120 +490,88 @@ export function ApplyChangesDialog({
       icon="triangleAlert"
       title="Apply changes to running apps?"
       subtitle="Your configuration is saved. One final step makes the change active"
-      // `destructive` on the SECONDARY changes nothing about how it looks -
-      // it moves initial focus onto the primary, which is the safe choice
-      // here. Without it the trap fell to the first focusable and that is
-      // this button, so Enter landed on closing the user's apps.
+      // `destructive` on the SECONDARY also moves initial focus onto the
+      // primary, which is the safe choice here. Without it the trap fell to
+      // the first focusable and that is this button, so Enter landed on
+      // closing the user's apps.
       secondary={{
-        label: "Yes, close affected apps",
+        label: closing ? "Closing apps" : "Yes, close affected apps",
         onClick: onCloseApps,
         destructive: true,
+        busy: closing,
       }}
-      primary={{ label: "No, I will reopen later", onClick: onReopenLater }}
-      onDismiss={onReopenLater}
-    >
-      {tools.map((tool) => (
-        <ModalSubject
-          key={tool.key}
-          icon={toolIcon(tool)}
-          title={tool.name}
-          description={REOPEN_STAGE_DETAIL.reopen_required}
-          // No per-row sentence about who reopens. The frame draws none
-          // (`130:58427`: name, description, pill), and the note below already
-          // says it - branching on the same `canReopen` these rows were
-          // branching on, for the whole set at once and in better words. So the
-          // row was rendering one boolean twice, and on a 352px popover it cost
-          // two lines per tool to repeat what the next block states properly.
-          //
-          // The plan's reasoning for reading `can_reopen` from the backend
-          // rather than assuming it in copy is untouched by this: it says the
-          // sentence belongs to "the confirmation", and the confirmation is the
-          // note.
-          details={routesShown(tool) ? <RoutePair tool={tool} /> : undefined}
-          pill={{ label: "Open", tone: "green" }}
-        />
-      ))}
-      <ModalNote>
-        <p>{WHY_REOPEN}</p>
-        <p className="mt-1">
-          {mine.length === tools.length
-            ? "Gate Connect will close and reopen them."
-            : mine.length === 0
-              ? `Gate Connect can close these apps, but cannot reopen them. You can keep working and reopen ${toolLabel(tools)} yourself.`
-              : `Gate Connect will reopen ${joinNames(mine.map((t) => t.name))}. The rest you reopen yourself.`}
-        </p>
-      </ModalNote>
-    </Modal>
-  );
-}
-
-/**
- * Step two: the one confirmation before anything is signalled.
- *
- * It says three things AG-566 AC 4 requires and the first draft of this dialog
- * did not: that unsaved work may be lost, which tools Gate will reopen, and
- * which the user has to. It does **not** say whether anything is actually
- * unsaved - Gate cannot see inside an editor or a terminal session, and a
- * dialog that guessed would be reassuring exactly when it should not be.
- */
-export function CloseAppsDialog({
-  tools,
-  onGoBack,
-  onCloseApps,
-}: {
-  tools: DialogReopenTool[];
-  onGoBack: () => void;
-  onCloseApps: () => void;
-}) {
-  const label = toolLabel(tools);
-  const mine = tools.filter((t) => t.canReopen);
-  const yours = tools.filter((t) => !t.canReopen);
-  return (
-    <Modal
-      tone="warning"
-      icon="triangleAlert"
-      title="Close affected apps now?"
-      subtitle="Unsaved work or active sessions in these apps may be interrupted"
-      secondary={{ label: "No, I will close later", onClick: onGoBack }}
       primary={{
-        label: "Yes, close apps",
-        onClick: onCloseApps,
-        destructive: true,
+        label: "No, I will reopen later",
+        onClick: onReopenLater,
+        disabled: closing,
       }}
-      onDismiss={onGoBack}
+      onDismiss={closing ? undefined : onReopenLater}
     >
-      {tools.map((tool) => (
-        <ModalSubject
-          key={tool.key}
-          icon={toolIcon(tool)}
-          title={tool.name}
-          description={REOPEN_STAGE_DETAIL.reopen_required}
-          details={routesShown(tool) ? <RoutePair tool={tool} /> : undefined}
-          pill={{ label: "Open", tone: "green" }}
-        />
-      ))}
-      <ModalNote>
-        <p className="font-medium text-base-foreground">
-          Save your work before continuing.
-        </p>
-        <p className="mt-1">
-          Closing an app can interrupt what it is doing. Gate Connect cannot tell
-          whether a document or a terminal session has anything unsaved in it, so
-          it is asking rather than checking.
-        </p>
-        <p className="mt-3">
-          {mine.length > 0 && (
-            <>Gate Connect will reopen {joinNames(mine.map((t) => t.name))}. </>
+      {/* Drawn here rather than with `ModalSubject` and `ModalNote`, because
+          this frame (`1336:13885`) sizes both differently from the dialogs that
+          share them: a 36px tile around a 20px glyph, a 12px muted description,
+          a `green-200` pill, a bordered note in foreground ink, and 12px
+          between them rather than the body's 16. */}
+      <div className="flex flex-col gap-3">
+        {tools.map((tool) => (
+          <div
+            key={tool.key}
+            className="flex items-center gap-3 rounded-md border border-base-border p-3"
+          >
+            <span
+              aria-hidden
+              className="flex size-9 shrink-0 items-center justify-center rounded-control border border-base-border bg-base-card text-base-foreground"
+            >
+              {toolIcon(tool)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
+                {tool.name}
+              </p>
+              {/* No per-row sentence about who reopens. The frame draws none
+                  (name, description, pill), and the note below already says it,
+                  for the whole set at once. Reading `can_reopen` from the
+                  backend rather than assuming it in copy is untouched by this:
+                  the note is where that sentence lives. */}
+              <p className="truncate text-base-xs leading-4 text-base-muted-foreground">
+                {REOPEN_STAGE_DETAIL.reopen_required}
+              </p>
+              {routesShown(tool) && (
+                <div className="mt-1 text-base-xs leading-4 text-neutral-600">
+                  <RoutePair tool={tool} />
+                </div>
+              )}
+            </div>
+            {/* `mono/label-12` on `green-200` / `green-800`, 24px tall
+                (`1336:13900`). Not `ModalSubject`'s green pill, which is
+                `green-100` / `green-900` at 20px: that one has not been checked
+                against the review dialog's own frame, so it is left alone
+                rather than assumed to be this. */}
+            <span className="shrink-0 rounded-control bg-green-200 px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label text-green-800">
+              Open
+            </span>
+          </div>
+        ))}
+        {/* Two lines, the first medium, both in foreground ink (`1336:13903`).
+            The frame draws only the nobody-reopens case; the other two keep
+            its shape. */}
+        <div className="rounded-md border border-base-border bg-base-background p-3 text-sm leading-5 text-base-foreground">
+          <p className="font-medium">
+            {mine.length === tools.length
+              ? "Gate Connect will close and reopen them."
+              : mine.length === 0
+                ? "Gate Connect can close these apps, but cannot reopen them."
+                : `Gate Connect will reopen ${joinNames(mine.map((t) => t.name))}.`}
+          </p>
+          {mine.length < tools.length && (
+            <p>
+              {mine.length === 0
+                ? `You can keep working and reopen ${toolLabel(tools)} yourself.`
+                : "The rest you reopen yourself."}
+            </p>
           )}
-          {yours.length > 0 && (
-            <>
-              You reopen {joinNames(yours.map((t) => t.name))} yourself
-              {mine.length > 0 ? "" : ` - Gate Connect cannot start ${label} for you`}
-              . The change takes effect on launch.
-            </>
-          )}
-        </p>
-      </ModalNote>
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -2112,7 +2085,8 @@ export function SendDiagnosticsDialog({
  * tool, which is the whole reason `lib/reopen` exists.
  */
 export function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
-  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
+  // 20, the glyph the dialog's 36px tile is built around (`1336:13895`).
+  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug, 20) }));
 }
 
 /** "Claude Code", "Claude Code and Codex", "Claude Code, Codex, and OpenCode". */
