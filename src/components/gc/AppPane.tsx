@@ -233,9 +233,12 @@ export function AppPane({
     // rather than becoming hidden overflow on the shell root.
     <div className="relative flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-center gap-3">
+        {/* The letter, for an app with no mark, scales with the mark: it was
+            14 beside a 16px glyph, and the glyph is 24 now (the new design),
+            so 20, the type ramp's nearest step to 21. */}
         <span
           aria-hidden
-          className="flex size-11 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
+          className="flex size-11 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-xl font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
