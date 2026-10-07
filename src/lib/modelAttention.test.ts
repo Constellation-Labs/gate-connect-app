@@ -17,6 +17,7 @@ const CATALOGUE: GateModel[] = [
 
 const FUNDED: Credits = {
   plan: "pro",
+  enterpriseEnabled: false,
   paygEnabled: true,
   balanceCents: 1025,
   lowBalanceThresholdCents: 500,

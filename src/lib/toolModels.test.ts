@@ -383,6 +383,7 @@ describe("adaptModels", () => {
 describe("formatCredits", () => {
   const funded = {
     plan: "pro",
+    enterpriseEnabled: false,
     paygEnabled: true,
     balanceCents: 1025,
     lowBalanceThresholdCents: 500,
@@ -423,6 +424,12 @@ describe("adaptCredits", () => {
     // Not "free": a plan nobody named is unknown, and "Free" is the one value a
     // reader would act on - by upgrading something they may already have.
     expect(c.plan).toBeNull();
+    expect(c.enterpriseEnabled).toBe(false);
+  });
+
+  it("reads the Enterprise flag only when it is exactly true", () => {
+    expect(adaptCredits({ plan: "paid", enterpriseEnabled: true }).enterpriseEnabled).toBe(true);
+    expect(adaptCredits({ plan: "paid", enterpriseEnabled: "true" } as never).enterpriseEnabled).toBe(false);
   });
 
   it("keeps a zero balance as a reading", () => {
@@ -466,23 +473,39 @@ describe("formatPlan", () => {
     // its billing page and its emails. Connect said "Paid", so one account was
     // described by two products in two words - which is what AG-879 asks us to
     // stop doing.
-    expect(formatPlan("paid")).toBe("Pro");
+    expect(formatPlan("paid", false)).toBe("Pro");
+  });
+
+  it("says Enterprise for an Enterprise org, which the gateway reports as paid", () => {
+    // The reported bug: an Enterprise org is `paid` with the entitlement beside
+    // it, and mapping the plan alone printed "Pro" in Settings.
+    expect(formatPlan("paid", true)).toBe("Enterprise");
+    // An admin-granted Enterprise org need not be paid. The dashboard checks
+    // the flag first and alone for this reason.
+    expect(formatPlan("free", true)).toBe("Enterprise");
   });
 
   it("says Free for the free plan", () => {
-    expect(formatPlan("free")).toBe("Free");
+    expect(formatPlan("free", false)).toBe("Free");
   });
 
   it("passes through a plan the gateway grows later", () => {
     // Better an unfamiliar plan name than none: it is still the user's plan,
-    // and hiding it would read as though they had no plan at all.
-    expect(formatPlan("enterprise")).toBe("Enterprise");
+    // and hiding it would read as though they had no plan at all. Not
+    // "enterprise": that is an entitlement beside the plan, never a plan value.
+    expect(formatPlan("team", false)).toBe("Team");
   });
 
   it("keeps an unreported plan null rather than defaulting to Free", () => {
     // "Free" is the one value a reader acts on, by upgrading something they may
     // already have upgraded.
-    expect(formatPlan(null)).toBeNull();
+    expect(formatPlan(null, false)).toBeNull();
+  });
+
+  it("says Enterprise even when the plan is unreported", () => {
+    // The flag is checked first and alone, as the dashboard does, so an
+    // Enterprise org with no plan field is still named rather than left blank.
+    expect(formatPlan(null, true)).toBe("Enterprise");
   });
 });
 
