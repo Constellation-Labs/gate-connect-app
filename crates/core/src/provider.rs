@@ -1070,7 +1070,9 @@ pub struct QuitTeardown {
     pub managed: usize,
     /// Display names of the tools that still name Gate afterwards.
     pub failed: Vec<String>,
-    /// The tools this sweep took Gate out of, in registry order.
+    /// The tools this sweep took Gate out of, in registry order. An overridden
+    /// tool is counted in `managed` and left out here: its traffic was going
+    /// somewhere else already, so quitting changes nothing it sends.
     pub removed: Vec<RemovedTool>,
 }
 
@@ -1100,7 +1102,9 @@ impl QuitTeardown {
     /// - **Codex sending no login: open conversations stop.** Its PAYG block
     ///   leaves the credential to Gate and the forwarder refuses it
     ///   (`respond_payg`). A new conversation reads the restored config, so
-    ///   that is the advice; a restart fixes nothing here.
+    ///   that is the advice; a restart fixes nothing here. The sentence names
+    ///   no billing: a Codex connected on pay-as-you-go stays in that shape,
+    ///   drifted, after the account moves to BYOK, and stops all the same.
     /// - **Everything else sends its own key**, which the engine was swapping
     ///   for Gate's. With the engine gone it goes straight to the provider under
     ///   the user's own account, open sessions and new ones alike. Said only on
@@ -1127,8 +1131,8 @@ impl QuitTeardown {
         // Only Codex can rely on Gate's credential; the sentence is its own.
         if no_login.iter().any(|t| t.id == ToolId::Codex) {
             sentences.push(
-                "Codex was on Gate pay-as-you-go. Open conversations stop working until you \
-                 reopen Gate Connect; start a new one to use your own OpenAI login."
+                "Codex's open conversations stop working until you reopen Gate Connect; start \
+                 a new one to use your own OpenAI login."
                     .to_string(),
             );
         }
@@ -1200,22 +1204,26 @@ fn snapshot_and_disable_everything_locked() -> QuitTeardown {
     // Every tool naming Gate, read before the provider half below: that half
     // disconnects Claude Code and Codex itself, so the registry pass after it
     // never sees them, and their configs stop saying what they were on.
-    let candidates: Vec<RemovedTool> = registry::registry()
+    let candidates: Vec<(bool, RemovedTool)> = registry::registry()
         .iter()
-        .filter(|integ| {
-            matches!(
-                integ.status(),
-                Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
-            )
-        })
-        .map(|integ| RemovedTool {
-            id: integ.id(),
-            name: integ.display_name().to_string(),
-            on_gate_models: matches!(
-                integ.gate_model_state(),
-                Ok(registry::GateModelState::Applied { .. })
-            ),
-            relies_on_gate_credential: integ.relies_on_gate_credential(),
+        .filter_map(|integ| {
+            let overridden = match integ.status() {
+                Ok(Status::Connected | Status::Drifted(_)) => false,
+                Ok(Status::Overridden(_)) => true,
+                _ => return None,
+            };
+            Some((
+                overridden,
+                RemovedTool {
+                    id: integ.id(),
+                    name: integ.display_name().to_string(),
+                    on_gate_models: matches!(
+                        integ.gate_model_state(),
+                        Ok(registry::GateModelState::Applied { .. })
+                    ),
+                    relies_on_gate_credential: integ.relies_on_gate_credential(),
+                },
+            ))
         })
         .collect();
     let managed = candidates.len();
@@ -1263,10 +1271,12 @@ fn snapshot_and_disable_everything_locked() -> QuitTeardown {
     }
     // A candidate is removed unless this pass is the one that failed it: the
     // provider half took Claude Code and Codex out, or left them for this pass
-    // to try again.
+    // to try again. An overridden one is taken out too, but its traffic never
+    // reached Gate, so it has nothing to be told.
     let removed = candidates
         .into_iter()
-        .filter(|t| !failed_ids.contains(&t.id))
+        .filter(|(overridden, t)| !overridden && !failed_ids.contains(&t.id))
+        .map(|(_, t)| t)
         .collect();
     QuitTeardown {
         managed,
@@ -2014,7 +2024,7 @@ mod tests {
         let stops = quit(vec![tool(ToolId::Codex, "Codex", false, true)]).note(|| false);
         assert!(stops
             .unwrap()
-            .starts_with("Codex was on Gate pay-as-you-go. Open conversations stop working"));
+            .starts_with("Codex's open conversations stop working"));
         let own = quit(vec![tool(ToolId::Codex, "Codex", false, false)]).note(|| true);
         assert_eq!(
             own,
@@ -2053,9 +2063,9 @@ mod tests {
         assert_eq!(
             mixed.note(|| true).unwrap(),
             format!(
-                "Codex was on Gate pay-as-you-go. Open conversations stop working until you \
-                 reopen Gate Connect; start a new one to use your own OpenAI login. Claude \
-                 Code and OpenCode now use your own provider accounts, {OWN_KEY_TAIL}"
+                "Codex's open conversations stop working until you reopen Gate Connect; start \
+                 a new one to use your own OpenAI login. Claude Code and OpenCode now use your \
+                 own provider accounts, {OWN_KEY_TAIL}"
             )
         );
     }

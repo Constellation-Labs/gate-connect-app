@@ -1044,8 +1044,10 @@ fn has_connect_key_in(table: &dyn toml_edit::TableLike) -> bool {
 }
 
 /// Whether `doc` points Codex at our block and that block leaves
-/// `requires_openai_auth` off, so Codex sends no credential of its own. The
-/// passthrough stub always sets it, and is excluded anyway: it is not routing.
+/// `requires_openai_auth` off and names no `env_key`, so Codex sends no
+/// credential of its own. Gate never writes `env_key`, but a hand-edited block
+/// can, and then Codex sends that key. The passthrough stub always sets
+/// `requires_openai_auth`, and is excluded anyway: it is not routing.
 fn sends_no_login(doc: &DocumentMut) -> bool {
     let points_at_gate = doc.get("model_provider").and_then(|i| i.as_str()) == Some(PROVIDER_ID);
     points_at_gate
@@ -1057,6 +1059,7 @@ fn sends_no_login(doc: &DocumentMut) -> bool {
             .and_then(|i| i.as_table_like())
             .is_some_and(|block| {
                 block.get("requires_openai_auth").and_then(|i| i.as_bool()) != Some(true)
+                    && !block.contains_key("env_key")
             })
 }
 
@@ -1839,15 +1842,18 @@ passthrough_stub = true
         );
     }
 
-    /// The PAYG block sends no login, the BYOK block does, and neither the stub
-    /// nor a config pointed elsewhere is relying on Gate for anything.
+    /// The PAYG block sends no login, the BYOK block and an `env_key` block do,
+    /// and neither the stub nor a config pointed elsewhere is relying on Gate
+    /// for anything.
     #[test]
-    fn sends_no_login_only_for_a_routed_block_without_requires_openai_auth() {
+    fn sends_no_login_only_for_a_routed_block_that_names_no_credential() {
         let parse = |s: &str| s.parse::<DocumentMut>().unwrap();
         let payg = "model_provider = \"gate\"\n[model_providers.gate]\nbase_url = \"x\"\n";
         assert!(sends_no_login(&parse(payg)));
         let byok = format!("{payg}requires_openai_auth = true\n");
         assert!(!sends_no_login(&parse(&byok)));
+        let env_key = format!("{payg}env_key = \"OPENAI_API_KEY\"\n");
+        assert!(!sends_no_login(&parse(&env_key)));
         let elsewhere = payg.replace("model_provider = \"gate\"", "model_provider = \"openai\"");
         assert!(!sends_no_login(&parse(&elsewhere)));
         let stub = format!("{payg}[_gate_connect]\npassthrough_stub = true\n");

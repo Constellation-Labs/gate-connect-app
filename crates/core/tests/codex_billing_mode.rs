@@ -286,3 +286,41 @@ fn the_quit_sweep_reports_codex_and_whether_it_sends_a_login() {
         );
     }
 }
+
+/// An overridden Codex is taken out but not reported as removed: a profile sent
+/// its traffic elsewhere all along, so telling the user it moved to their own
+/// account would describe traffic Gate never carried. It still counts as
+/// managed, so the quit still says Gate came out of the configs.
+#[test]
+fn the_quit_sweep_leaves_an_overridden_codex_out_of_removed() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    fake_codex_install();
+    write_auth_json("apikey");
+    sign_in(BillingMode::Byok);
+    let (_relay, port) = seed_relay_port();
+    let codex = find(ToolId::Codex).unwrap();
+    codex
+        .connect(&connect_input_at(BillingMode::Byok, port))
+        .unwrap();
+    let overridden = format!(
+        "profile = \"mine\"\n{}\n[profiles.mine]\nmodel_provider = \"openai\"\n",
+        config_toml()
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), overridden).unwrap();
+    assert!(
+        matches!(codex.status().unwrap(), Status::Overridden(_)),
+        "premise: the profile must override Gate's pointer"
+    );
+
+    let teardown = gate_connect_core::provider::snapshot_and_disable_everything_for_exit()
+        .expect("quit sweep");
+
+    assert!(
+        !teardown.removed.iter().any(|t| t.id == ToolId::Codex),
+        "{:?}",
+        teardown.removed
+    );
+    assert!(teardown.managed >= 1);
+    assert!(teardown.failed.is_empty(), "{:?}", teardown.failed);
+}

@@ -7895,7 +7895,7 @@ mod tests {
     }
 
     /// A sweep's result: `managed` is what it found, so every tool is either
-    /// removed or failed, as the real sweep reports it.
+    /// removed or failed, as the real sweep reports it when none is overridden.
     fn teardown(removed: Vec<RemovedTool>, failed: &[&str]) -> Result<QuitTeardown, String> {
         Ok(QuitTeardown {
             managed: removed.len() + failed.len(),
@@ -7904,9 +7904,8 @@ mod tests {
         })
     }
 
-    const CODEX_PAYG: &str = "Codex was on Gate pay-as-you-go. Open conversations stop working \
-                              until you reopen Gate Connect; start a new one to use your own \
-                              OpenAI login.";
+    const CODEX_PAYG: &str = "Codex's open conversations stop working until you reopen Gate \
+                              Connect; start a new one to use your own OpenAI login.";
 
     /// The rule the notifications switch has an exception for: a tool the quit
     /// could not put back is said with the switch off, because nothing else is
