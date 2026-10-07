@@ -100,7 +100,7 @@ export function AppPane({
    * line: "Protected" or "Not protected", with no reason behind it.
    */
   status?: AppStatus;
-  /** 24px brand mark for the header tile. */
+  /** 24px brand mark for the header tile, per the new design. */
   logo?: ReactNode;
   /**
    * The app vendor's full-colour mark, for the App-default row alone.
@@ -110,7 +110,7 @@ export function AppPane({
    * ink, so it takes the monochrome `BrandMark`; the App-default row
    * (`408:25491`) is a light tile and draws the provider's own colour -
    * `#E8704E` for Anthropic. Absent for an app with no single vendor behind
-   * it, where the row falls back to `logo` and then the cube.
+   * it, where the row falls back to `appFallbackMark` and then the cube.
    */
   appVendorMark?: ReactNode;
   /**
@@ -320,8 +320,9 @@ export function AppPane({
           // The colour mark where the app has one vendor, the rail's
           // monochrome one where it does not (AG-879). This row used to take
           // `logo` outright, which is the set built for the header's dark tile
-          // and renders flat on this one.
-          appLogo={appVendorMark ?? appFallbackMark ?? logo}
+          // and renders flat on this one. Nor does it fall back to `logo`: that
+          // is drawn at the header's 24, and this slot is 20.
+          appLogo={appVendorMark ?? appFallbackMark}
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
