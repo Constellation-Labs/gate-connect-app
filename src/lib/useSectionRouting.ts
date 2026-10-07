@@ -57,23 +57,14 @@ export function useSectionRouting({
   const inFlight = useRef(false);
 
   /**
-   * Route one whole section: every surface the app uses, in one click.
-   *
-   * `cascadeTargets` decides which members move - it skips the ones already in
-   * the target state and never adopts a drifted or overridden config - and is
-   * called with `sessions: true`, which is the one place the frontend's "no
-   * group switch reaches a signed-in surface" rule is deliberately broken.
-   *
-   * Nothing replaces it any more. `SessionConsentDialog` used to stand here and
-   * the rule was "cannot happen without being told"; product dropped the dialog
-   * (AG-934, 2026-09-23) so a section switch now routes its signed-in surfaces
-   * without asking and without saying so. That is the intended behaviour, not
-   * an oversight: turning the section off stops it, per row or per section.
+   * Route exactly these members, with the certificate gate and the close offer.
+   * `routeSection` passes the section's cascade; the pane's partly-protected
+   * card passes the surfaces it names, and nothing else the cascade would sweep
+   * in with them.
    */
-  const routeSection = useCallback(
-    async (section: Group, next: boolean) => {
+  const routeMembers = useCallback(
+    async (targets: GroupMember[], next: boolean) => {
       if (inFlight.current) return;
-      const targets = cascadeTargets(section, next, { sessions: true });
       if (targets.length === 0) return;
       inFlight.current = true;
       try {
@@ -139,6 +130,26 @@ export function useSectionRouting({
   );
 
   /**
+   * Route one whole section: every surface the app uses, in one click.
+   *
+   * `cascadeTargets` decides which members move - it skips the ones already in
+   * the target state and never adopts a drifted or overridden config - and is
+   * called with `sessions: true`, which is the one place the frontend's "no
+   * group switch reaches a signed-in surface" rule is deliberately broken.
+   *
+   * Nothing replaces it any more. `SessionConsentDialog` used to stand here and
+   * the rule was "cannot happen without being told"; product dropped the dialog
+   * (AG-934, 2026-09-23) so a section switch now routes its signed-in surfaces
+   * without asking and without saying so. That is the intended behaviour, not
+   * an oversight: turning the section off stops it, per row or per section.
+   */
+  const routeSection = useCallback(
+    (section: Group, next: boolean) =>
+      routeMembers(cascadeTargets(section, next, { sessions: true }), next),
+    [routeMembers],
+  );
+
+  /**
    * Route or unroute one row.
    *
    * The section lookup comes FIRST, and that ordering is load-bearing rather
@@ -183,5 +194,5 @@ export function useSectionRouting({
     [groups, onBeforeRoute, routeSection, routeApp],
   );
 
-  return { toggle, routeSection };
+  return { toggle, routeSection, routeMembers };
 }

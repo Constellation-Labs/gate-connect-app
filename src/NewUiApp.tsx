@@ -71,9 +71,12 @@ import {
   paneClients,
   SECTION_CLIENTS,
   sectionMemberKeys,
+  governingMembers,
+  surfaceName,
 } from "./lib/groups";
 import {
   CHECKING_DETAIL,
+  PARTLY_PROTECTED,
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
   sectionStatus,
@@ -1865,6 +1868,7 @@ export function NewUiApp() {
   // on 2026-09-22 and this is the app pane's now. Same section toggle, same
   // consent and drift gates behind it.
   const toggleAppRouting = section.toggle;
+  const routeMembers = section.routeMembers;
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -2752,8 +2756,39 @@ export function NewUiApp() {
       detail === REASON_DETAIL.configuration_changed
     )
       return undefined;
+    // Partly protected is the one reason with a fix this pane owns: some of the
+    // app's surfaces are switched off under a switch that reads on, and the app
+    // switch's own cascade turns on exactly those (`cascadeTargets` skips the
+    // members already on).
+    //
+    // The body names the surfaces that are off, from the same governing members
+    // `sectionStatus` counted, so the card says which program to look at rather
+    // than a bare "1 of 2".
+    //
+    // The button turns on those surfaces and nothing else. The app switch's
+    // cascade would also sweep in a signed-in surface the card never named
+    // (claude.ai), and it is the switch anyway: this card exists because the
+    // switch reads On, and clicking it turns the app off.
+    const group = groups.find((g) => g.id === view.slug);
+    const offMembers = group ? governingMembers(group.members).filter((m) => !m.routed) : [];
+    const off = offMembers.map(surfaceName);
+    if (detail.startsWith(PARTLY_PROTECTED) && off.length > 0) {
+      const names =
+        off.length === 1 ? off[0] : `${off.slice(0, -1).join(", ")} and ${off[off.length - 1]}`;
+      return (
+        <PaneNote
+          title={`${app.name} isn’t fully protected`}
+          body={`${names} ${off.length === 1 ? "isn’t" : "aren’t"} routed through Gate, so ${off.length === 1 ? "its" : "their"} traffic goes straight to the provider.`}
+          action={{
+            label: off.length === 1 ? `Turn on ${off[0]}` : "Turn on both",
+            busy: routingBusy,
+            onClick: () => void routeMembers(offMembers, true),
+          }}
+        />
+      );
+    }
     return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
-  }, [view, reopenAlert, paneNotice, paneWriteError, railApps]);
+  }, [view, reopenAlert, paneNotice, paneWriteError, railApps, groups, routingBusy, routeMembers]);
 
   const onMenuSelect = useCallback(
     (action: MenuAction) => {

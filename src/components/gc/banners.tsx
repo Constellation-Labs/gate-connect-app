@@ -337,27 +337,49 @@ export function NoteBanner({
 }
 
 /**
- * A quiet card on a pane: why this app is not protected, when no card with an
- * action already says it (see `statusNote` in `NewUiApp`).
+ * Why this app is not protected, when no card with an action already says it
+ * (see `statusNote` in `NewUiApp`).
  *
- * Neutral rather than amber, like `NoteBanner`: `AlertBanner` and `ReopenAlert`
- * each offer the fix for what they name, and this has no action to offer, so
- * drawing it in their palette would read as a fault the user is expected to
- * clear from here. The amber is already on the status line above it.
+ * Amber, in `ReopenAlert`'s shape (`banner/alert/multiple-apps`, `1410:26594`),
+ * by the user's decision on 2026-10-07. It used to be a neutral info card on the
+ * argument that it had no fix to offer, but every reason it carries is a fault on
+ * an app the user switched on, and a white card under an amber status line read
+ * as a footnote. The action is optional because not every reason has a fix this
+ * pane can run.
  */
-export function PaneNote({ title, body }: { title: string; body: string }) {
+export function PaneNote({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body: string;
+  action?: { label: string; onClick: () => void; busy?: boolean };
+}) {
   return (
-    // `role="status"`, as `NoteBanner`: a reading, announced without taking
-    // focus.
+    // `role="status"`, as `ReopenAlert`: raised by a background sweep, announced
+    // without taking focus.
     <div
       role="status"
-      className="flex items-start gap-3 rounded-md border border-base-border bg-base-card p-4 shadow-base-sm"
+      className="flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5"
     >
-      <Icon name="info" size={16} className="mt-0.5 shrink-0 text-neutral-500" />
-      <div className="min-w-0">
-        <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
-        <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <StatusTile tone="amber" icon="triangleAlert" size={36} />
+        <div className="min-w-0">
+          <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
+          <p className="text-base-xs leading-4 text-gray-600">{body}</p>
+        </div>
       </div>
+      {action && (
+        <button
+          type="button"
+          onClick={action.onClick}
+          disabled={action.busy}
+          className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }

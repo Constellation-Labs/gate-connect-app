@@ -40,6 +40,11 @@ export const WRITE_FAILED_DETAIL = "Configuration update failed";
  *  no card for it; see `statusNote` in `NewUiApp`. */
 export const CHECKING_DETAIL = "Checking";
 
+/** The start of a section's reason when some of its surfaces route and the rest
+ *  are off. The pane offers to turn the rest on; see `statusNote` in
+ *  `NewUiApp`. */
+export const PARTLY_PROTECTED = "Partly protected";
+
 /** The reason behind a `not-protected` for each verdict reason: the ticket's own
  *  name for it, verbatim, except the two the design already had a phrase for. */
 export const REASON_DETAIL: Record<VerdictReason, string> = {
@@ -215,7 +220,7 @@ export function sectionStatus(
   if (routing > 0)
     return {
       kind: "not-protected",
-      detail: `Partly protected: ${routing} of ${governed.length}`,
+      detail: `${PARTLY_PROTECTED}: ${routing} of ${governed.length}`,
     };
   return group.switchDesired > 0
     ? { kind: "not-protected", detail: "Blocked" }

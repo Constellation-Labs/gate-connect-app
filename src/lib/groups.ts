@@ -117,6 +117,26 @@ export function hintForMember(key: string): string | undefined {
 }
 
 /**
+ * What a sentence calls one surface of an app, where its row label does not say.
+ *
+ * The proxy rows are named for the surface under their vendor heading ("API",
+ * "Chat", "Subscription"), which is right in a list and meaningless in a
+ * sentence: "API isn't routed" does not tell anyone which program to look at.
+ * Config tools are absent because their name already is the program.
+ */
+const SURFACE_NAMES: Readonly<Record<string, string>> = {
+  anthropic: "Claude Desktop",
+  "claude-web": "Claude chats",
+  "chatgpt-apps": "ChatGPT chats",
+  chatgpt: "ChatGPT Work",
+};
+
+/** A member's name for use in a sentence. See {@link SURFACE_NAMES}. */
+export function surfaceName(m: GroupMember): string {
+  return SURFACE_NAMES[m.key] ?? m.name;
+}
+
+/**
  * The programs behind a whole section, for the hover on a row that is an app.
  *
  * Every member's hint, not the first one's. Both shells took
