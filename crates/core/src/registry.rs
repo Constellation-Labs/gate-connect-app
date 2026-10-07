@@ -395,6 +395,18 @@ pub trait Integration: Send + Sync {
         Ok(GateModelState::Unsupported)
     }
 
+    /// Whether the config Gate wrote has this tool send no credential of its
+    /// own, leaving the provider's to Gate. Once Gate is gone such a tool's open
+    /// sessions are refused, where one that sends its own key is sent straight
+    /// to the provider under it. Read by the quit sweep while the config still
+    /// names Gate.
+    ///
+    /// Only Codex on pay-as-you-go: every other tool always sends its own key,
+    /// which the engine swaps for Gate's.
+    fn relies_on_gate_credential(&self) -> bool {
+        false
+    }
+
     /// Take Gate models back out of this tool's config, and nothing else.
     ///
     /// For the drift path: the user moved the tool off Gate models from inside

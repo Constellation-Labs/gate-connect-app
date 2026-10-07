@@ -5558,8 +5558,8 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             &outcome,
             || gate_connect_core::preferences::load().notifications,
             || {
-                gate_connect_core::account::billing_mode()
-                    .is_ok_and(|m| m == gate_connect_core::account::BillingMode::Payg)
+                gate_connect_core::account::billing_mode_for_injection()
+                    == gate_connect_core::account::BillingMode::Payg
             },
         ) {
             let _ = app
@@ -5628,19 +5628,18 @@ fn claim_quit_teardown() -> bool {
 /// only on the clean branch with something removed, so every other quit reads
 /// no preferences file.
 ///
-/// On pay-as-you-go any removed tool adds [`payg_quit_note`], also ungated: it
-/// is about who is billed and what stops working, and nothing else says it.
-/// `payg` is asked only when a tool was removed.
+/// What the removed tools do next ([`QuitTeardown::note`]) follows, also
+/// ungated: it is about what stops working and who is billed, and nothing else
+/// says it.
+///
+/// [`QuitTeardown::note`]: gate_connect_core::provider::QuitTeardown::note
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn quit_notice_body(
     outcome: &Result<gate_connect_core::provider::QuitTeardown, String>,
     notifications: impl FnOnce() -> bool,
     payg: impl FnOnce() -> bool,
 ) -> Option<String> {
-    let payg_note = outcome
-        .as_ref()
-        .ok()
-        .and_then(|t| payg_quit_note(&t.removed, payg));
+    let note = outcome.as_ref().ok().and_then(|t| t.note(payg));
     let notice = match outcome.as_ref().map(|t| (t.managed, t.failed.as_slice())) {
         Ok((0, [])) => None,
         Ok((_, [])) => notifications().then(|| "Gate removed from tool configs".to_string()),
@@ -5655,7 +5654,7 @@ fn quit_notice_body(
         )),
         Err(_) => Some("Failed to remove Gate from tool configs. Edit them by hand.".to_string()),
     };
-    match (notice, payg_note) {
+    match (notice, note) {
         // The failure notices end in a full stop and the clean one does not.
         (Some(notice), Some(note)) if notice.ends_with('.') => Some(format!("{notice} {note}")),
         (Some(notice), Some(note)) => Some(format!("{notice}. {note}")),
@@ -5663,80 +5662,8 @@ fn quit_notice_body(
     }
 }
 
-/// What quitting does to the tools that were on Gate pay-as-you-go, or `None`
-/// when no tool was removed or the account is not on it.
-///
-/// Codex is the one that stops. Its PAYG config sends no credential, and an
-/// open conversation keeps the relay address it started with, where the drained
-/// forwarder refuses it (`respond_payg`); a new conversation reads the restored
-/// config. Every other tool sends its own key, which the engine swapped for
-/// Gate's, so with the engine gone the forwarder sends it straight to the
-/// provider under the user's own account, open sessions and new ones alike.
-/// Neither is fixed by a restart, so no sentence asks for one.
-///
-/// The second sentence is not narrowed to tools whose provider Gate bills on
-/// pay-as-you-go: the environment proxy carries anything, so that cannot be
-/// read for every tool, and "your own provider account" is true either way.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn payg_quit_note(
-    removed: &[gate_connect_core::registry::ToolId],
-    payg: impl FnOnce() -> bool,
-) -> Option<String> {
-    use gate_connect_core::registry::{self, ToolId};
-    if removed.is_empty() || !payg() {
-        return None;
-    }
-    let mut sentences = Vec::new();
-    if removed.contains(&ToolId::Codex) {
-        sentences.push(
-            "Codex was on Gate pay-as-you-go. Open conversations stop working until you reopen \
-             Gate Connect; start a new one to use your own OpenAI login."
-                .to_string(),
-        );
-    }
-    let own_key: Vec<ToolId> = removed
-        .iter()
-        .copied()
-        .filter(|id| *id != ToolId::Codex)
-        .collect();
-    match own_key.as_slice() {
-        [] => {}
-        [ToolId::ClaudeCode] => sentences.push(
-            "Claude Code is now on your own Anthropic account, not Gate pay-as-you-go, until you \
-             reopen Gate Connect."
-                .to_string(),
-        ),
-        ids => {
-            let names: Vec<String> = ids
-                .iter()
-                .filter_map(|id| registry::find(*id))
-                .map(|integ| integ.display_name().to_string())
-                .collect();
-            let (verb, account) = if names.len() == 1 {
-                ("uses", "account")
-            } else {
-                ("use", "accounts")
-            };
-            sentences.push(format!(
-                "{} now {verb} your own provider {account}, not Gate pay-as-you-go, until you \
-                 reopen Gate Connect.",
-                join_names(&names)
-            ));
-        }
-    }
-    Some(sentences.join(" "))
-}
-
-/// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
-/// comma-join reads as a fragment at two items.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn join_names(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
-}
+use gate_connect_core::provider::join_names;
 
 /// The command table, shared by the app and by `examples/ui-harness.rs`.
 ///
@@ -7947,31 +7874,39 @@ mod tests {
         assert_eq!(normalise_agent_name("日本語.exe"), "日本語");
     }
 
-    fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(|n| n.to_string()).collect()
+    use gate_connect_core::provider::{QuitTeardown, RemovedTool};
+    use gate_connect_core::registry::ToolId;
+
+    /// A tool that sends its own key and is not on Gate models.
+    fn own_key(id: ToolId, name: &str) -> RemovedTool {
+        RemovedTool {
+            id,
+            name: name.to_string(),
+            on_gate_models: false,
+            relies_on_gate_credential: false,
+        }
     }
 
-    fn teardown(
-        managed: usize,
-        failed: &[&str],
-    ) -> Result<gate_connect_core::provider::QuitTeardown, String> {
-        Ok(gate_connect_core::provider::QuitTeardown {
-            managed,
-            failed: names(failed),
-            removed: Vec::new(),
-        })
+    fn codex_payg() -> RemovedTool {
+        RemovedTool {
+            relies_on_gate_credential: true,
+            ..own_key(ToolId::Codex, "Codex")
+        }
     }
 
-    fn teardown_removing(
-        removed: &[gate_connect_core::registry::ToolId],
-        failed: &[&str],
-    ) -> Result<gate_connect_core::provider::QuitTeardown, String> {
-        Ok(gate_connect_core::provider::QuitTeardown {
+    /// A sweep's result: `managed` is what it found, so every tool is either
+    /// removed or failed, as the real sweep reports it.
+    fn teardown(removed: Vec<RemovedTool>, failed: &[&str]) -> Result<QuitTeardown, String> {
+        Ok(QuitTeardown {
             managed: removed.len() + failed.len(),
-            failed: names(failed),
-            removed: removed.to_vec(),
+            failed: failed.iter().map(|n| n.to_string()).collect(),
+            removed,
         })
     }
+
+    const CODEX_PAYG: &str = "Codex was on Gate pay-as-you-go. Open conversations stop working \
+                              until you reopen Gate Connect; start a new one to use your own \
+                              OpenAI login.";
 
     /// The rule the notifications switch has an exception for: a tool the quit
     /// could not put back is said with the switch off, because nothing else is
@@ -7980,9 +7915,9 @@ mod tests {
     fn quit_says_a_left_behind_tool_with_notifications_off() {
         assert_eq!(
             quit_notice_body(
-                &teardown(2, &["Hermes"]),
+                &teardown(vec![own_key(ToolId::OpenCode, "OpenCode")], &["Hermes"]),
                 || false,
-                || panic!("billing read")
+                || false
             )
             .as_deref(),
             Some("Failed to remove Gate from the Hermes config. Edit it by hand.")
@@ -7991,14 +7926,12 @@ mod tests {
 
     #[test]
     fn quit_says_a_clean_teardown_only_with_notifications_on() {
+        let clean = teardown(vec![own_key(ToolId::OpenCode, "OpenCode")], &[]);
         assert_eq!(
-            quit_notice_body(&teardown(2, &[]), || true, || panic!("billing read")).as_deref(),
+            quit_notice_body(&clean, || true, || false).as_deref(),
             Some("Gate removed from tool configs")
         );
-        assert_eq!(
-            quit_notice_body(&teardown(2, &[]), || false, || panic!("billing read")),
-            None
-        );
+        assert_eq!(quit_notice_body(&clean, || false, || false), None);
     }
 
     /// Nothing named Gate, so nothing was removed and there is nothing to say -
@@ -8007,7 +7940,7 @@ mod tests {
     fn quit_says_nothing_when_no_tool_named_gate() {
         assert_eq!(
             quit_notice_body(
-                &teardown(0, &[]),
+                &teardown(vec![], &[]),
                 || panic!("preference read"),
                 || panic!("billing read")
             ),
@@ -8022,7 +7955,7 @@ mod tests {
     fn quit_says_a_failure_without_reading_the_switch() {
         assert_eq!(
             quit_notice_body(
-                &teardown(3, &["Codex", "Hermes"]),
+                &teardown(vec![], &["Codex", "Hermes"]),
                 || panic!("preference read"),
                 || panic!("billing read")
             )
@@ -8040,109 +7973,40 @@ mod tests {
         );
     }
 
-    const CODEX_PAYG: &str = "Codex was on Gate pay-as-you-go. Open conversations stop working \
-                              until you reopen Gate Connect; start a new one to use your own \
-                              OpenAI login.";
-    const CLAUDE_CODE_PAYG: &str = "Claude Code is now on your own Anthropic account, not Gate \
-                                    pay-as-you-go, until you reopen Gate Connect.";
-
-    /// On pay-as-you-go the quit changes who pays or what works, so it is said
-    /// with notifications off, after the removal notice when that is on.
+    /// What the removed tools do next is said with notifications off, and
+    /// after the removal notice when they are on.
     #[test]
-    fn quit_says_payg_consequences_whatever_the_switch() {
-        use gate_connect_core::registry::ToolId;
-        let both = teardown_removing(&[ToolId::ClaudeCode, ToolId::Codex], &[]);
+    fn quit_says_what_removed_tools_do_next_whatever_the_switch() {
+        let quit = teardown(vec![codex_payg()], &[]);
         assert_eq!(
-            quit_notice_body(&both, || false, || true),
-            Some(format!("{CODEX_PAYG} {CLAUDE_CODE_PAYG}"))
-        );
-        assert_eq!(
-            quit_notice_body(&both, || true, || true),
-            Some(format!(
-                "Gate removed from tool configs. {CODEX_PAYG} {CLAUDE_CODE_PAYG}"
-            ))
-        );
-        assert_eq!(
-            quit_notice_body(&teardown_removing(&[ToolId::Codex], &[]), || false, || true)
-                .as_deref(),
+            quit_notice_body(&quit, || false, || panic!("billing read")).as_deref(),
             Some(CODEX_PAYG)
         );
+        assert_eq!(
+            quit_notice_body(&quit, || true, || panic!("billing read")),
+            Some(format!("Gate removed from tool configs. {CODEX_PAYG}"))
+        );
     }
 
-    /// The note follows a failure notice rather than replacing it.
+    /// The note follows a failure notice rather than replacing it, and the
+    /// failure's own full stop is not doubled.
     #[test]
-    fn quit_says_payg_after_a_failure() {
-        use gate_connect_core::registry::ToolId;
+    fn quit_says_what_removed_tools_do_next_after_a_failure() {
         assert_eq!(
             quit_notice_body(
-                &teardown_removing(&[ToolId::ClaudeCode], &["Hermes"]),
+                &teardown(
+                    vec![own_key(ToolId::ClaudeCode, "Claude Code")],
+                    &["Hermes"]
+                ),
                 || panic!("preference read"),
                 || true
             ),
-            Some(format!(
-                "Failed to remove Gate from the Hermes config. Edit it by hand. {CLAUDE_CODE_PAYG}"
-            ))
-        );
-    }
-
-    /// Tools that bring their own key share one sentence, by name.
-    #[test]
-    fn quit_says_payg_for_the_own_key_tools_by_name() {
-        use gate_connect_core::registry::ToolId;
-        assert_eq!(
-            quit_notice_body(
-                &teardown_removing(&[ToolId::ClaudeCode, ToolId::Codex, ToolId::OpenCode], &[]),
-                || false,
-                || true
-            ),
-            Some(format!(
-                "{CODEX_PAYG} Claude Code and OpenCode now use your own provider accounts, not \
-                 Gate pay-as-you-go, until you reopen Gate Connect."
-            ))
-        );
-        assert_eq!(
-            quit_notice_body(
-                &teardown_removing(&[ToolId::Hermes], &[]),
-                || false,
-                || true
-            )
-            .as_deref(),
             Some(
-                "Hermes now uses your own provider account, not Gate pay-as-you-go, until you \
-                 reopen Gate Connect."
+                "Failed to remove Gate from the Hermes config. Edit it by hand. Claude Code is \
+                 now on your own Anthropic account, not Gate pay-as-you-go, until you reopen \
+                 Gate Connect."
+                    .to_string()
             )
-        );
-    }
-
-    /// BYOK has nothing to add, and a quit that removed nothing does not read
-    /// the billing mode at all.
-    #[test]
-    fn quit_says_nothing_about_payg_on_byok_or_with_nothing_removed() {
-        use gate_connect_core::registry::ToolId;
-        assert_eq!(
-            quit_notice_body(
-                &teardown_removing(&[ToolId::Codex], &[]),
-                || false,
-                || false
-            ),
-            None
-        );
-        assert_eq!(
-            quit_notice_body(
-                &teardown_removing(&[ToolId::OpenCode, ToolId::Hermes], &[]),
-                || false,
-                || false
-            ),
-            None
-        );
-        assert_eq!(
-            quit_notice_body(
-                &teardown_removing(&[], &["Hermes"]),
-                || panic!("preference read"),
-                || panic!("billing read")
-            )
-            .as_deref(),
-            Some("Failed to remove Gate from the Hermes config. Edit it by hand.")
         );
     }
 

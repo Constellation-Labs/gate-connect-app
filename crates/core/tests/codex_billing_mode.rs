@@ -244,3 +244,45 @@ fn each_mode_reports_the_others_block_as_drift() {
     account::set_billing_mode(BillingMode::Byok).unwrap();
     assert!(matches!(integ.status().unwrap(), Status::Drifted(_)));
 }
+
+/// The quit sweep reports a connected Codex as removed, with what its config
+/// said. The provider half disconnects Codex before the registry pass runs, so
+/// a sweep that only recorded what that pass removed never named Codex, and the
+/// quit said nothing about the one tool that stops working.
+#[test]
+fn the_quit_sweep_reports_codex_and_whether_it_sends_a_login() {
+    for (mode, relies) in [(BillingMode::Payg, true), (BillingMode::Byok, false)] {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _home = TempHome::set();
+        fake_codex_install();
+        write_auth_json("apikey");
+        sign_in(mode);
+        let (_relay, port) = seed_relay_port();
+        let codex = find(ToolId::Codex).unwrap();
+        codex.connect(&connect_input_at(mode, port)).unwrap();
+        assert!(
+            matches!(codex.status().unwrap(), Status::Connected),
+            "premise: Codex must be connected before the quit"
+        );
+
+        let teardown = gate_connect_core::provider::snapshot_and_disable_everything_for_exit()
+            .expect("quit sweep");
+
+        let removed = teardown
+            .removed
+            .iter()
+            .find(|t| t.id == ToolId::Codex)
+            .unwrap_or_else(|| panic!("{mode:?}: Codex missing from {:?}", teardown.removed));
+        assert_eq!(removed.relies_on_gate_credential, relies, "{mode:?}");
+        assert!(!removed.on_gate_models, "{mode:?}");
+        assert!(
+            teardown.failed.is_empty(),
+            "{mode:?}: {:?}",
+            teardown.failed
+        );
+        assert!(
+            !matches!(codex.status().unwrap(), Status::Connected),
+            "{mode:?}: the sweep must have taken Gate out"
+        );
+    }
+}

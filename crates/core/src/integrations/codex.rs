@@ -375,6 +375,16 @@ impl Integration for Codex {
         Ok(gate_model_state_of(&read_doc(&path)?))
     }
 
+    /// The PAYG block, and Gate models, which take its shape: no
+    /// `requires_openai_auth`, so Codex attaches no login of its own.
+    fn relies_on_gate_credential(&self) -> bool {
+        config_path()
+            .ok()
+            .filter(|path| path.exists())
+            .and_then(|path| read_doc(&path).ok())
+            .is_some_and(|doc| sends_no_login(&doc))
+    }
+
     fn configured_addresses(&self) -> Result<Vec<String>> {
         let path = config_path()?;
         if !path.exists() {
@@ -1031,6 +1041,23 @@ fn has_connect_key(doc: &DocumentMut) -> bool {
 fn has_connect_key_in(table: &dyn toml_edit::TableLike) -> bool {
     table.contains_key("previous_model_provider")
         || table.contains_key("previous_model_provider_absent")
+}
+
+/// Whether `doc` points Codex at our block and that block leaves
+/// `requires_openai_auth` off, so Codex sends no credential of its own. The
+/// passthrough stub always sets it, and is excluded anyway: it is not routing.
+fn sends_no_login(doc: &DocumentMut) -> bool {
+    let points_at_gate = doc.get("model_provider").and_then(|i| i.as_str()) == Some(PROVIDER_ID);
+    points_at_gate
+        && !is_passthrough_stub(doc)
+        && doc
+            .get("model_providers")
+            .and_then(|i| i.as_table_like())
+            .and_then(|t| t.get(PROVIDER_ID))
+            .and_then(|i| i.as_table_like())
+            .is_some_and(|block| {
+                block.get("requires_openai_auth").and_then(|i| i.as_bool()) != Some(true)
+            })
 }
 
 /// Is the `gate` provider block in `doc` the post-disconnect passthrough stub?
@@ -1810,6 +1837,22 @@ passthrough_stub = true
             stub.get("base_url").and_then(|i| i.as_str()),
             Some("https://api.openai.com/v1")
         );
+    }
+
+    /// The PAYG block sends no login, the BYOK block does, and neither the stub
+    /// nor a config pointed elsewhere is relying on Gate for anything.
+    #[test]
+    fn sends_no_login_only_for_a_routed_block_without_requires_openai_auth() {
+        let parse = |s: &str| s.parse::<DocumentMut>().unwrap();
+        let payg = "model_provider = \"gate\"\n[model_providers.gate]\nbase_url = \"x\"\n";
+        assert!(sends_no_login(&parse(payg)));
+        let byok = format!("{payg}requires_openai_auth = true\n");
+        assert!(!sends_no_login(&parse(&byok)));
+        let elsewhere = payg.replace("model_provider = \"gate\"", "model_provider = \"openai\"");
+        assert!(!sends_no_login(&parse(&elsewhere)));
+        let stub = format!("{payg}[_gate_connect]\npassthrough_stub = true\n");
+        assert!(!sends_no_login(&parse(&stub)));
+        assert!(!sends_no_login(&parse("model_provider = \"gate\"\n")));
     }
 
     #[test]

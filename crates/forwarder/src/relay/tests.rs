@@ -456,9 +456,10 @@ async fn goes_to_the_provider_when_the_engine_is_gone() {
     assert!(seen.ends_with("\r\n\r\nbody"), "{seen}");
 }
 
-/// A pay-as-you-go tool sends no provider credential, so with the app
-/// closed it gets an error naming the fix, not a request its provider will
-/// refuse. Slugs Gate never serves pay-as-you-go still go direct.
+/// A pay-as-you-go request with no provider credential (Codex's PAYG block
+/// sends none) gets an error naming the fix with the app closed, not a request
+/// its provider will refuse. Slugs Gate never serves pay-as-you-go still go
+/// direct.
 #[tokio::test]
 async fn a_payg_request_gets_an_error_not_a_credentialless_request() {
     let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
@@ -527,6 +528,56 @@ async fn a_payg_request_with_a_gate_key_or_an_empty_bearer_is_refused() {
         let reply = roundtrip(port, &request).await;
         assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
     }
+}
+
+/// The credential the PAYG check reads is judged on the head that is sent,
+/// in every shape the tools use and the ones a request could be crafted in.
+#[test]
+fn the_plan_says_whether_a_provider_credential_is_sent() {
+    let t = table(1);
+    let target = "/__gate/t/opencode/anthropic/v1/messages";
+    let credential =
+        |headers: &[(&str, &str)]| plan11(target, &hdrs(headers), &t).unwrap().credential;
+    // Own keys, in both slots and either case of the scheme.
+    assert!(credential(&[("Authorization", "Bearer sk-proj-own")]));
+    assert!(credential(&[("authorization", "bearer sk-proj-own")]));
+    assert!(credential(&[("x-api-key", "sk-ant-own")]));
+    // A value under another scheme is still a value.
+    assert!(credential(&[("Authorization", "Basic dXNlcg==")]));
+    // No token at all.
+    assert!(!credential(&[]));
+    assert!(!credential(&[("Authorization", "Bearer")]));
+    assert!(!credential(&[("x-api-key", "  ")]));
+    // A Gate key is never a provider credential, in either slot.
+    assert!(!credential(&[("Authorization", "Bearer sk-gw-abc")]));
+    assert!(!credential(&[("x-api-key", "sk-gw-abc")]));
+    // A header the request itself names as hop-by-hop is not sent, so it does
+    // not count.
+    assert!(!credential(&[
+        ("x-api-key", "sk-ant-own"),
+        ("Connection", "x-api-key")
+    ]));
+}
+
+/// A Gate key is dropped from the head in any header, scheme, case or
+/// position, including beside a real key and in a second `Authorization`. The
+/// real key still goes, and still counts.
+#[test]
+fn a_gate_key_never_reaches_the_provider() {
+    let t = table(1);
+    let headers = hdrs(&[
+        ("x-api-key", "sk-ant-own"),
+        ("Authorization", "Bearer sk-gw-first"),
+        ("Authorization", "Bearer SK-GW-second"),
+        ("Authorization", "Bearersk-gw-glued"),
+        ("Authorization", "Basic \"sk-gw-quoted\""),
+        ("x-goog-api-key", "sk-gw-elsewhere"),
+    ]);
+    let plan = plan11("/__gate/t/opencode/anthropic/v1/messages", &headers, &t).unwrap();
+    let head = head_text(&plan);
+    assert!(!head.to_ascii_lowercase().contains("sk-gw-"), "{head}");
+    assert!(head.contains("x-api-key: sk-ant-own\r\n"), "{head}");
+    assert!(plan.credential);
 }
 
 /// A relay of ours on the engine port gets the connection, byte for byte,

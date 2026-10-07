@@ -38,8 +38,12 @@
 //!   such a request on those slugs gets a 503 that says to open Gate Connect,
 //!   not a request the provider will refuse. A request that does carry its own
 //!   key (OpenCode always does; the engine swapped it for Gate's) goes direct
-//!   under it, as it would on BYOK. A Gate key in that slot is not a provider
-//!   key: it gets the 503 too, rather than being handed to the provider.
+//!   under it, as it would on BYOK.
+//! - **Not a way to hand a Gate key to a provider.** Any header holding one is
+//!   dropped from every direct request, whatever its name, scheme or position,
+//!   and whether a provider credential is present is judged on the headers that
+//!   are actually sent. A pay-as-you-go request whose only credential was a Gate
+//!   key therefore gets the 503.
 //! - **Not reachable from a web page.** The same `Host` / `Origin` loopback
 //!   boundary the engine's relay applies, from the same definition.
 //! - **Not handed to a stranger.** The engine side has to answer a proof on a
@@ -560,6 +564,10 @@ pub struct Plan {
     /// may be sent an interim (1xx) response: an HTTP/1.0 client reads one as
     /// the final answer.
     pub http11: bool,
+    /// Whether the rewritten head still carries a credential of the
+    /// provider's own: a non-empty `Authorization` or `x-api-key` that survived
+    /// the hop-by-hop and Gate-key filters.
+    pub credential: bool,
 }
 
 /// A request this listener will not forward, and the answer it gets instead.
@@ -628,24 +636,28 @@ fn text<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Option<Option<&'a s
         .map(|(_, v)| std::str::from_utf8(v).ok())
 }
 
-/// Whether the request carries a credential of the provider's own: a
-/// non-empty `Authorization` or `x-api-key` that is not a Gate key. The
-/// gateway draws the same line, reading any non-`sk-gw-` token in that slot as
-/// the tool's own.
-fn carries_provider_credential(headers: &[(String, Vec<u8>)]) -> bool {
-    ["authorization", "x-api-key"].iter().any(|name| {
-        text(headers, name).flatten().is_some_and(|value| {
-            let token = value.trim();
-            // A bare `Bearer` is an empty one: the parser trims the space.
-            let token = token
-                .get(..6)
-                .filter(|scheme| scheme.eq_ignore_ascii_case("bearer"))
-                .map(|_| &token[6..])
-                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-                .map_or(token, str::trim_start);
-            !token.is_empty() && !token.starts_with("sk-gw-")
-        })
-    })
+/// Whether a header value holds a Gate key anywhere in it. Matched on the raw
+/// bytes and without regard to case, scheme or position, because a header that
+/// carries one in any shape is not the provider's business: the gateway is the
+/// only party a Gate key is for.
+fn holds_gate_key(value: &[u8]) -> bool {
+    value.windows(6).any(|w| w.eq_ignore_ascii_case(b"sk-gw-"))
+}
+
+/// Whether a credential header value names a token: what follows a `Bearer`
+/// scheme, or the whole value under any other. A bare `Bearer` names none - the
+/// parser has already trimmed the space after it.
+fn names_a_token(value: &[u8]) -> bool {
+    let Ok(value) = std::str::from_utf8(value) else {
+        return false;
+    };
+    let value = value.trim();
+    let after_bearer = value
+        .get(..6)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|_| &value[6..])
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+    !after_bearer.unwrap_or(value).trim().is_empty()
 }
 
 /// Body framing from a head's headers, strictly: at most one
@@ -785,15 +797,18 @@ pub fn plan(
         upstream.host_header()
     )
     .into_bytes();
+    let mut credential = false;
     for (name, value) in headers {
         let lower = name.to_ascii_lowercase();
         if is_hop_by_hop(name)
             || is_gate_header(name)
             || nominated.contains(&lower)
             || (body == Framing::Chunked && lower == "content-length")
+            || holds_gate_key(value)
         {
             continue;
         }
+        credential |= (lower == "authorization" || lower == "x-api-key") && names_a_token(value);
         head.extend_from_slice(name.as_bytes());
         head.extend_from_slice(b": ");
         head.extend_from_slice(value);
@@ -814,6 +829,7 @@ pub fn plan(
         expect_continue,
         head_request: method.eq_ignore_ascii_case("HEAD"),
         http11: http_minor >= 1,
+        credential,
     })
 }
 
@@ -1085,7 +1101,7 @@ async fn serve_direct(mut client: TcpStream, services: &Services) -> Result<()> 
     };
     let upstream = &services.table[plan.upstream];
     if PAYG_ELIGIBLE_SLUGS.contains(&upstream.slug.as_str())
-        && !carries_provider_credential(&headers)
+        && !plan.credential
         && (services.payg)()
     {
         respond_payg(&mut client).await;

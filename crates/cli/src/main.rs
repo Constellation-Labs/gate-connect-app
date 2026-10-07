@@ -780,6 +780,12 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                                 "Removed Gate from tool configs; they reconnect the next time routing is enabled."
                             );
                         }
+                        if let Some(note) = teardown.note(|| {
+                            gate_connect_core::account::billing_mode_for_injection()
+                                == gate_connect_core::account::BillingMode::Payg
+                        }) {
+                            println!("{note}");
+                        }
                     }
                     Err(e) => eprintln!(
                         "note: failed to remove Gate from tool configs ({e:#}); edit them by hand."

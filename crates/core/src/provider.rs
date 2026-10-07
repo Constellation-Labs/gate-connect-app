@@ -1070,9 +1070,112 @@ pub struct QuitTeardown {
     pub managed: usize,
     /// Display names of the tools that still name Gate afterwards.
     pub failed: Vec<String>,
-    /// The tools this sweep took Gate out of. What a tool does once Gate is
-    /// gone depends on the account's billing, and the quit notice says so.
-    pub removed: Vec<ToolId>,
+    /// The tools this sweep took Gate out of, in registry order.
+    pub removed: Vec<RemovedTool>,
+}
+
+/// One tool a quit took Gate out of, with what its config said while it still
+/// named Gate. Recorded before anything is disconnected, because afterwards
+/// the config no longer says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedTool {
+    pub id: ToolId,
+    pub name: String,
+    /// On the Gate models Gate wrote ([`registry::GateModelState::Applied`]).
+    /// Its open sessions name Gate's own route, which nothing serves once Gate
+    /// is gone, whatever the account's billing.
+    pub on_gate_models: bool,
+    /// [`registry::Integration::relies_on_gate_credential`].
+    pub relies_on_gate_credential: bool,
+}
+
+impl QuitTeardown {
+    /// What quitting does to the tools it removed, for the sentence after the
+    /// quit's own notice, or `None` when there is nothing to say.
+    ///
+    /// Three outcomes, and a tool lands in the first that fits:
+    ///
+    /// - **On Gate models: open sessions stop.** They name Gate's own route,
+    ///   and the forwarder refuses it with Gate gone. Said on any billing.
+    /// - **Codex sending no login: open conversations stop.** Its PAYG block
+    ///   leaves the credential to Gate and the forwarder refuses it
+    ///   (`respond_payg`). A new conversation reads the restored config, so
+    ///   that is the advice; a restart fixes nothing here.
+    /// - **Everything else sends its own key**, which the engine was swapping
+    ///   for Gate's. With the engine gone it goes straight to the provider under
+    ///   the user's own account, open sessions and new ones alike. Said only on
+    ///   pay-as-you-go, the one case in which the bill moves, and `payg` is
+    ///   asked only when such a tool was removed.
+    ///
+    /// The last is not narrowed to tools whose provider Gate bills on
+    /// pay-as-you-go: the environment proxy carries anything, so that cannot be
+    /// read for every tool, and "your own provider account" is true either way.
+    /// Claude Code alone names its account, since it only talks to Anthropic.
+    pub fn note(&self, payg: impl FnOnce() -> bool) -> Option<String> {
+        let (gate_models, rest): (Vec<&RemovedTool>, Vec<&RemovedTool>) =
+            self.removed.iter().partition(|t| t.on_gate_models);
+        let (no_login, own_key): (Vec<&RemovedTool>, Vec<&RemovedTool>) =
+            rest.into_iter().partition(|t| t.relies_on_gate_credential);
+        let mut sentences = Vec::new();
+        if !gate_models.is_empty() {
+            sentences.push(format!(
+                "{} {} on Gate models. Open sessions stop working until you reopen Gate Connect.",
+                names_of(&gate_models),
+                if plural(&gate_models) { "were" } else { "was" }
+            ));
+        }
+        // Only Codex can rely on Gate's credential; the sentence is its own.
+        if no_login.iter().any(|t| t.id == ToolId::Codex) {
+            sentences.push(
+                "Codex was on Gate pay-as-you-go. Open conversations stop working until you \
+                 reopen Gate Connect; start a new one to use your own OpenAI login."
+                    .to_string(),
+            );
+        }
+        if !own_key.is_empty() && payg() {
+            if let [only] = own_key.as_slice() {
+                if only.id == ToolId::ClaudeCode {
+                    sentences.push(
+                        "Claude Code is now on your own Anthropic account, not Gate \
+                         pay-as-you-go, until you reopen Gate Connect."
+                            .to_string(),
+                    );
+                    return Some(sentences.join(" "));
+                }
+            }
+            let (verb, account) = if plural(&own_key) {
+                ("use", "accounts")
+            } else {
+                ("uses", "account")
+            };
+            sentences.push(format!(
+                "{} now {verb} your own provider {account}, not Gate pay-as-you-go, until you \
+                 reopen Gate Connect.",
+                names_of(&own_key)
+            ));
+        }
+        (!sentences.is_empty()).then(|| sentences.join(" "))
+    }
+}
+
+fn names_of(tools: &[&RemovedTool]) -> String {
+    join_names(&tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>())
+}
+
+/// Whether a list of tools takes a plural verb. "Terminal tools", the
+/// environment proxy's name, is plural on its own.
+fn plural(tools: &[&RemovedTool]) -> bool {
+    tools.len() > 1 || tools.iter().any(|t| t.id == ToolId::EnvProxy)
+}
+
+/// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
+/// comma-join reads as a fragment at two items.
+pub fn join_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// [`snapshot_and_disable_everything`] for the app's exit, which gives up
@@ -1094,7 +1197,10 @@ fn snapshot_and_disable_everything_within(wait: std::time::Duration) -> Result<Q
 }
 
 fn snapshot_and_disable_everything_locked() -> QuitTeardown {
-    let managed = registry::registry()
+    // Every tool naming Gate, read before the provider half below: that half
+    // disconnects Claude Code and Codex itself, so the registry pass after it
+    // never sees them, and their configs stop saying what they were on.
+    let candidates: Vec<RemovedTool> = registry::registry()
         .iter()
         .filter(|integ| {
             matches!(
@@ -1102,7 +1208,17 @@ fn snapshot_and_disable_everything_locked() -> QuitTeardown {
                 Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
             )
         })
-        .count();
+        .map(|integ| RemovedTool {
+            id: integ.id(),
+            name: integ.display_name().to_string(),
+            on_gate_models: matches!(
+                integ.gate_model_state(),
+                Ok(registry::GateModelState::Applied { .. })
+            ),
+            relies_on_gate_credential: integ.relies_on_gate_credential(),
+        })
+        .collect();
+    let managed = candidates.len();
     // The provider half is best-effort here. It used to end the sweep with a
     // `?` on its snapshot files, before any tool was touched, so one unreadable
     // file left every tool's config naming Gate - and holding the Gate key. The
@@ -1114,7 +1230,7 @@ fn snapshot_and_disable_everything_locked() -> QuitTeardown {
         ));
     }
     let mut failed = Vec::new();
-    let mut removed = Vec::new();
+    let mut failed_ids = Vec::new();
     for integ in registry::registry() {
         if !matches!(
             integ.status(),
@@ -1142,10 +1258,16 @@ fn snapshot_and_disable_everything_locked() -> QuitTeardown {
                 integ.display_name()
             ));
             failed.push(integ.display_name().to_string());
-        } else {
-            removed.push(integ.id());
+            failed_ids.push(integ.id());
         }
     }
+    // A candidate is removed unless this pass is the one that failed it: the
+    // provider half took Claude Code and Codex out, or left them for this pass
+    // to try again.
+    let removed = candidates
+        .into_iter()
+        .filter(|t| !failed_ids.contains(&t.id))
+        .collect();
     QuitTeardown {
         managed,
         failed,
@@ -1843,6 +1965,114 @@ fn restore_one_tool(slug: &str, queued: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    fn tool(id: ToolId, name: &str, on_gate_models: bool, relies: bool) -> RemovedTool {
+        RemovedTool {
+            id,
+            name: name.to_string(),
+            on_gate_models,
+            relies_on_gate_credential: relies,
+        }
+    }
+
+    fn quit(removed: Vec<RemovedTool>) -> QuitTeardown {
+        QuitTeardown {
+            managed: removed.len(),
+            failed: Vec::new(),
+            removed,
+        }
+    }
+
+    const OWN_KEY_TAIL: &str = "not Gate pay-as-you-go, until you reopen Gate Connect.";
+
+    /// Gate models stop open sessions on any billing, so the billing mode is
+    /// not even read for them; Codex on Gate models gets that sentence, not the
+    /// pay-as-you-go one.
+    #[test]
+    fn a_gate_models_tool_is_told_its_sessions_stop_on_any_billing() {
+        let note = quit(vec![
+            tool(ToolId::Codex, "Codex", true, true),
+            tool(ToolId::Hermes, "Hermes", true, false),
+        ])
+        .note(|| panic!("billing read"));
+        assert_eq!(
+            note.as_deref(),
+            Some(
+                "Codex and Hermes were on Gate models. Open sessions stop working until you \
+                 reopen Gate Connect."
+            )
+        );
+        let one = quit(vec![tool(ToolId::ClaudeCode, "Claude Code", true, false)])
+            .note(|| panic!("billing read"));
+        assert!(one.unwrap().starts_with("Claude Code was on Gate models."));
+    }
+
+    /// A Codex whose config sends no login stops; one in the BYOK shape sends
+    /// its own and is an own-key tool like any other.
+    #[test]
+    fn codex_is_told_its_conversations_stop_only_when_it_sends_no_login() {
+        let stops = quit(vec![tool(ToolId::Codex, "Codex", false, true)]).note(|| false);
+        assert!(stops
+            .unwrap()
+            .starts_with("Codex was on Gate pay-as-you-go. Open conversations stop working"));
+        let own = quit(vec![tool(ToolId::Codex, "Codex", false, false)]).note(|| true);
+        assert_eq!(
+            own,
+            Some(format!(
+                "Codex now uses your own provider account, {OWN_KEY_TAIL}"
+            ))
+        );
+    }
+
+    /// Own-key tools are said only on pay-as-you-go, Claude Code alone by its
+    /// account, and the plural follows the names - "Terminal tools" included.
+    #[test]
+    fn own_key_tools_are_told_the_bill_moved_only_on_payg() {
+        let claude = quit(vec![tool(ToolId::ClaudeCode, "Claude Code", false, false)]);
+        assert_eq!(
+            claude.note(|| true),
+            Some(format!(
+                "Claude Code is now on your own Anthropic account, {OWN_KEY_TAIL}"
+            ))
+        );
+        assert_eq!(claude.note(|| false), None);
+
+        let terminal = quit(vec![tool(ToolId::EnvProxy, "Terminal tools", false, false)]);
+        assert_eq!(
+            terminal.note(|| true),
+            Some(format!(
+                "Terminal tools now use your own provider accounts, {OWN_KEY_TAIL}"
+            ))
+        );
+
+        let mixed = quit(vec![
+            tool(ToolId::ClaudeCode, "Claude Code", false, false),
+            tool(ToolId::Codex, "Codex", false, true),
+            tool(ToolId::OpenCode, "OpenCode", false, false),
+        ]);
+        assert_eq!(
+            mixed.note(|| true).unwrap(),
+            format!(
+                "Codex was on Gate pay-as-you-go. Open conversations stop working until you \
+                 reopen Gate Connect; start a new one to use your own OpenAI login. Claude \
+                 Code and OpenCode now use your own provider accounts, {OWN_KEY_TAIL}"
+            )
+        );
+    }
+
+    #[test]
+    fn nothing_removed_says_nothing_and_reads_nothing() {
+        assert_eq!(quit(vec![]).note(|| panic!("billing read")), None);
+    }
+
+    #[test]
+    fn join_names_reads_as_a_list() {
+        let names = |l: &[&str]| l.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(join_names(&names(&[])), "");
+        assert_eq!(join_names(&names(&["A"])), "A");
+        assert_eq!(join_names(&names(&["A", "B"])), "A and B");
+        assert_eq!(join_names(&names(&["A", "B", "C"])), "A, B and C");
+    }
     use super::*;
 
     /// The exit sweep's whole reason to exist: a quit must not wait on another
