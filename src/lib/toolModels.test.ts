@@ -491,14 +491,21 @@ describe("formatPlan", () => {
 
   it("passes through a plan the gateway grows later", () => {
     // Better an unfamiliar plan name than none: it is still the user's plan,
-    // and hiding it would read as though they had no plan at all.
-    expect(formatPlan("enterprise", false)).toBe("Enterprise");
+    // and hiding it would read as though they had no plan at all. Not
+    // "enterprise": that is an entitlement beside the plan, never a plan value.
+    expect(formatPlan("team", false)).toBe("Team");
   });
 
   it("keeps an unreported plan null rather than defaulting to Free", () => {
     // "Free" is the one value a reader acts on, by upgrading something they may
     // already have upgraded.
     expect(formatPlan(null, false)).toBeNull();
+  });
+
+  it("says Enterprise even when the plan is unreported", () => {
+    // The flag is checked first and alone, as the dashboard does, so an
+    // Enterprise org with no plan field is still named rather than left blank.
+    expect(formatPlan(null, true)).toBe("Enterprise");
   });
 });
 
