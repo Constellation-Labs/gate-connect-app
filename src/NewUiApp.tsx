@@ -2236,7 +2236,7 @@ export function NewUiApp() {
         //
         // Three states, kept apart: in flight, landed-and-unnamed, and failed.
         // `formatPlan` is what makes the word agree with the dashboard.
-        plan: credits.credits ? formatPlan(credits.credits.plan) : undefined,
+        plan: credits.credits ? formatPlan(credits.credits.plan, credits.credits.enterpriseEnabled) : undefined,
         planUnreadable: credits.failure !== null,
         onRetryPlan: credits.reload,
         gateway: account?.gateway_base_url ?? "-",
@@ -3560,7 +3560,7 @@ export function NewUiApp() {
                 // "Paid plan" off the raw value, so one account read "Paid"
                 // here and "Pro" on the dashboard - and, once Settings was
                 // wired, "Pro" two panes away in the same window.
-                plan: formatPlan(credits.credits?.plan ?? null),
+                plan: formatPlan(credits.credits?.plan ?? null, credits.credits?.enterpriseEnabled ?? false),
                 // No dedicated credits endpoint, but the row's own glyph
                 // promises an external link, and the dashboard is where credits
                 // are actually bought.

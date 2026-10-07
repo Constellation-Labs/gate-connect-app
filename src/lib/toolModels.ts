@@ -662,6 +662,14 @@ export interface Credits {
    * would act on, by going to upgrade something they may already have upgraded.
    */
   plan: string | null;
+  /**
+   * Whether the org holds the Enterprise entitlement.
+   *
+   * Not a plan value: the gateway reports an Enterprise org as `paid`, with this
+   * flag beside it, so `plan` alone cannot tell Enterprise from Pro. A gateway
+   * that predates the field omits it, which reads as false.
+   */
+  enterpriseEnabled: boolean;
   paygEnabled: boolean;
   /** Whole cents, or null when it could not be read. Null is not zero - see
    *  {@link formatCredits}. */
@@ -683,6 +691,7 @@ export interface Credits {
 export function adaptCredits(raw: Partial<Credits> & { billing?: unknown }): Credits {
   return {
     plan: typeof raw?.plan === "string" && raw.plan.length > 0 ? raw.plan : null,
+    enterpriseEnabled: raw?.enterpriseEnabled === true,
     paygEnabled: raw?.paygEnabled === true,
     balanceCents: typeof raw?.balanceCents === "number" ? raw.balanceCents : null,
     lowBalanceThresholdCents:
@@ -724,13 +733,19 @@ function adaptBillingUrl(billing: unknown): string | null {
  * two different words - and AG-879 asks for the opposite: what Connect shows
  * must equal what the dashboard shows.
  *
+ * Enterprise is checked first and alone, as the dashboard's `planBadgeLabel`
+ * does. An Enterprise org is also `paid`, so mapping the plan alone printed
+ * "Pro" over every Enterprise org; and an admin-granted Enterprise org need not
+ * be `paid` at all. The flag is a required argument so no caller can forget it.
+ *
  * Anything else the gateway grows is passed through title-cased rather than
  * hidden, since an unknown plan name is still the user's plan.
  *
  * Null stays null. A plan nobody reported is not "Free": that is the one value
  * a reader acts on, by going to upgrade something they may already have.
  */
-export function formatPlan(plan: string | null): string | null {
+export function formatPlan(plan: string | null, enterpriseEnabled: boolean): string | null {
+  if (enterpriseEnabled) return "Enterprise";
   if (plan === null) return null;
   if (plan === "paid") return "Pro";
   if (plan === "free") return "Free";
