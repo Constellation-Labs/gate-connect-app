@@ -1593,3 +1593,54 @@ async fn proxy_serves_a_caller_supplied_key_while_signed_out() {
     assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-caller"));
     assert_eq!(reqs[0].header("x-gate-authorization"), None);
 }
+
+/// A request the engine cannot forward comes back as hudsucker's empty 502,
+/// through the engine's own `handle_error` override (which adds a
+/// `[gate-proxy]` line to `helper.log`; the line itself is pinned by the unit
+/// test next to the override). The gateway here is a port nothing listens on,
+/// so the forward fails before any response headers.
+#[tokio::test]
+async fn an_unreachable_gateway_is_answered_with_an_empty_502() {
+    let _serial = SERIAL.lock().await;
+    let dead = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let dead_port = dead.local_addr().unwrap().port();
+    drop(dead);
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: format!("http://127.0.0.1:{dead_port}"),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("authorization", "Bearer app-token")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("the engine answers");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
+    assert!(resp.bytes().await.unwrap().is_empty(), "an empty body");
+
+    engine.stop();
+}
