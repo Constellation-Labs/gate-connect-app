@@ -67,11 +67,15 @@ jobs:
       # so it always runs an unbounded Playwright/Chromium install that stalls
       # the runner. Hermes is cross-platform and fully exercised on Linux+macOS;
       # run.sh's `command -v hermes` guard skips it cleanly on Windows.
+      # --commit pins hermes-agent: install.sh otherwise clones the tip of its
+      # main, so an upstream break turns this job red on PRs that touch nothing
+      # here (96c64b45 did on 2026-10-06). Bump the SHA deliberately, after a
+      # newer commit is seen to install cleanly.
       - name: Install Hermes (Linux/macOS)
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser --commit 80cf5183f8ed812e8814b244e3ea6e72661d228a
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).

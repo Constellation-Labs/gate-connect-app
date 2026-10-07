@@ -104,3 +104,10 @@ windows-sys = { version = "0.61", features = [
 # touches the OS trust store or system proxy, so it needs no elevation.
 [dev-dependencies]
 rcgen = "0.14"
+# Test-only: calls the upstream HttpConnector directly so a test can read the
+# socket options it sets (`engine.rs`, TCP keepalive). Already in the lock
+# through hyper-util.
+tower-service = "0.3"
+# Test-only on Windows: the keepalive test reads SO_KEEPALIVE through socket2,
+# which is otherwise a unix-only dependency (above).
+socket2 = "0.6"

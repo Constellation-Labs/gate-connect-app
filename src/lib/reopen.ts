@@ -4,9 +4,9 @@ import type { RunningAgent, Verdict } from "./api";
  * The vocabulary of the reopen flow: what a tool is doing right now, what the
  * result was, and the one thing left to do about it.
  *
- * Why a module rather than JSX: the same readings appear in three places - the
- * confirmation's subject list, the progress dialog and the pane's reopen card -
- * and AG-566 requires them to agree. A row assembled twice is a row
+ * Why a module rather than JSX: the same readings appear in more than one place -
+ * the apply-changes dialog's rows and the pane's reopen card - and AG-566
+ * requires them to agree. A row assembled twice is a row
  * that says "Verifying" on one surface and "Reopen required" on another for the
  * same tool, which is the class of bug `lib/groups.ts` documents one level up.
  * `lib/recovery.ts` exists for the same reason, and this file follows its shape.
@@ -70,8 +70,7 @@ export type ReopenStage =
  */
 export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   applying: "Writing this tool's configuration.",
-  reopen_required:
-    "Running, and still using the settings it started with.",
+  reopen_required: "Running now. It will keep its current route until closed.",
   closing: "Asking this tool to close so it can pick up its new configuration.",
   awaiting_reopen:
     "Closed. Open it again and Gate will check its route.",
@@ -104,11 +103,6 @@ export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
  * cost with no reading behind it.
  */
 export const REOPEN_IDLE_WATCH_MS = 10_000;
-
-/** Why any of this is necessary, in one sentence. Shared by every surface that
- *  raises the flow, so the reason cannot be phrased two ways. */
-export const WHY_REOPEN =
-  "A tool reads its configuration when it starts, so one that was already running keeps the settings it launched with until it is opened again.";
 
 /**
  * Waiting on the person, not on Gate.

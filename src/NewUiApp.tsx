@@ -130,7 +130,6 @@ import type { DialogOrganization } from "./components/gc/dialogs";
 import {
   reopenSubjects,
   ApplyChangesDialog,
-  CloseAppsDialog,
   ModelPickerDialog,
   TeardownLeftBehindDialog,
   UseGateModelDialog,
@@ -1435,7 +1434,7 @@ export function NewUiApp() {
   });
 
   /**
-   * The reopen flow draws a dialog for the offer and the confirmation only.
+   * The reopen flow draws a dialog for the offer only.
    * `work` runs with nothing on screen, so the rail carries it, and a CLI
    * waiting for its user to reopen it can stay there indefinitely. It used to
    * end on a "Change is ready" dialog once every tool verified; that dialog is
@@ -3228,14 +3227,9 @@ export function NewUiApp() {
         ) : runningApps.stage?.kind === "offer" ? (
           <ApplyChangesDialog
             tools={reopenSubjects(runningApps.stage.tools)}
-            onCloseApps={runningApps.goToConfirm}
-            onReopenLater={runningApps.dismiss}
-          />
-        ) : runningApps.stage?.kind === "confirm" ? (
-          <CloseAppsDialog
-            tools={reopenSubjects(runningApps.stage.tools)}
-            onGoBack={runningApps.goBack}
+            closing={runningApps.stage.closing}
             onCloseApps={() => void runningApps.closeApps()}
+            onReopenLater={runningApps.dismiss}
           />
         ) : modelOverlay?.kind === "picker" ? (
           <ModelPickerDialog
@@ -3413,7 +3407,9 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
-          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
+          // 24 into the header's 44px tile, per the new design; the rail draws
+          // the same mark at 16.
+          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug), 24)}
           // The header tile above is black, so `logo` stays monochrome; the
           // App-default row's tile is light and draws the vendor's own colour.
           //
