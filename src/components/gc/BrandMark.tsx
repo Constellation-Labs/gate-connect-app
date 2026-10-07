@@ -64,7 +64,15 @@ const PATHS: Record<BrandName, JSX.Element> = {
   ),
 };
 
-export function BrandMark({ name, size = 16 }: { name: BrandName; size?: number }) {
+/**
+ * The sizes a brand mark is drawn at: 16 in the rail, 20 in the App-default
+ * row's 36px tile (`683:20439`), 24 in the app pane header's 44px tile (the new
+ * design). Closed the way `MarkSize` is, so a size no surface draws cannot be
+ * passed.
+ */
+export type BrandMarkSize = 16 | 20 | 24;
+
+export function BrandMark({ name, size = 16 }: { name: BrandName; size?: BrandMarkSize }) {
   return (
     <svg
       aria-hidden
@@ -106,7 +114,7 @@ const BRAND_BY_SLUG: Record<string, BrandName> = {
  * The mark for a slug, or undefined for one with none (Hermes), which keeps
  * the tile's initial fallback.
  */
-export function brandMarkFor(slug: string, size?: number): JSX.Element | undefined {
+export function brandMarkFor(slug: string, size?: BrandMarkSize): JSX.Element | undefined {
   const name = BRAND_BY_SLUG[slug];
   return name ? <BrandMark name={name} size={size} /> : undefined;
 }
@@ -154,9 +162,9 @@ export function brandMarkForSection(
   id: string,
   memberKeys: readonly string[],
   /** The glyph's size. Omitted takes `BrandMark`'s own 16, which is what the
-   *  rail and the pane header want; a caller drawing into a 36px tile passes
-   *  the 20 that tile is built around (`683:20439`). */
-  size?: number,
+   *  rail wants; the pane header's 44px tile passes 24, and a caller drawing
+   *  into a 36px tile passes the 20 that tile is built around (`683:20439`). */
+  size?: BrandMarkSize,
 ): JSX.Element | undefined {
   const named = BRAND_BY_SECTION[id];
   if (named) return <BrandMark name={named} size={size} />;

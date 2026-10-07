@@ -717,19 +717,31 @@ describe("AppPane draws what the helpers resolve", () => {
 
   it("falls back to the rail's mark where the app has no single vendor", () => {
     // OpenCode and friends call whatever they are configured with, so
-    // `appProviderMarkFor` returns undefined and the row keeps `logo`.
+    // `appProviderMarkFor` returns undefined and the row takes the rail's mark.
     render(
       pane({
         modelChoice: "app",
         appVendorMark: undefined,
-        logo: <svg data-testid="brand-mark" />,
+        appFallbackMark: <svg data-testid="fallback-mark" />,
       }),
     );
 
-    // Twice, and the count is the assertion: the pane header draws `logo` in
-    // its black tile whatever happens, so one match would mean the row fell
-    // through to the cube instead of to `logo`.
-    expect(screen.getAllByTestId("brand-mark")).toHaveLength(2);
+    expect(screen.getByTestId("fallback-mark")).toBeTruthy();
+  });
+
+  it("never draws the header's mark in the row", () => {
+    // `logo` is sized for the header's 44px tile; the row's slot is 20. With
+    // neither row mark, the row keeps the cube rather than borrowing it.
+    render(
+      pane({
+        modelChoice: "app",
+        appVendorMark: undefined,
+        appFallbackMark: undefined,
+        logo: <svg data-testid="header-only" />,
+      }),
+    );
+
+    expect(screen.getAllByTestId("header-only")).toHaveLength(1);
   });
 });
 
@@ -749,8 +761,7 @@ describe("the App-default row's mark size", () => {
     );
 
     expect(screen.getByTestId("sized-fallback").getAttribute("width")).toBe("20");
-    // `logo` stays the header's, and does not reach the row once a sized
-    // fallback exists.
+    // `logo` stays the header's, and never reaches the row.
     expect(screen.getAllByTestId("header-only")).toHaveLength(1);
   });
 });

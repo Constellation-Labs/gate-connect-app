@@ -100,7 +100,7 @@ export function AppPane({
    * line: "Protected" or "Not protected", with no reason behind it.
    */
   status?: AppStatus;
-  /** 16px brand mark for the header tile. */
+  /** 24px brand mark for the header tile, per the new design. */
   logo?: ReactNode;
   /**
    * The app vendor's full-colour mark, for the App-default row alone.
@@ -110,7 +110,7 @@ export function AppPane({
    * ink, so it takes the monochrome `BrandMark`; the App-default row
    * (`408:25491`) is a light tile and draws the provider's own colour -
    * `#E8704E` for Anthropic. Absent for an app with no single vendor behind
-   * it, where the row falls back to `logo` and then the cube.
+   * it, where the row falls back to `appFallbackMark` and then the cube.
    */
   appVendorMark?: ReactNode;
   /**
@@ -118,7 +118,7 @@ export function AppPane({
    * no single vendor.
    *
    * Separate from `logo` only because of the size: `logo` is the pane header's,
-   * drawn at 16 into a 44px black tile, and this row's tile is 36px around a
+   * drawn at 24 into a 44px black tile, and this row's tile is 36px around a
    * 20px glyph. Sharing one prop put two sizes in one slot.
    */
   appFallbackMark?: ReactNode;
@@ -233,9 +233,12 @@ export function AppPane({
     // rather than becoming hidden overflow on the shell root.
     <div className="relative flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-center gap-3">
+        {/* The letter, for an app with no mark, scales with the mark: it was
+            14 beside a 16px glyph, and the glyph is 24 now (the new design),
+            so 20, the type ramp's nearest step to 21. */}
         <span
           aria-hidden
-          className="flex size-11 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
+          className="flex size-11 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-xl font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
@@ -320,8 +323,9 @@ export function AppPane({
           // The colour mark where the app has one vendor, the rail's
           // monochrome one where it does not (AG-879). This row used to take
           // `logo` outright, which is the set built for the header's dark tile
-          // and renders flat on this one.
-          appLogo={appVendorMark ?? appFallbackMark ?? logo}
+          // and renders flat on this one. Nor does it fall back to `logo`: that
+          // is drawn at the header's 24, and this slot is 20.
+          appLogo={appVendorMark ?? appFallbackMark}
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}

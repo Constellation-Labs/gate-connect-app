@@ -3407,7 +3407,9 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
-          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
+          // 24 into the header's 44px tile, per the new design; the rail draws
+          // the same mark at 16.
+          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug), 24)}
           // The header tile above is black, so `logo` stays monochrome; the
           // App-default row's tile is light and draws the vendor's own colour.
           //
