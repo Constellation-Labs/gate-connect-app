@@ -443,3 +443,41 @@ fn a_config_left_on_gate_models_after_app_default_is_drift() {
         other => panic!("expected drift, got {other:?}"),
     }
 }
+
+/// AG-1056: a provider Hermes lists but is not using does not make the row
+/// say "Routed, not inspected" while Hermes is on Gate models. Off Gate
+/// models it still does, because Hermes can reach anything it lists.
+#[test]
+fn an_unused_provider_is_not_reported_while_on_gate_models() {
+    use gate_connect_core::integrations::hermes::upstream_coverage;
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tailnet = "100.123.155.73";
+    let with_unused =
+        format!("{ORIGINAL}providers:\n  local-gpu:\n    base_url: http://{tailnet}:8010/v1\n");
+    let _home = setup(&with_unused);
+    let hermes = find(ToolId::Hermes).unwrap();
+
+    hermes.connect(&input()).unwrap();
+    assert!(
+        upstream_coverage().unknown.contains(&tailnet.to_string()),
+        "on its own model, every listed provider counts: {:?}",
+        upstream_coverage()
+    );
+
+    choose_gate(&[LUNA]);
+    hermes.connect(&input()).unwrap();
+    assert!(
+        upstream_coverage().is_covered(),
+        "on Gate models, the model Hermes calls is the relay: {:?}\n{}",
+        upstream_coverage(),
+        config()
+    );
+
+    choose_tool();
+    hermes.connect(&input()).unwrap();
+    assert!(
+        upstream_coverage().unknown.contains(&tailnet.to_string()),
+        "back on its own model, the provider counts again: {:?}",
+        upstream_coverage()
+    );
+}
