@@ -3615,12 +3615,12 @@ export function NewUiApp() {
             (!installsResolved ||
               (toolEvents.view === null && toolEvents.failure === null))
           }
-          // This app's traffic on this machine over the last 24h: the feed's
-          // own filters on a tool pane, the desktop app's and website's names
-          // on a domain pane. See `viewActivityApps` for when there is none.
+          // This app's traffic on this machine over the last 24h, filtered by
+          // the same names the card was read with. See `viewActivityApps` for
+          // when there is none.
           onViewActivity={(() => {
             if (view.kind !== "app") return undefined;
-            const apps = viewActivityApps({ machineKnown, section: view.slug, tool: openTool });
+            const apps = viewActivityApps({ machineKnown, clients: openClients });
             if (!apps) return undefined;
             return () =>
               openDashboard((d) => d.messages({ apps, device: currentInstallId }));
