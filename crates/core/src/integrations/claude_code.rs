@@ -708,12 +708,15 @@ fn written_ids(settings: &Map<String, Value>) -> Option<Vec<String>> {
 /// cheap and cannot go stale, and on Linux the engine runs in a daemon that no
 /// write from the GUI or the CLI would otherwise refresh.
 pub fn applied_gate_model() -> Option<String> {
-    type Stamp = Option<(std::time::SystemTime, u64)>;
+    // The path is part of the stamp: `CLAUDE_CONFIG_DIR` can move the file,
+    // and two files with one mtime and length are not one reading.
+    type Stamp = (PathBuf, Option<(std::time::SystemTime, u64)>);
     static CACHE: std::sync::RwLock<Option<(Stamp, Option<String>)>> = std::sync::RwLock::new(None);
     let path = settings_path().ok()?;
-    let stamp: Stamp = std::fs::metadata(&path)
+    let meta = std::fs::metadata(&path)
         .ok()
         .and_then(|m| Some((m.modified().ok()?, m.len())));
+    let stamp: Stamp = (path, meta);
     if let Some((cached, model)) = CACHE.read().ok()?.as_ref() {
         if *cached == stamp {
             return model.clone();
