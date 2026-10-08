@@ -244,3 +244,83 @@ fn each_mode_reports_the_others_block_as_drift() {
     account::set_billing_mode(BillingMode::Byok).unwrap();
     assert!(matches!(integ.status().unwrap(), Status::Drifted(_)));
 }
+
+/// The quit sweep reports a connected Codex as removed, with what its config
+/// said. The provider half disconnects Codex before the registry pass runs, so
+/// a sweep that only recorded what that pass removed never named Codex, and the
+/// quit said nothing about the one tool that stops working.
+#[test]
+fn the_quit_sweep_reports_codex_and_whether_it_sends_a_login() {
+    for (mode, relies) in [(BillingMode::Payg, true), (BillingMode::Byok, false)] {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _home = TempHome::set();
+        fake_codex_install();
+        write_auth_json("apikey");
+        sign_in(mode);
+        let (_relay, port) = seed_relay_port();
+        let codex = find(ToolId::Codex).unwrap();
+        codex.connect(&connect_input_at(mode, port)).unwrap();
+        assert!(
+            matches!(codex.status().unwrap(), Status::Connected),
+            "premise: Codex must be connected before the quit"
+        );
+
+        let teardown = gate_connect_core::provider::snapshot_and_disable_everything_for_exit()
+            .expect("quit sweep");
+
+        let removed = teardown
+            .removed
+            .iter()
+            .find(|t| t.id == ToolId::Codex)
+            .unwrap_or_else(|| panic!("{mode:?}: Codex missing from {:?}", teardown.removed));
+        assert_eq!(removed.relies_on_gate_credential, relies, "{mode:?}");
+        assert!(!removed.on_gate_models, "{mode:?}");
+        assert!(
+            teardown.failed.is_empty(),
+            "{mode:?}: {:?}",
+            teardown.failed
+        );
+        assert!(
+            !matches!(codex.status().unwrap(), Status::Connected),
+            "{mode:?}: the sweep must have taken Gate out"
+        );
+    }
+}
+
+/// An overridden Codex is taken out but not reported as removed: a profile sent
+/// its traffic elsewhere all along, so telling the user it moved to their own
+/// account would describe traffic Gate never carried. It still counts as
+/// managed, so the quit still says Gate came out of the configs.
+#[test]
+fn the_quit_sweep_leaves_an_overridden_codex_out_of_removed() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    fake_codex_install();
+    write_auth_json("apikey");
+    sign_in(BillingMode::Byok);
+    let (_relay, port) = seed_relay_port();
+    let codex = find(ToolId::Codex).unwrap();
+    codex
+        .connect(&connect_input_at(BillingMode::Byok, port))
+        .unwrap();
+    let overridden = format!(
+        "profile = \"mine\"\n{}\n[profiles.mine]\nmodel_provider = \"openai\"\n",
+        config_toml()
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), overridden).unwrap();
+    assert!(
+        matches!(codex.status().unwrap(), Status::Overridden(_)),
+        "premise: the profile must override Gate's pointer"
+    );
+
+    let teardown = gate_connect_core::provider::snapshot_and_disable_everything_for_exit()
+        .expect("quit sweep");
+
+    assert!(
+        !teardown.removed.iter().any(|t| t.id == ToolId::Codex),
+        "{:?}",
+        teardown.removed
+    );
+    assert!(teardown.managed >= 1);
+    assert!(teardown.failed.is_empty(), "{:?}", teardown.failed);
+}

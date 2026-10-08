@@ -5554,9 +5554,14 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         if let Err(e) = &outcome {
             eprintln!("[gate] putting tools back for quit failed: {e}");
         }
-        if let Some(body) = quit_notice_body(&outcome, || {
-            gate_connect_core::preferences::load().notifications
-        }) {
+        if let Some(body) = quit_notice_body(
+            &outcome,
+            || gate_connect_core::preferences::load().notifications,
+            || {
+                gate_connect_core::account::billing_mode_for_injection()
+                    == gate_connect_core::account::BillingMode::Payg
+            },
+        ) {
             let _ = app
                 .notification()
                 .builder()
@@ -5622,12 +5627,20 @@ fn claim_quit_teardown() -> bool {
 /// way the user learns a tool still points at Gate. `notifications` is asked
 /// only on the clean branch with something removed, so every other quit reads
 /// no preferences file.
+///
+/// What the removed tools do next ([`QuitTeardown::note`]) follows, also
+/// ungated: it is about what stops working and who is billed, and nothing else
+/// says it.
+///
+/// [`QuitTeardown::note`]: gate_connect_core::provider::QuitTeardown::note
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn quit_notice_body(
     outcome: &Result<gate_connect_core::provider::QuitTeardown, String>,
     notifications: impl FnOnce() -> bool,
+    payg: impl FnOnce() -> bool,
 ) -> Option<String> {
-    match outcome.as_ref().map(|t| (t.managed, t.failed.as_slice())) {
+    let note = outcome.as_ref().ok().and_then(|t| t.note(payg));
+    let notice = match outcome.as_ref().map(|t| (t.managed, t.failed.as_slice())) {
         Ok((0, [])) => None,
         Ok((_, [])) => notifications().then(|| "Gate removed from tool configs".to_string()),
         // Actionable over explanatory: the fix is the same whatever the tool
@@ -5640,19 +5653,17 @@ fn quit_notice_body(
             join_names(failed)
         )),
         Err(_) => Some("Failed to remove Gate from tool configs. Edit them by hand.".to_string()),
+    };
+    match (notice, note) {
+        // The failure notices end in a full stop and the clean one does not.
+        (Some(notice), Some(note)) if notice.ends_with('.') => Some(format!("{notice} {note}")),
+        (Some(notice), Some(note)) => Some(format!("{notice}. {note}")),
+        (notice, note) => notice.or(note),
     }
 }
 
-/// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
-/// comma-join reads as a fragment at two items.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn join_names(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
-}
+use gate_connect_core::provider::join_names;
 
 /// The command table, shared by the app and by `examples/ui-harness.rs`.
 ///
@@ -7863,19 +7874,38 @@ mod tests {
         assert_eq!(normalise_agent_name("日本語.exe"), "日本語");
     }
 
-    fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(|n| n.to_string()).collect()
+    use gate_connect_core::provider::{QuitTeardown, RemovedTool};
+    use gate_connect_core::registry::ToolId;
+
+    /// A tool that sends its own key and is not on Gate models.
+    fn own_key(id: ToolId, name: &str) -> RemovedTool {
+        RemovedTool {
+            id,
+            name: name.to_string(),
+            on_gate_models: false,
+            relies_on_gate_credential: false,
+        }
     }
 
-    fn teardown(
-        managed: usize,
-        failed: &[&str],
-    ) -> Result<gate_connect_core::provider::QuitTeardown, String> {
-        Ok(gate_connect_core::provider::QuitTeardown {
-            managed,
-            failed: names(failed),
+    fn codex_payg() -> RemovedTool {
+        RemovedTool {
+            relies_on_gate_credential: true,
+            ..own_key(ToolId::Codex, "Codex")
+        }
+    }
+
+    /// A sweep's result: `managed` is what it found, so every tool is either
+    /// removed or failed, as the real sweep reports it when none is overridden.
+    fn teardown(removed: Vec<RemovedTool>, failed: &[&str]) -> Result<QuitTeardown, String> {
+        Ok(QuitTeardown {
+            managed: removed.len() + failed.len(),
+            failed: failed.iter().map(|n| n.to_string()).collect(),
+            removed,
         })
     }
+
+    const CODEX_PAYG: &str = "Codex's open conversations stop working until you reopen Gate \
+                              Connect; start a new one to use your own OpenAI login.";
 
     /// The rule the notifications switch has an exception for: a tool the quit
     /// could not put back is said with the switch off, because nothing else is
@@ -7883,18 +7913,24 @@ mod tests {
     #[test]
     fn quit_says_a_left_behind_tool_with_notifications_off() {
         assert_eq!(
-            quit_notice_body(&teardown(2, &["Hermes"]), || false).as_deref(),
+            quit_notice_body(
+                &teardown(vec![own_key(ToolId::OpenCode, "OpenCode")], &["Hermes"]),
+                || false,
+                || false
+            )
+            .as_deref(),
             Some("Failed to remove Gate from the Hermes config. Edit it by hand.")
         );
     }
 
     #[test]
     fn quit_says_a_clean_teardown_only_with_notifications_on() {
+        let clean = teardown(vec![own_key(ToolId::OpenCode, "OpenCode")], &[]);
         assert_eq!(
-            quit_notice_body(&teardown(2, &[]), || true).as_deref(),
+            quit_notice_body(&clean, || true, || false).as_deref(),
             Some("Gate removed from tool configs")
         );
-        assert_eq!(quit_notice_body(&teardown(2, &[]), || false), None);
+        assert_eq!(quit_notice_body(&clean, || false, || false), None);
     }
 
     /// Nothing named Gate, so nothing was removed and there is nothing to say -
@@ -7902,7 +7938,11 @@ mod tests {
     #[test]
     fn quit_says_nothing_when_no_tool_named_gate() {
         assert_eq!(
-            quit_notice_body(&teardown(0, &[]), || panic!("preference read")),
+            quit_notice_body(
+                &teardown(vec![], &[]),
+                || panic!("preference read"),
+                || panic!("billing read")
+            ),
             None
         );
     }
@@ -7913,15 +7953,59 @@ mod tests {
     #[test]
     fn quit_says_a_failure_without_reading_the_switch() {
         assert_eq!(
-            quit_notice_body(&teardown(3, &["Codex", "Hermes"]), || {
-                panic!("preference read")
-            })
+            quit_notice_body(
+                &teardown(vec![], &["Codex", "Hermes"]),
+                || panic!("preference read"),
+                || panic!("billing read")
+            )
             .as_deref(),
             Some("Failed to remove Gate from the Codex and Hermes configs. Edit them by hand.")
         );
         assert_eq!(
-            quit_notice_body(&Err("guard held".into()), || panic!("preference read")).as_deref(),
+            quit_notice_body(
+                &Err("guard held".into()),
+                || panic!("preference read"),
+                || panic!("billing read")
+            )
+            .as_deref(),
             Some("Failed to remove Gate from tool configs. Edit them by hand.")
+        );
+    }
+
+    /// What the removed tools do next is said with notifications off, and
+    /// after the removal notice when they are on.
+    #[test]
+    fn quit_says_what_removed_tools_do_next_whatever_the_switch() {
+        let quit = teardown(vec![codex_payg()], &[]);
+        assert_eq!(
+            quit_notice_body(&quit, || false, || panic!("billing read")).as_deref(),
+            Some(CODEX_PAYG)
+        );
+        assert_eq!(
+            quit_notice_body(&quit, || true, || panic!("billing read")),
+            Some(format!("Gate removed from tool configs. {CODEX_PAYG}"))
+        );
+    }
+
+    /// The note follows a failure notice rather than replacing it, and the
+    /// failure's own full stop is not doubled.
+    #[test]
+    fn quit_says_what_removed_tools_do_next_after_a_failure() {
+        assert_eq!(
+            quit_notice_body(
+                &teardown(
+                    vec![own_key(ToolId::ClaudeCode, "Claude Code")],
+                    &["Hermes"]
+                ),
+                || panic!("preference read"),
+                || true
+            ),
+            Some(
+                "Failed to remove Gate from the Hermes config. Edit it by hand. Claude Code is \
+                 now on your own Anthropic account, not Gate pay-as-you-go, until you reopen \
+                 Gate Connect."
+                    .to_string()
+            )
         );
     }
 

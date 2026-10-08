@@ -243,11 +243,12 @@ pub const ACCOUNT_FILE_NAME: &str = "account.json";
 /// - `opencode` - its inference lives under `/zen/v1/…`, which is not a path
 ///   the reseller router recognises.
 ///
-/// Here because the forwarder needs it too: a pay-as-you-go tool's request
-/// carries no provider credential of its own - Gate was going to supply the
-/// provider and the bill - so the forwarder must not send it on to the
-/// provider directly once the app is gone. It answers with an error naming the
-/// fix instead. Core does not bill pay-as-you-go in this tree yet; when it
+/// Here because the forwarder needs it too: a pay-as-you-go request on these
+/// slugs may carry no provider credential of its own - Codex's does not, since
+/// Gate was going to supply the provider and the bill - and the forwarder must
+/// not send such a request on to the provider once the app is gone. It answers
+/// with an error naming the fix instead. One that carries the tool's own key
+/// goes direct under it. Core does not bill pay-as-you-go in this tree yet; when it
 /// does, its slug list has to be this one.
 pub const PAYG_ELIGIBLE_SLUGS: [&str; 3] = ["anthropic", "openai", "openrouter"];
 
