@@ -69,7 +69,6 @@ import {
   sectionHint,
   notInstalledSections,
   paneClients,
-  SECTION_CLIENTS,
   sectionMemberKeys,
 } from "./lib/groups";
 import {
@@ -104,7 +103,9 @@ import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { useActivity, useInstallations } from "./lib/activity";
 import {
-  GATE_MODEL_TOOLS,
+  DESKTOP_APP_MODEL_KEY,
+  gateModelKey,
+  maxGateModels,
   formatCredits,
   leftGateModelsNotice,
   modelLabelsFor,
@@ -515,11 +516,23 @@ export function NewUiApp() {
       : null;
   /**
    * Every sender the open pane's activity covers: the whole section where the
-   * engine names its surfaces apart (`SECTION_CLIENTS` - the Claude pane is
-   * Claude Code, the desktop app and claude.ai), else the one config tool.
+   * engine names its surfaces apart (`SECTION_CLIENTS` - the Claude Desktop
+   * pane is the app and claude.ai), else the one config tool.
    * Computed once; the counters, the chart and the feed all read this list.
    */
   const openClients = view.kind === "app" ? paneClients(view.slug, openTool) : null;
+  /**
+   * Whose Gate model the open pane's card is about, or null for no card.
+   *
+   * `openTool` where that tool takes Gate models, and Claude Desktop's own key
+   * on its pane, which has no config tool behind it: the app's one Gate model is
+   * stored for the engine to read rather than written into a config
+   * (`gateModelKey`). Everything the card reads and writes goes through this,
+   * so the two kinds of choice share one card.
+   */
+  const modelKey = view.kind === "app" ? gateModelKey(view.slug, openTool) : null;
+  /** How many Gate models the card's picker may hold: one for Claude Desktop. */
+  const modelLimit = maxGateModels(modelKey);
   /** The open pane has no per-app reading: a section the engine stamps no
    *  sender for (the OpenAI API's traffic carries no app name) and with no
    *  config tool installed. Filtering by a slug nothing is stamped with would
@@ -613,7 +626,7 @@ export function NewUiApp() {
   const toolModels = useToolModels(canRead, credential);
   /** This app's stored choice, or undefined when it has never been set - which
    *  is not a gap but the true default: the tool picks its own model. */
-  const openPref = openTool ? toolModels.view?.byTool.get(openTool) : undefined;
+  const openPref = modelKey ? toolModels.view?.byTool.get(modelKey) : undefined;
   /**
    * The catalogue, read as soon as the account can be.
    *
@@ -672,7 +685,7 @@ export function NewUiApp() {
    *  the life of the session, against the same address-keyed throttle bucket
    *  the activity read below is careful not to spend on a timer. Opening the
    *  pane re-reads anyway, because this flips and `reload` re-runs. */
-  const credits = useCredits(canRead, credential, openTool !== null);
+  const credits = useCredits(canRead, credential, openTool !== null || modelKey !== null);
 
   /**
    * What the open app is set to, or null when we do not know.
@@ -709,7 +722,7 @@ export function NewUiApp() {
    * only the card - leads with the model it actually starts on: a user who
    * picked the second model of the set in the tool's own picker sees that one.
    */
-  const openConfigured = openTool ? toolModels.view?.configured.get(openTool) : undefined;
+  const openConfigured = modelKey ? toolModels.view?.configured.get(modelKey) : undefined;
   const configuredModel =
     openConfigured?.state === "applied" ? openConfigured.model : null;
   const cardModelIds =
@@ -725,18 +738,24 @@ export function NewUiApp() {
     currentInstallId,
     credential,
   );
-  /** Whether the pane's feed covers more than its config tool, so its rows are
-   *  not that tool's own: the section reads a client set. */
+  /** Whether the pane's feed covers more than the model card's own sender, so
+   *  its rows are not all that sender's: the Claude Desktop pane reads claude.ai
+   *  beside the app, and the ChatGPT pane the app and website beside Codex. */
   const sectionWide =
-    openTool !== null && view.kind === "app" && SECTION_CLIENTS[view.slug] !== undefined;
+    modelKey !== null &&
+    openClients !== null &&
+    !(openClients.length === 1 && openClients[0] === modelKey);
   /**
-   * The config tool's own newest requests, for the Gate model warning only.
+   * The model card's own sender's newest requests, for the Gate model warning
+   * only.
    *
-   * A Gate model is written into the tool's config, so whether it is failing is
-   * a question about that tool's traffic alone. The section feed mixes in the
-   * desktop app and the website, whose rows say nothing about the choice and do
-   * not say which app sent them: a failing claude.ai chat would raise the
-   * warning over Claude Code, and its successes would hide Claude Code failing.
+   * Whether a Gate model is failing is a question about the traffic it serves.
+   * The section feed mixes in the website (and, on ChatGPT, the desktop app),
+   * whose rows say nothing about the choice: a failing claude.ai chat would
+   * raise the warning over Claude Desktop's Code tab, and its successes would
+   * hide the Code tab failing. Claude Desktop's own rows are still wider than
+   * its Code tab - the app's other model calls are stamped the same - which is
+   * as close as the feed's names get.
    * So this reads page one for the tool, and only while there is a Gate model to
    * warn about and the section feed is not already exactly this.
    *
@@ -748,10 +767,9 @@ export function NewUiApp() {
   const modelFeed = useToolEvents(
     canRead &&
       sectionWide &&
-      GATE_MODEL_TOOLS.has(openTool) &&
       openPref?.source === "gate" &&
       machineKnown,
-    openTool === null ? null : [openTool],
+    modelKey === null ? null : [modelKey],
     currentInstallId,
     credential,
   );
@@ -767,7 +785,7 @@ export function NewUiApp() {
    * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
    * better information. The Overview's org-wide read refreshes on any of it;
    * the open pane's reads only when one of its senders is among them, so Codex
-   * traffic does not re-read the Claude pane and claude.ai traffic does.
+   * traffic does not re-read the Claude Desktop pane and claude.ai traffic does.
    * Each hook's `reload` is a no-op while that hook is disabled.
    */
   const refreshActivity = (tools: (string | null)[] | null) => {
@@ -782,7 +800,7 @@ export function NewUiApp() {
       toolActivity.reload();
       toolEvents.reload();
     }
-    if (openTool !== null && (tools === null || tools.includes(openTool))) modelFeed.reload();
+    if (modelKey !== null && (tools === null || tools.includes(modelKey))) modelFeed.reload();
   };
   // Latest-callback ref so the listener registers once: the hooks hand back a
   // fresh `reload` closure every render, so there is nothing stable to memoise
@@ -872,7 +890,7 @@ export function NewUiApp() {
   // wrong app for a refusal that had nothing to do with it.
   useEffect(() => {
     setModelError(null);
-  }, [openTool, credential]);
+  }, [modelKey, credential]);
 
   /**
    * The feed's rows, each with somewhere to go.
@@ -1468,10 +1486,10 @@ export function NewUiApp() {
       modelIds: string[],
       acknowledgePaidUse = false,
     ) => {
-      if (!openTool) return;
+      if (!modelKey) return;
       setModelBusy(true);
       setModelError(null);
-      const tool = openTool;
+      const tool = modelKey;
       const { failure, applied } = await toolModels.save(
         tool,
         source,
@@ -1487,7 +1505,7 @@ export function NewUiApp() {
       // disk moved, so there is nothing to restart for.
       else if (applied) await runningApps.offerAfterChange([tool]);
     },
-    [openTool, toolModels, runningApps],
+    [modelKey, toolModels, runningApps],
   );
 
   /**
@@ -1801,6 +1819,14 @@ export function NewUiApp() {
     () => sidebarGroups.filter((g) => !g.notInstalled).flatMap((g) => g.apps),
     [sidebarGroups],
   );
+  /** The name the model card's dialogs use: the tool's own, or the rail row's
+   *  for Claude Desktop, which is not a tool and so is not in `apps`. */
+  const modelAppName =
+    modelKey === DESKTOP_APP_MODEL_KEY
+      ? (appFor(railApps, "claude-desktop")?.name ?? "Claude Desktop")
+      : modelKey
+        ? (appFor(apps, modelKey)?.name ?? null)
+        : null;
 
   /**
    * A pane whose row is no longer listed goes back to Overview.
@@ -3241,10 +3267,13 @@ export function NewUiApp() {
             // The tool's name, resolved through the section: a model choice is
             // per tool and `apps` is keyed that way, so the pane's own section
             // id found nothing here and every dialog read "This app".
-            appName={appFor(apps, openTool ?? "")?.name ?? "This app"}
+            appName={modelAppName ?? "This app"}
             // The slug, not the display name: compatibility is keyed on the tool
             // the preferences use, and two apps can share a name.
-            appSlug={openTool}
+            appSlug={modelKey}
+            // One model for Claude Desktop, which applies on the click; a set
+            // for every tool, confirmed with Apply (`maxGateModels`).
+            multiple={modelLimit > 1}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}
@@ -3259,7 +3288,7 @@ export function NewUiApp() {
           />
         ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
-            app={{ name: appFor(apps, openTool ?? "")?.name ?? "this app" }}
+            app={{ name: modelAppName ?? "this app" }}
             // Only meaningful when there is one model to attribute; the dialog
             // drops it for a set.
             vendor={vendorFromModelId(modelOverlay.modelIds[0]) ?? modelOverlay.modelIds[0]}
@@ -3464,18 +3493,17 @@ export function NewUiApp() {
             (!installsResolved ||
               (toolActivity.view === null && toolActivity.failure === null))
           }
-          // Only a tool whose config Gate can write a model into gets the
-          // card: see `GATE_MODEL_TOOLS` and `AppPane`'s `modelChoice`. That
-          // list is not the rail's `coversAllProviders` - Hermes is
-          // multi-provider there and still takes a Gate model set here.
-          // A pane where `openTool` is null never gets the card, and for
-          // a stricter reason than the other tools left out: the choice could
-          // not take effect at all. A Gate model choice is written into the
-          // tool's own config, and a chat domain is a browser, which has no
-          // config Gate writes. Offering the choice let the user pick a Gate
-          // model, accept the paid confirmation, and be served their own model
-          // anyway.
-          {...(openTool === null || !GATE_MODEL_TOOLS.has(openTool)
+          // The card is for whatever `modelKey` names: a tool whose config
+          // Gate writes a model into (see `GATE_MODEL_TOOLS` - not the rail's
+          // `coversAllProviders`, since Hermes is multi-provider there and still
+          // takes a Gate model set here), or Claude Desktop, whose one model the
+          // engine applies to its Code tab per request. Every other pane gets
+          // none, for a stricter reason than "not studied": the choice could
+          // not take effect. A chat domain is a browser, which has no config
+          // Gate writes and no request the engine moves, so offering it let the
+          // user pick a Gate model, accept the paid confirmation, and be served
+          // their own model anyway.
+          {...(modelKey === null
             ? {}
             : {
                 modelChoice: openModelChoice,
@@ -3507,13 +3535,13 @@ export function NewUiApp() {
                 // no longer holds a Gate model and the card moved to App
                 // default on its own. Said once, held until dismissed or the
                 // next save for this tool (`useToolModels`).
-                modelNotice: toolModels.leftGateModels.has(openTool)
+                modelNotice: toolModels.leftGateModels.has(modelKey)
                   ? leftGateModelsNotice(
-                      appFor(apps, openTool)?.name ?? "This app",
-                      toolModels.leftGateModels.get(openTool) ?? null,
+                      modelAppName ?? "This app",
+                      toolModels.leftGateModels.get(modelKey) ?? null,
                     )
                   : null,
-                onDismissModelNotice: () => toolModels.dismissLeft(openTool),
+                onDismissModelNotice: () => toolModels.dismissLeft(modelKey),
                 // Switching to a Gate model spends PAYG credits, so it is
                 // confirmed rather than taken on a radio click. Switching back
                 // is not - and it keeps the chosen model, which is the whole
@@ -3523,7 +3551,7 @@ export function NewUiApp() {
                   // `stepForChoice` keeps the whole set under App default:
                   // switching back is not unchoosing, and keeping only the
                   // first lost the rest on a round trip.
-                  const step = stepForChoice(choice, openModelIds);
+                  const step = stepForChoice(choice, openModelIds, modelLimit);
                   if (step.kind === "activate") activateGateModel(step.modelIds);
                   // Nothing to switch *to* yet, so the picker comes first:
                   // Gate cannot serve a model nobody enabled.

@@ -86,9 +86,8 @@ export function dashboardOrigin(gatewayBaseUrl: string | null | undefined): stri
  * `clients` is the pane's own reading (`paneClients` in `groups.ts`), the same
  * list its counters, chart and feed are read with, so the dashboard list opens
  * on exactly what the card above the button showed. It used to be worked out
- * separately, and the two disagreed: a Claude pane with Claude Code installed
- * showed the desktop app's and claude.ai's rows and linked to Claude Code's
- * alone. `null` there is a pane with no per-app reading, which has no name to
+ * separately, and the two disagreed: a section pane with its CLI installed
+ * showed the desktop app's and website's rows and linked to the CLI's alone. `null` there is a pane with no per-app reading, which has no name to
  * filter on.
  *
  * None at all while the gateway does not know this machine: the link is scoped

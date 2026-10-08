@@ -170,12 +170,13 @@ describe("every mark's geometry", () => {
  */
 describe("appProviderMarkFor", () => {
   it("gives the app's vendor mark for a section with one vendor behind it", () => {
-    expect(appProviderMarkFor("claude")).toBeTruthy();
+    expect(appProviderMarkFor("claude-desktop")).toBeTruthy();
+    expect(appProviderMarkFor("claude-code")).toBeTruthy();
     expect(appProviderMarkFor("chatgpt")).toBeTruthy();
   });
 
   it("draws Anthropic's own colour rather than inheriting the tile's", () => {
-    const { container } = render(<>{appProviderMarkFor("claude")}</>);
+    const { container } = render(<>{appProviderMarkFor("claude-desktop")}</>);
 
     // The value CLAUDE.md records for `anthropic 2`, and the one the frame
     // draws. A mark that inherited would carry no fill of its own.

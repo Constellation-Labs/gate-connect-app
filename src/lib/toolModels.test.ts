@@ -8,6 +8,9 @@ import {
   leftGateModelsNotice,
   modelLabelsFor,
   stepForChoice,
+  gateModelKey,
+  maxGateModels,
+  MAX_GATE_MODELS,
 } from "./toolModels";
 import type { ToolModels } from "./api";
 
@@ -563,3 +566,33 @@ describe("configured problems", () => {
   });
 });
 
+
+describe("gateModelKey", () => {
+  it("is the tool on a tool's pane, and the app's own key on Claude Desktop's", () => {
+    expect(gateModelKey("claude-code", "claude-code")).toBe("claude-code");
+    expect(gateModelKey("chatgpt", "codex")).toBe("codex");
+    // No config tool behind it: the engine applies the app's model itself.
+    expect(gateModelKey("claude-desktop", null)).toBe("claude-desktop");
+    // A tool Gate writes no model for, and a pane with nothing behind it.
+    expect(gateModelKey("opencode", "opencode")).toBeNull();
+    expect(gateModelKey("openai-api", null)).toBeNull();
+  });
+});
+
+describe("maxGateModels", () => {
+  it("allows one model for Claude Desktop and a set for every tool", () => {
+    expect(maxGateModels("claude-desktop")).toBe(1);
+    expect(maxGateModels("claude-code")).toBe(MAX_GATE_MODELS);
+    expect(maxGateModels(null)).toBe(MAX_GATE_MODELS);
+  });
+
+  it("sends a remembered set past the app's limit to the picker", () => {
+    expect(stepForChoice("gate", ["a/one", "b/two"], maxGateModels("claude-desktop"))).toEqual({
+      kind: "pick",
+    });
+    expect(stepForChoice("gate", ["a/one"], maxGateModels("claude-desktop"))).toEqual({
+      kind: "activate",
+      modelIds: ["a/one"],
+    });
+  });
+});

@@ -719,8 +719,9 @@ export interface GateModelOption {
  * the *multiple* mode rather than at this one - everything around the control
  * still comes from it.
  *
- * `multiple={false}` has no call site yet: nothing in the backend says which
- * tools are single-model, since `model_ids` is a list for every tool.
+ * `multiple={false}` is Claude Desktop's: the app takes one Gate model, which
+ * the backend enforces too (`tool_models::choose_for_desktop_app`). Every tool
+ * takes a set.
  */
 export function ModelPickerDialog({
   appName,

@@ -97,7 +97,7 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
 
     await expect(
       app.page.getByRole("heading", { name: /Trust the Gate certificate/ }),
@@ -132,7 +132,7 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
 
     await expect(
       app.page.getByText("Windows will show a security warning: that’s expected, choose Yes."),
@@ -156,7 +156,7 @@ test.describe("new UI routing", () => {
     // The switch directly, not `routeApp`, to keep this explicit about the
     // direction: this one is turning the app OFF. That nothing is asked here
     // is the assertion below.
-    await (await app.appSwitch("Claude")).click();
+    await (await app.appSwitch("Claude Code")).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
     expect(await callsFor(app.page, "disconnect_tool")).toHaveLength(1);
@@ -182,11 +182,11 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
 
     // On the app's pane, as the single-app alert (`1426:35788`), and not in
     // the window-wide banner: the fault is one app's config.
-    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await app.page.getByRole("button", { name: "Claude Code" }).first().click();
     await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
     await expect(app.page.getByRole("alert")).toHaveCount(0);
   });
@@ -210,9 +210,9 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
     await expect(app.page.getByRole("alert")).toContainText("Turn on “Route through Gate” first");
-    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await app.page.getByRole("button", { name: "Claude Code" }).first().click();
     await expect(app.page.getByRole("button", { name: "Dismiss alert" })).toHaveCount(0);
     // Nor the row's failed-write card: the config was never the problem.
     await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
@@ -233,7 +233,7 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
     await app.page.getByRole("button", { name: "Overview" }).click();
 
     await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
@@ -816,7 +816,7 @@ test.describe("new UI sidebar rail", () => {
     // a test rather than a deletion because this is a deliberate behaviour
     // change, and it should fail loudly if somebody reinstates the gate without
     // deciding to.
-    await (await app.appSwitch("Claude")).click();
+    await (await app.appSwitch("Claude Desktop")).click();
 
     await expect
       .poll(async () =>
@@ -829,7 +829,7 @@ test.describe("new UI sidebar rail", () => {
     // Settled on the positive fact above first: an empty dialog count read
     // straight after a click passes while the click is still in flight.
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    await expect(await app.appSwitch("Claude")).toHaveAttribute("aria-checked", "true");
+    await expect(await app.appSwitch("Claude Desktop")).toHaveAttribute("aria-checked", "true");
   });
 
   test("one certificate question for a whole section, not one per surface", async ({
@@ -842,7 +842,7 @@ test.describe("new UI sidebar rail", () => {
     // person saying no and being asked again about the same certificate. The
     // decline half is the test above; this is the accept half, and what it pins
     // is that one answer covers the cascade.
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Desktop");
     await app.page.getByRole("button", { name: "Trust certificate" }).click();
 
     await expect
@@ -883,10 +883,10 @@ test.describe("new UI sidebar rail", () => {
   test("an app pane with no installed CLI still reads its section", async ({
     boot,
   }) => {
-    // The Claude pane reads Claude Code, the desktop app and claude.ai
-    // together (`SECTION_CLIENTS`), so a machine with no Claude Code still has
-    // a per-app reading: the desktop app and the website are named apart by
-    // the engine. Its cards must not send the reader to the Overview; the
+    // The Claude Desktop pane reads the desktop app and claude.ai together
+    // (`SECTION_CLIENTS`), so a machine with no Claude Code still has a
+    // per-app reading: the desktop app and the website are named apart by the
+    // engine. Its cards must not send the reader to the Overview; the
     // OpenAI API pane, whose traffic carries no app name, still does (see
     // "a row with nothing attributable names where its traffic is counted").
     //
@@ -897,7 +897,7 @@ test.describe("new UI sidebar rail", () => {
       tools: [],
     });
 
-    await app.openApp("Claude");
+    await app.openApp("Claude Desktop");
     // The fixture's machine is one the gateway has not seen yet, so the feed's
     // empty state is what a pane with a reading draws here. The caveat would
     // have been drawn in its place.
@@ -913,7 +913,7 @@ test.describe("new UI sidebar rail", () => {
     // request. No per-machine read is attempted, so none can have failed.
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    await app.openApp("Claude");
+    await app.openApp("Claude Code");
 
     await expect(
       app.page.getByText("No messages sent in the last 24hrs"),
@@ -936,7 +936,7 @@ test.describe("new UI sidebar rail", () => {
       },
     });
 
-    await app.openApp("Claude");
+    await app.openApp("Claude Code");
 
     await expect(app.page.getByText("Couldn't read this app's activity")).toBeVisible();
     await expect(

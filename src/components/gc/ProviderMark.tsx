@@ -410,7 +410,8 @@ export function providerMarkFor(vendor: string, size?: number): JSX.Element | un
  * files, and `lib/groups.ts` owes nothing to a component.
  */
 const VENDOR_BY_SECTION: Record<string, string> = {
-  claude: "anthropic",
+  "claude-desktop": "anthropic",
+  "claude-code": "anthropic",
   chatgpt: "openai",
 };
 

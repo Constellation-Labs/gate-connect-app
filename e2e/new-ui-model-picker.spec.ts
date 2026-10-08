@@ -54,13 +54,12 @@ const GATE_MODELS_HEADING = /^Current Gate models$/;
 /**
  * Open one app's pane, which is where model selection lives.
  *
- * By the section's name, not the tool's: the rail draws one row per app now, so
- * the button is "Claude" and the `claude-code` tool behind it is what the pane
- * resolves to (`sectionMemberKeys` in `NewUiApp`). The tool's own `name` is no
- * longer drawn anywhere the rail can be clicked.
+ * By the section's name, not the tool's: the rail draws one row per app, so
+ * the button is "Claude Code" and the `claude-code` tool behind it is what the
+ * pane resolves to (`sectionMemberKeys` in `NewUiApp`).
  */
 async function openApp(app: { page: import("@playwright/test").Page }) {
-  await app.page.getByRole("button", { name: "Claude" }).first().click();
+  await app.page.getByRole("button", { name: "Claude Code" }).first().click();
 }
 
 /**
@@ -1077,5 +1076,37 @@ test.describe("new UI Gate models in the tool's config", () => {
     await app.page.getByRole("button", { name: /^Hermes/ }).first().click();
 
     await expect(app.page.getByRole("heading", { name: "Model selection" })).toBeVisible();
+  });
+});
+
+/**
+ * Claude Desktop takes one Gate model, which the engine applies to the app's
+ * Code tab per request. So its picker is the single-select one: no checkboxes,
+ * no Apply, and a click on a model is the choice. Claude Code's beside it keeps
+ * the set (every test above).
+ */
+test.describe("new UI model picker on Claude Desktop", () => {
+  test("picks one model on a click and stores it under the app", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue } });
+    await app.page.getByRole("button", { name: "Claude Desktop" }).first().click();
+
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(app.page.getByRole("heading", { name: "Choose a Gate model" })).toBeVisible();
+    await expect(dialog.getByRole("checkbox")).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: "Apply selections" })).toHaveCount(0);
+
+    await dialog.getByRole("radio", { name: catalogue[0].id }).click();
+    await expect(
+      app.page.getByRole("heading", { name: /Use a Gate model for Claude Desktop\?/ }),
+    ).toBeVisible();
+    await app.page.getByRole("button", { name: "Use Gate credits" }).click();
+
+    await expect
+      .poll(async () => (await app.state()).toolModels.choices["claude-desktop"])
+      .toEqual({ source: "gate", model_ids: [catalogue[0].id] });
+    // Claude Code's own choice is untouched: the two are separate apps now.
+    expect((await app.state()).toolModels.choices["claude-code"]).toBeUndefined();
   });
 });

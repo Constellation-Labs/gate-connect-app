@@ -21,7 +21,7 @@ describe("the app pane header's mark", () => {
 
     fireEvent.click(railRow);
 
-    const header = (await screen.findByRole("heading", { level: 1, name: "Claude" })).closest(
+    const header = (await screen.findByRole("heading", { level: 1, name: "Claude Desktop" })).closest(
       "header",
     )!;
     const mark = header.querySelector("span[aria-hidden] svg")!;

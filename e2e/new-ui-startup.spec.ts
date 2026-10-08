@@ -208,7 +208,7 @@ test.describe("new UI: the certificate gate in front of a connect", () => {
       failures: { proxy_trust_ca: "failed to trust the CA: User canceled. (-128)" },
     });
 
-    const route = await app.appSwitch("Claude");
+    const route = await app.appSwitch("Claude Code");
     await route.click();
     await app.page.getByRole("button", { name: "Trust certificate" }).click();
 
@@ -224,7 +224,7 @@ test.describe("new UI: the certificate gate in front of a connect", () => {
   test("Not now gives up without asking the OS, and without an error", async ({ boot }) => {
     const app = await boot(untrusted);
 
-    const route = await app.appSwitch("Claude");
+    const route = await app.appSwitch("Claude Code");
     await route.click();
     await expect(
       app.page.getByRole("heading", { name: "Trust the Gate certificate?" }),
@@ -241,7 +241,7 @@ test.describe("new UI: the certificate gate in front of a connect", () => {
   test("an already-trusted certificate raises no prompt", async ({ boot }) => {
     const app = await boot({ ...untrusted, proxy: { running: true, ca_trusted: true } });
 
-    const route = await app.appSwitch("Claude");
+    const route = await app.appSwitch("Claude Code");
     await route.click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toEqual({ slug: "claude-code" });

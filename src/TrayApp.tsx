@@ -625,7 +625,7 @@ export function TrayApp() {
    * The messages figure per row, off the held readings and refreshed on each look.
    *
    * A section in `SECTION_CLIENTS` reads its whole set, the same reading the
-   * window's pane takes, so the Claude row and the Claude pane count the same
+   * window's pane takes, so the Claude Desktop row and pane count the same
    * traffic. Its config tool is not read on its own as well: that row is the
    * section's, and a second read per open is the fan-out `useToolMessages`
    * exists to avoid. Every other installed tool reads its own slug. A section
@@ -760,8 +760,8 @@ export function TrayApp() {
   // route someone's signed-in session without ever being asked.
   const trayGroups = useMemo<SidebarGroup[]>(() => {
     // Before the ledger is built, rows are tools, so each carries its own
-    // tool's figure: a "Claude Code" row is not the Claude section, and drawing
-    // the section's count under it would name the wrong subject. `messageKeys`
+    // tool's figure: a tool row is not its section, and drawing a section's
+    // count under it would name the wrong subject. `messageKeys`
     // reads the tool alone for exactly this case.
     if (groups.length === 0) {
       return apps.length > 0 ? [{ id: "all", label: "", apps }] : [];

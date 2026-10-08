@@ -1125,7 +1125,7 @@ impl HttpHandler for GateHandler {
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
         // Claude Code in the desktop app's Code tab, while the user has put
-        // Claude Code on Gate models. See `code_tab_gate_models`.
+        // Claude Desktop on a Gate model. See `code_tab_gate_models`.
         if self.intercepting() && self.peer_allowed(ctx) {
             if let Some(enabled) = code_tab_gate_models(&req, host.as_deref(), &path) {
                 let default = enabled[0].clone();
@@ -1712,7 +1712,12 @@ impl HttpHandler for GateHandler {
 }
 
 /// The enabled Gate models to serve this request on, the default first, when it is Claude Code in
-/// the desktop app's Code tab and the user has put Claude Code on Gate models.
+/// the desktop app's Code tab and the user has put Claude Desktop on a Gate model.
+///
+/// Claude Desktop's choice, not Claude Code's: the Code tab is part of the app
+/// in the rail, and the app has its own single Gate model
+/// ([`crate::tool_models::choose_for_desktop_app`]). The terminal CLI's set is
+/// written into its own config and never read here.
 ///
 /// **The one place Gate models substitute rather than refuse.** Everywhere else
 /// the model lives in the tool's own config and the route refuses anything
@@ -1751,7 +1756,7 @@ fn code_tab_gate_models_with<T>(
     if !crate::proxy::is_desktop_code_tab(ua) {
         return None;
     }
-    served_for(crate::registry::ToolId::ClaudeCode.slug()).filter(|set| !set.is_empty())
+    served_for(crate::tool_models::DESKTOP_APP).filter(|set| !set.is_empty())
 }
 
 fn code_tab_gate_models<T>(
@@ -1762,12 +1767,13 @@ fn code_tab_gate_models<T>(
     code_tab_gate_models_with(req, host, path, crate::preferences::gate_models_served_for)
 }
 
-/// Point a Code tab request at the relay's Gate models route for Claude Code,
-/// with `model` set to the first of `enabled` unless it already names one of the set.
+/// Point a Code tab request at the relay's Gate models route for Claude
+/// Desktop, with `model` set to the first of `enabled` unless it already names
+/// one of the set.
 ///
-/// The relay does the rest exactly as it does for the CLI: it checks the model
-/// against the enabled set, replaces the tool's own credential with Gate's, and
-/// attributes the request to Claude Code by the route's tool marker. The body is
+/// The relay does the rest exactly as it does for a tool: it checks the model
+/// against the enabled set, replaces the app's own credential with Gate's, and
+/// attributes the request to Claude Desktop by the route's marker. The body is
 /// buffered for the swap; these are JSON requests, and the relay buffers them
 /// again anyway.
 async fn onto_gate_models_route(
@@ -1784,10 +1790,8 @@ async fn onto_gate_models_route(
         .to_bytes();
     let default = enabled.first().context("no Gate model is enabled")?;
     let bytes = with_gate_model(&bytes, default, enabled).unwrap_or(bytes);
-    let root = crate::proxy::gate_served::relay_root_url(
-        &crate::proxy::relay::base_url(relay_port),
-        crate::registry::ToolId::ClaudeCode,
-    );
+    let root =
+        crate::proxy::gate_served::desktop_app_root_url(&crate::proxy::relay::base_url(relay_port));
     let pq = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     parts.uri = format!("{root}{pq}")
         .parse()
@@ -3220,8 +3224,16 @@ mod tests {
 
     #[test]
     fn only_a_code_tab_turn_on_gate_models_is_moved() {
-        let on = |_: &str| Some(vec!["deepseek/deepseek-flash-latest".to_string()]);
-        let off = |_: &str| None;
+        // Claude Desktop's model, and only that: Claude Code's set is the
+        // terminal CLI's, written into its own config.
+        let on = |slug: &str| {
+            (slug == crate::tool_models::DESKTOP_APP)
+                .then(|| vec!["deepseek/deepseek-flash-latest".to_string()])
+        };
+        let off = |slug: &str| {
+            (slug == crate::registry::ToolId::ClaudeCode.slug())
+                .then(|| vec!["deepseek/deepseek-flash-latest".to_string()])
+        };
         let host = Some("api.anthropic.com");
         let moved =
             |req: &Request<()>, path: &str, served: &dyn Fn(&str) -> Option<Vec<String>>| {
@@ -3236,7 +3248,7 @@ mod tests {
             );
             assert!(
                 moved(&code_tab_turn(path, CODE_TAB_UA), path, &off).is_none(),
-                "{path}: not on Gate models"
+                "{path}: Claude Desktop is not on a Gate model"
             );
         }
         // The terminal CLI reaches Gate models through its own base URL, and
@@ -3288,7 +3300,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_moved_turn_lands_on_claude_codes_gate_models_route() {
+    async fn a_moved_turn_lands_on_claude_desktops_gate_models_route() {
         let req = Request::builder()
             .method("POST")
             .uri("https://api.anthropic.com/v1/messages?beta=true")
@@ -3304,7 +3316,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             moved.uri().to_string(),
-            "http://127.0.0.1:47106/__gate/t/claude-code/gate/v1/messages?beta=true"
+            "http://127.0.0.1:47106/__gate/t/claude-desktop/gate/v1/messages?beta=true"
         );
         use http_body_util::BodyExt;
         let len = moved.headers()["content-length"].clone();

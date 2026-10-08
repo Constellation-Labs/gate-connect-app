@@ -86,6 +86,22 @@ function sessionDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
 
 const ON = { proxyOn: true, caTrusted: true };
 
+/** The ChatGPT app's chat surface as the catalog ships it: additive, so it sits
+ *  in the ChatGPT / Codex section beside Codex without governing its switch.
+ *  The section tests use it since the Claude split left that section the only
+ *  one with a config tool and a domain under one row. */
+function chatgptApps(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
+  return domain({
+    slug: "chatgpt-apps",
+    display_name: "Chat",
+    hosts: ["chatgpt.com"],
+    upstream_url: "https://chatgpt.com",
+    client: "chatgpt",
+    credential: "additive",
+    ...overrides,
+  });
+}
+
 /** A sweep that says these slugs are routing.
  *
  * Every test that expects a config tool to read `routed` has to supply one now:
@@ -111,21 +127,19 @@ function sweep(...on: string[]): { verdicts: Map<string, Verdict> } {
 }
 describe("buildGroups", () => {
   it("draws one row per app, not one per routable surface", () => {
-    // The shape this file exists to pin. Claude Code's CLI, the desktop app's
-    // API surface and its chat surface are three mechanisms and one app, and
-    // the user gets one switch.
+    // The shape this file exists to pin. The desktop app's API surface and its
+    // chat surface are two mechanisms and one app, and the user gets one
+    // switch. Claude Code is a different app - the terminal CLI - and gets its
+    // own row, as the Anthropic band's frame draws them.
     const groups = buildGroups(
       [tool("claude-code", "CLI", { kind: "connected" })],
       [domain(), sessionDomain()],
       ON,
     );
-    expect(groups.map((g) => g.name)).toEqual(["Claude"]);
-    expect(groups[0].members.map((m) => m.key)).toEqual([
-      "claude-code",
-      "anthropic",
-      "claude-web",
-    ]);
-    expect(groups[0].band).toBe("anthropic");
+    expect(groups.map((g) => g.name)).toEqual(["Claude Desktop", "Claude Code"]);
+    expect(groups[0].members.map((m) => m.key)).toEqual(["anthropic", "claude-web"]);
+    expect(groups[1].members.map((m) => m.key)).toEqual(["claude-code"]);
+    expect(groups.map((g) => g.band)).toEqual(["anthropic", "anthropic"]);
   });
 
   it("puts Codex and the ChatGPT app's surfaces on one switch", () => {
@@ -333,26 +347,31 @@ describe("sectionStatus", () => {
     // A section spans mechanisms, so one surface can be drifted while another
     // routes. Reporting "Protected" over that is the claim principle 6
     // forbids.
-    const [claude] = buildGroups(
-      [tool("claude-code", "CLI", { kind: "drifted", reason: "r" })],
-      [domain()],
+    const [chatgpt] = buildGroups(
+      [tool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex")],
+      [chatgptApps()],
       ON,
     );
     const drifted = { kind: "not-protected", detail: "Config drifted" };
-    const apps = new Map([["claude-code", { status: drifted } as never]]);
-    expect(sectionStatus(claude, apps)).toEqual(drifted);
+    const apps = new Map([["codex", { status: drifted } as never]]);
+    expect(sectionStatus(chatgpt, apps)).toEqual(drifted);
   });
 
   it("says partly protected as the reason, a state a per-surface ledger never had to describe", () => {
-    const [claude] = buildGroups(
+    // No drawn section has two members that govern its switch since Claude
+    // Code got its own row (2026-10-08): the one that did was Claude Code plus
+    // the desktop app's API host. The rule is still there, so it is pinned on
+    // those two members joined into one hand-built section.
+    const [desktop, code] = buildGroups(
       [tool("claude-code", "CLI", { kind: "connected" })],
       [domain({ enabled: false })],
       { ...ON, ...sweep("claude-code") },
     );
+    const joined = { ...code, members: [...code.members, ...desktop.members] };
     const apps = new Map([["claude-code", { status: { kind: "protected" } } as never]]);
     // The count, not the adverb: "partly" does not say how much of the app is
     // covered.
-    expect(sectionStatus(claude, apps)).toEqual({
+    expect(sectionStatus(joined, apps)).toEqual({
       kind: "not-protected",
       detail: "Partly protected: 1 of 2",
     });
@@ -368,32 +387,32 @@ describe("sectionStatus", () => {
    * mixing CLI and On/Off ... the type cannot live in the same label."
    */
   it("names the restart and nothing else", () => {
-    const [claude] = buildGroups(
-      [tool("claude-code", "CLI", { kind: "connected" })],
-      [domain()],
+    const [chatgpt] = buildGroups(
+      [tool("codex", "Codex", { kind: "connected" }, "codex")],
+      [chatgptApps()],
       ON,
     );
     const reopen = { kind: "not-protected", detail: "Reopen to finish" };
-    const apps = new Map([["claude-code", { status: reopen } as never]]);
+    const apps = new Map([["codex", { status: reopen } as never]]);
 
-    expect(sectionStatus(claude, apps)).toEqual(reopen);
+    expect(sectionStatus(chatgpt, apps)).toEqual(reopen);
   });
 
   it("does not call a section protected when its tool's provider is not inspected", () => {
     // On the base of #360 this read "Protected": `not-inspected` was not an
     // exception, so a section whose only config member tunnelled past Gate
     // fell through to the all-routed rule.
-    const [claude] = buildGroups(
-      [tool("claude-code", "CLI", { kind: "connected" })],
-      [domain()],
+    const [chatgpt] = buildGroups(
+      [tool("codex", "Codex", { kind: "connected" }, "codex")],
+      [chatgptApps()],
       { ...ON, ...sweep("claude-code") },
     );
     const uninspected = {
       kind: "not-protected",
       detail: "Routed, not inspected: bedrock-runtime.us-east-1.amazonaws.com",
     };
-    const apps = new Map([["claude-code", { status: uninspected } as never]]);
-    expect(sectionStatus(claude, apps)).toEqual(uninspected);
+    const apps = new Map([["codex", { status: uninspected } as never]]);
+    expect(sectionStatus(chatgpt, apps)).toEqual(uninspected);
   });
 
   it("reads a switched-on domain the certificate blocks as Not protected, not Not routed", () => {
@@ -482,32 +501,33 @@ describe("member hints", () => {
 
 describe("groupSummary", () => {
   it("counts, and names a single failure", () => {
-    // Claude Code and the `anthropic` host, which is a group with both kinds
-    // of member in it. OpenCode and its Zen / Go host were that pair until the
-    // domain became tool-managed.
+    // Codex and the ChatGPT app's chat host, which is a group with both kinds
+    // of member in it. Claude Code and the `anthropic` host were that pair
+    // until Claude Code got its own row, and OpenCode and its Zen / Go host
+    // before the domain became tool-managed.
     const [group] = buildGroups(
-      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
-      [domain()],
+      [tool("codex", "Codex", { kind: "error", message: "m" }, "codex")],
+      [chatgptApps()],
       ON,
     );
     expect(groupSummary(group)).toEqual({
       count: "1 of 2 routing",
-      exception: "Claude Code failed",
+      exception: "Codex failed",
       kind: "error",
     });
   });
 
   it("aggregates several failures rather than naming one", () => {
-    // One section with two failing members: Claude Code and its `anthropic`
+    // One section with two failing members: Codex and the ChatGPT app's chat
     // host. The environment channel is its own section now, so pairing those
     // two would be two summaries rather than one.
     const [group] = buildGroups(
-      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
-      [domain({ enabled: false })],
+      [tool("codex", "Codex", { kind: "error", message: "m" }, "codex")],
+      [chatgptApps({ enabled: false })],
       { proxyOn: false, caTrusted: true },
     );
     expect(group.members).toHaveLength(2);
-    expect(groupSummary(group).exception).toBe("Claude Code failed");
+    expect(groupSummary(group).exception).toBe("Codex failed");
   });
 
   it("prefers the certificate over a drifted setup, and reports nothing when all is well", () => {
@@ -981,7 +1001,8 @@ describe("settings-managed members", () => {
  */
 describe("isDeclaredSection", () => {
   it("is true for an id SECTIONS declares", () => {
-    expect(isDeclaredSection("claude")).toBe(true);
+    expect(isDeclaredSection("claude-desktop")).toBe(true);
+    expect(isDeclaredSection("claude-code")).toBe(true);
     expect(isDeclaredSection("openai-api")).toBe(true);
   });
 
@@ -1114,10 +1135,13 @@ describe("notInstalledSections", () => {
       tool("opencode", "OpenCode", { kind: "detected" }, "opencode"),
       tool("claude-code", "CLI", { kind: "not_installed" }),
     ];
-    // Claude keeps its row through the `anthropic` domain, so it is not
-    // missing even though Claude Code is.
+    // Claude Desktop keeps its row through the `anthropic` domain, while Claude
+    // Code - its own row now - is missing like any other single-tool section.
     const groups = buildGroups(tools, [domain()], ON);
-    expect(notInstalledSections(tools, groups)).toEqual([{ id: "hermes", name: "Hermes" }]);
+    expect(notInstalledSections(tools, groups)).toEqual([
+      { id: "claude-code", name: "Claude Code" },
+      { id: "hermes", name: "Hermes" },
+    ]);
   });
 
   it("lists every section whose only member is missing, in section order", () => {
@@ -1162,14 +1186,17 @@ describe("SECTION_CLIENTS", () => {
   });
 
   it("names each section's surfaces as the engine stamps them", () => {
-    expect(SECTION_CLIENTS.claude).toEqual(["claude-code", "claude-desktop", "claude-web"]);
+    // The Code tab is in `claude-desktop`: the engine stamps it as the app.
+    expect(SECTION_CLIENTS["claude-desktop"]).toEqual(["claude-desktop", "claude-web"]);
+    expect(SECTION_CLIENTS["claude-code"]).toBeUndefined();
     expect(SECTION_CLIENTS.chatgpt).toEqual(["codex", "chatgpt", "chatgpt-web"]);
     expect(SECTION_CLIENTS["openai-api"]).toBeUndefined();
   });
 
   it("falls back to the open config tool, then to nothing", () => {
-    expect(paneClients("claude", null)).toEqual(SECTION_CLIENTS.claude);
-    expect(paneClients("claude", "claude-code")).toEqual(SECTION_CLIENTS.claude);
+    expect(paneClients("claude-desktop", null)).toEqual(SECTION_CLIENTS["claude-desktop"]);
+    expect(paneClients("claude-code", "claude-code")).toEqual(["claude-code"]);
+    expect(paneClients("claude-code", null)).toBeNull();
     expect(paneClients("opencode", "opencode")).toEqual(["opencode"]);
     expect(paneClients("openai-api", null)).toBeNull();
   });

@@ -43,12 +43,26 @@ const CLIENT_PATH: &str = "/v1";
 /// `relay_base` is the relay's origin, `http://127.0.0.1:<port>`, as
 /// [`super::relay::base_url`] builds it.
 pub fn relay_base_url(relay_base: &str, tool: ToolId) -> String {
+    route_url(relay_base, tool.slug())
+}
+
+fn route_url(relay_base: &str, marker: &str) -> String {
     format!(
-        "{}{}{}/{SLUG}{CLIENT_PATH}",
+        "{}{}{marker}/{SLUG}{CLIENT_PATH}",
         relay_base.trim_end_matches('/'),
         super::relay::TOOL_PATH_PREFIX,
-        tool.slug()
     )
+}
+
+/// The route's root for Claude Desktop, which has no config to write it into:
+/// the engine moves the app's Code tab requests here itself
+/// (`code_tab_gate_models` in `engine.rs`). Marked with the app's own client
+/// slug, which is what the relay attributes it to and looks its models up by.
+pub fn desktop_app_root_url(relay_base: &str) -> String {
+    route_url(relay_base, crate::tool_models::DESKTOP_APP)
+        .strip_suffix(CLIENT_PATH)
+        .expect("route_url ends in CLIENT_PATH")
+        .to_string()
 }
 
 /// The same route without its `/v1`, for a tool whose SDK appends the version

@@ -133,11 +133,11 @@ test.describe("new UI app pane", () => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [CLAUDE_CODE] });
 
     // The rail row is the app; the pane it opens is the app's.
-    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await app.page.getByRole("button", { name: "Claude Code" }).first().click();
     // The pane's switch is the section's switch. It used to ask the same
     // question the rail's did before routing a surface the person is signed
     // in to; that dialog is gone (AG-934), so the click is the whole action.
-    await app.page.getByRole("switch", { name: "Route Claude" }).click();
+    await app.page.getByRole("switch", { name: "Route Claude Code" }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -156,12 +156,12 @@ test.describe("new UI app pane", () => {
       ],
     });
 
-    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await app.page.getByRole("button", { name: "Claude Code" }).first().click();
 
     // The drift alert card inside the pane carries its own switch for the same
     // app, reading off - that one is the re-adopt path. This is the header's.
     await expect(
-      app.page.getByRole("switch", { name: "Route Claude" }),
+      app.page.getByRole("switch", { name: "Route Claude Code" }),
     ).toHaveAttribute("aria-checked", "true");
   });
 });

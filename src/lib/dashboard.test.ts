@@ -114,20 +114,26 @@ describe("viewActivityApps", () => {
   it("links a section pane to every sender its card reads, tool installed or not", () => {
     // The card reads the whole section with or without the config tool, so the
     // link does too: otherwise it would drop the desktop app and the website.
-    for (const tool of ["claude-code", null]) {
-      expect(viewActivityApps({ machineKnown: true, clients: paneClients("claude", tool) })).toEqual(
-        SECTION_CLIENTS.claude,
+    for (const tool of ["codex", null]) {
+      expect(viewActivityApps({ machineKnown: true, clients: paneClients("chatgpt", tool) })).toEqual(
+        SECTION_CLIENTS.chatgpt,
       );
     }
-    expect(viewActivityApps({ machineKnown: true, clients: paneClients("chatgpt", "codex") })).toEqual(
-      SECTION_CLIENTS.chatgpt,
-    );
+    // Claude Desktop has no config tool; its Code tab is stamped as the app.
+    expect(viewActivityApps({ machineKnown: true, clients: paneClients("claude-desktop", null) })).toEqual([
+      "claude-desktop",
+      "claude-web",
+    ]);
   });
 
   it("links a tool pane outside any section to that tool", () => {
     expect(viewActivityApps({ machineKnown: true, clients: paneClients("opencode", "opencode") })).toEqual([
       "opencode",
     ]);
+    // Claude Code too, which is its own row: the terminal CLI and nothing else.
+    expect(
+      viewActivityApps({ machineKnown: true, clients: paneClients("claude-code", "claude-code") }),
+    ).toEqual(["claude-code"]);
   });
 
   it("has nothing for a pane with no per-app reading", () => {
@@ -136,6 +142,6 @@ describe("viewActivityApps", () => {
 
   it("has nothing while the gateway does not know this machine", () => {
     // The link is scoped to the install; without one it would be org-wide.
-    expect(viewActivityApps({ machineKnown: false, clients: paneClients("claude", "claude-code") })).toBeNull();
+    expect(viewActivityApps({ machineKnown: false, clients: paneClients("claude-code", "claude-code") })).toBeNull();
   });
 });

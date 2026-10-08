@@ -83,7 +83,7 @@ export const MEMBER_HINTS: Readonly<Record<string, string>> = {
   // too, but through its own route selector rather than this switch, so naming
   // it here would promise something this row does not govern - see
   // `claude_code_route_domain`.
-  anthropic: "The Claude desktop app, Cowork included",
+  anthropic: "The Claude desktop app, its Code tab and Cowork included",
   // "Chats in", not "The": this row is one surface of that app, not the app.
   // The desktop app's model calls are the `anthropic` row sitting directly
   // above it, and a hover naming the whole product on both would say the two
@@ -648,11 +648,21 @@ export const SECTIONS: readonly {
    *  `isProviderEndpoint`. */
   providerEndpoint?: true;
 }[] = [
+  // Two rows, as the Anthropic band's frame draws them: the desktop app (with
+  // its Code tab, Cowork and claude.ai chat) and the terminal CLI. They route
+  // apart and take Gate models apart - one model for the app, a set for the
+  // CLI - so one row could not say which of the two it meant.
   {
-    id: "claude",
-    name: "Claude",
+    id: "claude-desktop",
+    name: "Claude Desktop",
     band: "anthropic",
-    members: ["claude-code", "anthropic", "claude-web"],
+    members: ["anthropic", "claude-web"],
+  },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    band: "anthropic",
+    members: ["claude-code"],
   },
   {
     id: "chatgpt",
@@ -746,11 +756,11 @@ export const SECTIONS: readonly {
  * The catch-all is "Other apps", design's wording rather than the frame's
  * "Other tools" - same answer, same day.
  *
- * **The frame also splits the bundles and this does not, yet.** It draws
- * `Claude Desktop` + `Claude Code` under Anthropic (hence its `1 of 2`) and
- * `Codex` + `OpenAI apps` + `ChatGPT` under OpenAI, where the sections here are
- * still one row each for `claude` and `chatgpt`. Design chose to regroup first
- * and split later, 2026-09-22.
+ * **The frame also splits the bundles, and this has split one of them.** It
+ * draws `Claude Desktop` + `Claude Code` under Anthropic (hence its `1 of 2`),
+ * which is what the sections are since 2026-10-08, and `Codex` + `OpenAI apps`
+ * + `ChatGPT` under OpenAI, which is still one `chatgpt` row. Design chose to
+ * regroup first and split later, 2026-09-22.
  */
 export type Band = "anthropic" | "openai" | "other";
 
@@ -999,8 +1009,10 @@ export function sectionMemberKeys(id: string): readonly string[] {
  * Every sender a section's traffic arrives under, for the sections whose surfaces
  * the engine names apart (`client_tool` in `proxy/mod.rs`).
  *
- * The Claude pane covers Claude Code, the desktop app and claude.ai; the ChatGPT
- * pane covers Codex, the desktop app and chatgpt.com. Each is a name the engine
+ * The Claude Desktop pane covers the desktop app and claude.ai - the app's Code
+ * tab included, which the engine stamps as the app; the ChatGPT pane covers
+ * Codex, the desktop app and chatgpt.com. Claude Code is its own row since the
+ * split and reads its tool's name like any other single-tool section. Each is a name the engine
  * stamps into `x-gate-client`, and the activity reads refuse any other
  * (`activity::feed_clients`).
  *
@@ -1008,7 +1020,7 @@ export function sectionMemberKeys(id: string): readonly string[] {
  * so it is absent here and keeps no feed of its own.
  */
 export const SECTION_CLIENTS: Readonly<Record<string, readonly string[]>> = {
-  claude: ["claude-code", "claude-desktop", "claude-web"],
+  "claude-desktop": ["claude-desktop", "claude-web"],
   chatgpt: ["codex", "chatgpt", "chatgpt-web"],
 };
 
@@ -1071,7 +1083,7 @@ export function notInstalledSections(
  *
  * Not the same question as `NewUiApp`'s `noPaneReading`, which it looks like:
  * that one is "this pane has no sender to read" - no `SECTION_CLIENTS` entry
- * and no installed config tool. A Claude pane on a machine without Claude Code
+ * and no installed config tool. The Claude Desktop pane has no config tool and
  * still reads its section, and Claude Desktop is one app that nothing is
  * pointed at.
  *

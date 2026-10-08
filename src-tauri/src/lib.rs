@@ -1044,6 +1044,9 @@ impl From<gate_connect_core::preferences::ToolModelChoice> for ToolModelChoiceDt
 /// the answer says whether it was: `true` means the file changed and the tool
 /// picks it up on its next session, which is the window's cue to offer the
 /// restart notice.
+///
+/// `tool` may also be `claude-desktop`, which is not a tool and takes one Gate
+/// model ([`gate_connect_core::tool_models::choose_for_desktop_app`]).
 #[tauri::command]
 async fn set_tool_model(
     tool: String,
@@ -1051,31 +1054,47 @@ async fn set_tool_model(
     model_ids: Vec<String>,
     acknowledge_paid_use: bool,
 ) -> Result<bool, String> {
-    // Parsed, not trusted: the slug has to be one this app actually configures,
-    // or the pane would store a choice under a key nothing reads.
-    let Some(tool) = parse_tool(Some(tool))? else {
-        return Err("a tool slug is required to set a model preference".into());
-    };
     let source = match source.as_str() {
         "tool" => gate_connect_core::preferences::ModelSource::Tool,
         "gate" => gate_connect_core::preferences::ModelSource::Gate,
         other => return Err(format!("unknown model source {other:?}")),
     };
+    // The names and context windows the tool's own picker will show, read now
+    // because the connect that writes them may run offline later. A catalogue
+    // that cannot be read costs the picker its labels, not the choice.
+    let meta_for = move |model_ids: &[String]| match source {
+        gate_connect_core::preferences::ModelSource::Gate => {
+            gate_connect_core::gate_models::catalogue_json()
+                .map(|json| gate_connect_core::tool_models::meta_from_catalogue(&json, model_ids))
+                .unwrap_or_default()
+        }
+        gate_connect_core::preferences::ModelSource::Tool => Vec::new(),
+    };
+    // Claude Desktop is not a tool: its one Gate model is stored and never
+    // written into a config, because the engine reads it per request. So the
+    // answer is always `false` - there is nothing for the app to restart for.
+    if tool == gate_connect_core::tool_models::DESKTOP_APP {
+        return tauri::async_runtime::spawn_blocking(move || {
+            let meta = meta_for(&model_ids);
+            gate_connect_core::tool_models::choose_for_desktop_app(
+                source,
+                model_ids,
+                acknowledge_paid_use,
+                meta,
+            )
+            .map(|()| false)
+            .map_err(|e| format!("{e:#}"))
+        })
+        .await
+        .map_err(|e| format!("set tool model join error: {e}"))?;
+    }
+    // Parsed, not trusted: the slug has to be one this app actually configures,
+    // or the pane would store a choice under a key nothing reads.
+    let Some(tool) = parse_tool(Some(tool))? else {
+        return Err("a tool slug is required to set a model preference".into());
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        // The names and context windows the tool's own picker will show, read
-        // now because the connect that writes them may run offline later. A
-        // catalogue that cannot be read costs the picker its labels, not the
-        // choice.
-        let meta = match source {
-            gate_connect_core::preferences::ModelSource::Gate => {
-                gate_connect_core::gate_models::catalogue_json()
-                    .map(|json| {
-                        gate_connect_core::tool_models::meta_from_catalogue(&json, &model_ids)
-                    })
-                    .unwrap_or_default()
-            }
-            gate_connect_core::preferences::ModelSource::Tool => Vec::new(),
-        };
+        let meta = meta_for(&model_ids);
         let applied = gate_connect_core::tool_models::choose(
             tool,
             source,

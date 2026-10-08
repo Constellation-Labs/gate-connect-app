@@ -122,6 +122,37 @@ pub fn choose(
     }
 }
 
+/// The key Claude Desktop's choice is stored under, which is its client slug:
+/// the app is not a [`ToolId`], because Gate writes no config for it.
+pub const DESKTOP_APP: &str = crate::taxonomy::Client::ClaudeDesktop.slug();
+
+/// Store Claude Desktop's model choice.
+///
+/// Nothing is written into a config, so there is nothing to apply: the engine
+/// reads the stored choice per request and moves the app's Code tab onto it
+/// (`code_tab_gate_models` in `proxy/engine.rs`). It also means a change
+/// reaches the next request, not the next session.
+///
+/// **One model, not a set**, unlike every tool (design decision, 2026-10-08).
+/// The app's own picker names an Anthropic model the engine replaces, so a
+/// second Gate model would have no way to be chosen: there is no picker for it
+/// to appear in. Only a Gate choice is held to it, for the reason
+/// [`MAX_GATE_MODELS`] gives.
+pub fn choose_for_desktop_app(
+    source: ModelSource,
+    model_ids: Vec<String>,
+    acknowledge_paid_use: bool,
+    meta: Vec<(String, GateModelMeta)>,
+) -> Result<()> {
+    if source == ModelSource::Gate && model_ids.len() > 1 {
+        anyhow::bail!(
+            "{} Gate models were chosen, and Claude Desktop can use one",
+            model_ids.len()
+        );
+    }
+    preferences::set_tool_model(DESKTOP_APP, source, model_ids, acknowledge_paid_use, meta)
+}
+
 /// Every supporting tool's card, read from its config.
 ///
 /// Drift is reconciled here, on read, because a read is when it can be seen:
