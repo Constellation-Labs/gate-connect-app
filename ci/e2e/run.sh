@@ -1412,6 +1412,36 @@ for mode in api-key oauth; do
   done
 done
 
+# ---------------------------------------------------------------------------
+# Result file: the same per-tool, per-mode outcome as above, as JSON the
+# workflow uploads as an artifact. It is the stable contract for anything that
+# reads these runs (the gateway's `last_verified` refresh), so readers never
+# parse log wording. Shape:
+#   {"os":"Linux","commit":"<sha>","ref":"<ref>","finished_at":"<UTC>",
+#    "passed":true,"harnesses":{"codex":{"api-key":"pass","oauth":"pass"},...}}
+# A tool that never passed in a mode is "fail", whatever the reason.
+# ---------------------------------------------------------------------------
+RESULT="$WORK/real-tools-result.json"
+{
+  printf '{"os":"%s","commit":"%s","ref":"%s","finished_at":"%s","passed":%s,"harnesses":{' \
+    "$OS" "${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)}" "${GITHUB_REF:-}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAIL" -eq 0 ] && echo true || echo false)"
+  sep=""
+  for tool in $EXPECTED_TOOLS; do
+    printf '%s"%s":{' "$sep" "$tool"
+    msep=""
+    for mode in api-key oauth; do
+      case " $RAN " in *" $tool/$mode "*) r="pass" ;; *) r="fail" ;; esac
+      printf '%s"%s":"%s"' "$msep" "$mode" "$r"
+      msep=","
+    done
+    printf '}'
+    sep=","
+  done
+  printf '}}\n'
+} > "$RESULT"
+echo "result: $(cat "$RESULT")"
+
 ckpt "all phases finished; reached end of script"
 echo "----------------------------------------"
 echo "Passed: $PASS  Failed: $FAIL"

@@ -113,6 +113,18 @@ jobs:
         timeout-minutes: 8
         run: bash ci/e2e/run.sh
 
+      # run.sh writes the per-tool outcome as JSON; keep it on the run so the
+      # gateway can read which tools passed without parsing logs. Missing when
+      # the script died before its end, which readers treat as not verified.
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-tools-result-${{ matrix.os }}
+          path: ${{ runner.temp }}/gc-e2e/real-tools-result.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Diagnostics (checkpoints + tool output)
         if: always()
         shell: bash
