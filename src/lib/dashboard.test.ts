@@ -127,7 +127,9 @@ describe("viewActivityApps", () => {
   });
 
   it("links a pane with no tool to its desktop app and website", () => {
+    // `claude-code` too: the desktop app's Code tab is stamped Claude Code.
     expect(viewActivityApps({ machineKnown: true, section: "claude", tool: null })).toEqual([
+      "claude-code",
       "claude-desktop",
       "claude-web",
     ]);

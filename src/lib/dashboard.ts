@@ -90,9 +90,15 @@ export function dashboardOrigin(gatewayBaseUrl: string | null | undefined): stri
  * the app's own feed cannot read them back, but the dashboard filters on them
  * like any other. A section with no entry here (OpenAI API, whose traffic names
  * no app) gets no link: nothing it routes carries a name to filter on.
+ *
+ * Claude's list carries `claude-code` although the pane has no Claude Code
+ * installed: the desktop app's Code tab runs its own bundled `claude`, which
+ * `client_tool` stamps `claude-code` from its User-Agent, not `claude-desktop`.
+ * Without it, a desktop-only install's Code tab sessions would be missing from
+ * the one link that is meant to cover the app.
  */
 export const SECTION_SURFACE_CLIENTS: Readonly<Record<string, readonly string[]>> = {
-  claude: ["claude-desktop", "claude-web"],
+  claude: ["claude-code", "claude-desktop", "claude-web"],
   chatgpt: ["chatgpt", "chatgpt-web"],
 };
 
