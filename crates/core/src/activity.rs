@@ -134,8 +134,8 @@ pub fn cached_tool_overviews_json(
 
 /// Fetch the first page of a section's recent requests, as raw JSON (AG-574).
 ///
-/// `clients` is every sender the pane covers - the Claude pane asks for Claude
-/// Code, the desktop app and claude.ai at once - and goes out as one `tool`
+/// `clients` is every sender the pane covers - the Claude Desktop pane asks for
+/// the desktop app and claude.ai at once - and goes out as one `tool`
 /// pair per name. Validate it with [`feed_clients`] first: the route requires
 /// at least one, and a name the engine cannot stamp would read back empty
 /// rather than fail.

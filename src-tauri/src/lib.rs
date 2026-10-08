@@ -1828,10 +1828,10 @@ fn set_launch_at_login<R: tauri::Runtime>(
 /// What Gate would and would not see of this Hermes install right now.
 ///
 /// Hermes is one of only two rows whose upstream is chosen by the user and
-/// lives in a *different* section. `groups.ts` shows why: `claude` bundles
-/// `["claude-code", "anthropic", "claude-web"]` and `chatgpt` bundles its
-/// own provider rows, so one switch turns on the tool and intercepts what the
-/// tool talks to. `hermes` is `["hermes"]`, and `openclaw` is `["openclaw"]`.
+/// lives in a *different* section. `groups.ts` shows why: `chatgpt` bundles
+/// `["codex", "chatgpt-apps", "chatgpt"]`, so one switch turns on the tool and
+/// intercepts what the tool talks to, and `claude-code` reaches its host through
+/// its own route selector whatever the Claude Desktop row says. `hermes` is `["hermes"]`, and `openclaw` is `["openclaw"]`.
 /// Turning Hermes on therefore routes Hermes and inspects nothing, and the app
 /// reports Protected while every request tunnels past unseen.
 ///

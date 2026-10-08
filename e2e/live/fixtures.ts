@@ -122,7 +122,7 @@ export class LiveApp {
     return hit ? hit.args : null;
   }
 
-  /** Open one app's pane from the rail ("Claude", "ChatGPT / Codex").
+  /** Open one app's pane from the rail ("Claude Desktop", "ChatGPT / Codex").
    *
    *  The same locator as the mock fixture's `openApp`: the row's select
    *  button, whose accessible name leads with the app name. */

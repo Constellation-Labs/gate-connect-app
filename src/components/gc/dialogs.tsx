@@ -1292,10 +1292,15 @@ export function UseGateModelDialog({
   modelIds,
   /** Pre-formatted balance, e.g. "$10.25 available". */
   credits,
+  appliesPerRequest = false,
   onKeepAppDefault,
   onUseGateCredits,
 }: {
   app: DialogApp;
+  /** The choice is read per request rather than written into a config the app
+   *  reads at launch - Claude Desktop, whose Code tab the engine moves - so the
+   *  spending starts with the next request, not the next session. */
+  appliesPerRequest?: boolean;
   /** Who makes the model, shown only when there is one to attribute (Figma
    *  130:48278 draws "Anthropic" above the id). */
   vendor: string;
@@ -1320,10 +1325,16 @@ export function UseGateModelDialog({
       icon="layers"
       tile="lg"
       title={`Use a Gate model for ${app.name}?`}
-      // Drawn as "Your next requests will use..." (130:48278). The write lands
-      // in the app's config, which it reads when it starts, so the requests
-      // that spend are its next session's rather than the next ones.
-      subtitle={`${app.name}'s next session will use Constellation Gate PAYG credits`}
+      // Drawn as "Your next requests will use..." (130:48278). A tool's write
+      // lands in its config, which it reads when it starts, so the requests
+      // that spend are its next session's rather than the next ones. Claude
+      // Desktop's is read per request and covers only its Code tab, which is
+      // the frame's own sentence with the scope named.
+      subtitle={
+        appliesPerRequest
+          ? `${app.name}'s next Code tab requests will use Constellation Gate PAYG credits`
+          : `${app.name}'s next session will use Constellation Gate PAYG credits`
+      }
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}

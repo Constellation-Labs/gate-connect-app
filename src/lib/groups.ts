@@ -578,10 +578,11 @@ function memberFromDomain(
  *
  * **One row per app the user has, not one per routable surface.** A section's
  * switch routes everything that app does, across whatever mechanisms its
- * surfaces need - the Claude switch writes Claude Code's config file AND
- * intercepts two hosts, and the user is told "Claude routes through Gate"
- * rather than being handed three switches and the job of knowing which is
- * which.
+ * surfaces need - the ChatGPT / Codex switch writes Codex's config file AND
+ * intercepts two chatgpt.com surfaces, and the user is told "ChatGPT / Codex
+ * routes through Gate" rather than being handed three switches and the job of
+ * knowing which is which. Claude Desktop and Claude Code are two apps, so two
+ * rows (2026-10-08).
  *
  * This replaced grouping by `client`, which replaced grouping by vendor. The
  * taxonomy that bucketing exposed is still the model - it derives the cascade,
@@ -1055,9 +1056,11 @@ export function isDeclaredSection(id: string): boolean {
  *
  * A section qualifies when at least one of its members is a tool reporting
  * `not_installed` and the ledger drew no row for it. The second half is what
- * keeps Claude and ChatGPT / Codex out on a machine without Claude Code or
- * Codex: their domains still give them a row, so the app is there even though
- * one program inside it is not. Detection is the tool's own: for OpenCode
+ * keeps ChatGPT / Codex out on a machine without Codex: its domains still give
+ * it a row, so the app is there even though one program inside it is not.
+ * Claude Code has no domain of its own since the split, so it is listed here
+ * like any single-tool row, while Claude Desktop is never a candidate: it has
+ * no tool member at all. Detection is the tool's own: for OpenCode
  * without a binary on the path, a config file or a login counts and an empty
  * leftover `~/.config/opencode` does not.
  *

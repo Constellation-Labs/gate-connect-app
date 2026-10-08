@@ -503,8 +503,8 @@ export function NewUiApp() {
     view.kind === "app"
       ? (sectionMemberKeys(view.slug).find((key) =>
           // The same filter `buildGroups` applies, and it has to be the same:
-          // `list_tools` carries the not-installed ones too, so without it a
-          // Claude pane on a machine with no Claude Code resolved to
+          // `list_tools` carries the not-installed ones too, so without it the
+          // old combined Claude pane on a machine with no Claude Code resolved to
           // `claude-code`, fired every per-tool read against a tool that cannot
           // have traffic, and drew zeroes with no caveat - `noPaneReading` false
           // so no unattributed marker. A number with nothing behind it, in the
@@ -1516,17 +1516,27 @@ export function NewUiApp() {
    * `preferences.rs`. Empty sets are refused here rather than written: Gate
    * cannot serve a model nobody enabled, and AG-590 makes that a rule rather
    * than an accident.
+   *
+   * One exception asks every time: putting Claude Desktop on a Gate model from
+   * App default. Its picker is single-select, so the click on a model IS the
+   * choice, with no Apply to make it deliberate; without this, an install that
+   * accepted paid use for one tool would start spending on Claude Desktop from
+   * one click in a list, with nothing naming the app (security review of
+   * #432). Changing the model while already on Gate does not ask: that was
+   * accepted when the switch was made.
    */
   const activateGateModel = useCallback(
     (modelIds: string[]) => {
       if (modelIds.length === 0) return;
-      if (toolModels.view?.paidAckUnix) {
+      const desktopSwitch =
+        modelKey === DESKTOP_APP_MODEL_KEY && openPref?.source !== "gate";
+      if (toolModels.view?.paidAckUnix && !desktopSwitch) {
         void saveModel("gate", modelIds);
       } else {
         setModelOverlay({ kind: "confirm-gate", modelIds });
       }
     },
-    [saveModel, toolModels.view?.paidAckUnix],
+    [saveModel, toolModels.view?.paidAckUnix, modelKey, openPref?.source],
   );
 
   /**
@@ -3045,9 +3055,11 @@ export function NewUiApp() {
       />
     ) : installsNotice &&
       installsFailure !== dismissedInstallsFailure &&
-      openTool !== null ? (
-      // Only on a tool's pane: the machine-scoped reading is the only one the
-      // installation list gates, and the Overview's org-wide one is unaffected.
+      openClients !== null ? (
+      // Only on a pane with a per-app reading: the machine-scoped reading is the
+      // only one the installation list gates, and the Overview's org-wide one is
+      // unaffected. `openClients`, not `openTool`, so the Claude Desktop pane,
+      // which reads its section with no config tool behind it, says so too.
       // The pane's cards say "couldn't be read"; this is the one place that
       // says why, in the gap taxonomy's own sentence.
       <ErrorBanner
@@ -3289,6 +3301,9 @@ export function NewUiApp() {
         ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
             app={{ name: modelAppName ?? "this app" }}
+            // A tool's choice is written into its config and spends from its
+            // next session; Claude Desktop's is read per request.
+            appliesPerRequest={modelKey === DESKTOP_APP_MODEL_KEY}
             // Only meaningful when there is one model to attribute; the dialog
             // drops it for a set.
             vendor={vendorFromModelId(modelOverlay.modelIds[0]) ?? modelOverlay.modelIds[0]}

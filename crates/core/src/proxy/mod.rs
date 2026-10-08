@@ -2274,8 +2274,8 @@ pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
 /// Four of the values it emits - `claude-desktop`, `claude-web`, `chatgpt`,
 /// `chatgpt-web` - have no [`crate::registry::ToolId`]. The activity reads take
 /// names from [`stamped_client`] instead, so the App pane reads them back per
-/// section: the Claude pane asks for Claude Code, the desktop app and claude.ai
-/// together.
+/// section: the Claude Desktop pane asks for the desktop app (its Code tab
+/// included) and claude.ai together.
 ///
 /// Slugs are [`crate::taxonomy::Client`] slugs, which the tool ones coincide
 /// with by construction - `Client::ClaudeCode` is `claude-code`. That is the

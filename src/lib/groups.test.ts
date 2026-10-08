@@ -943,9 +943,9 @@ describe("browserTrustRestartAdvice", () => {
  * The one card a pane draws over its switch, composed from both notes above.
  *
  * Section-shaped fixtures rather than lone members, because what is under test
- * is how a section's surfaces read TOGETHER: the Claude pane is the one with
- * both a signed-in surface and a brokered host, and it is the pane that drew
- * the card twice.
+ * is how a section's surfaces read TOGETHER: the Claude Desktop pane is the one
+ * with both a signed-in surface and a brokered host, and it is the pane that
+ * drew the card twice.
  */
 /** `governingMembers`' rule, restated for the fixtures above. */
 const governing = (members: GroupMember[]): GroupMember[] => {

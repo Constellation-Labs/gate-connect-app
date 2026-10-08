@@ -109,12 +109,11 @@ export function useSectionRouting({
         //
         // The `kind === "config"` filter that used to sit here is why closing
         // Claude left the Claude desktop app running while the dialog reported
-        // it closed. The Claude section is `claude-code` + `anthropic` +
-        // `claude-web`: the CLI writes a config, the desktop app is routed
-        // through the system proxy instead, and it resolves that proxy at its
-        // own launch - so it is exactly as stale after the switch as the CLI is,
-        // and the section's own copy promises to cover it ("Claude Code in your
-        // terminal, and the Claude desktop app").
+        // it closed. The desktop app is routed through the system proxy rather
+        // than by a config write, and it resolves that proxy at its own launch -
+        // so it is exactly as stale after the switch as a CLI is. Its section is
+        // `anthropic` + `claude-web` since the 2026-10-08 split, all domains, so
+        // with that filter the Claude Desktop switch would offer nothing at all.
         //
         // Nothing needs to decide here which slugs have processes. Rust's
         // `agent_names_for` already answers that from `AGENT_PROCESSES`, where

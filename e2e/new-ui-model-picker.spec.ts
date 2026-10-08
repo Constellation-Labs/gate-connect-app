@@ -1109,4 +1109,33 @@ test.describe("new UI model picker on Claude Desktop", () => {
     // Claude Code's own choice is untouched: the two are separate apps now.
     expect((await app.state()).toolModels.choices["claude-code"]).toBeUndefined();
   });
+
+  test("asks before spending even when paid use was accepted for another app", async ({ boot }) => {
+    // The click on a model is the whole choice, so the confirmation is what
+    // names the app being billed - and says what it covers.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
+      },
+    });
+    await app.page.getByRole("button", { name: "Claude Desktop" }).first().click();
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    await app.page.getByRole("dialog").getByRole("radio", { name: catalogue[1].id }).click();
+
+    await expect(
+      app.page.getByRole("heading", { name: /Use a Gate model for Claude Desktop\?/ }),
+    ).toBeVisible();
+    await expect(
+      app.page.getByText(
+        "Claude Desktop's next Code tab requests will use Constellation Gate PAYG credits",
+      ),
+    ).toBeVisible();
+    await app.page.getByRole("button", { name: "Keep App default" }).click();
+    await expect
+      .poll(async () => (await app.state()).toolModels.choices["claude-desktop"]?.source)
+      .toBe("tool");
+  });
 });

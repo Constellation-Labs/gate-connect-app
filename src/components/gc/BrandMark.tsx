@@ -155,8 +155,8 @@ const BRAND_BY_SECTION: Record<string, BrandName> = {
  * first SURVIVING member, so uninstalling Claude Code silently changed the row's
  * icon.
  *
- * Section order, not member order: `SECTIONS` lists the app's own tool first, so
- * the Claude row keeps the Claude Code mark whether or not the CLI is installed.
+ * Section order, not member order: `SECTIONS` lists the app's own member first,
+ * so a row keeps its mark whether or not a later member is installed.
  * Falls back to the id so a section synthesised from an unplaced member (whose
  * id IS its member key) still resolves.
  */

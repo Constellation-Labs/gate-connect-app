@@ -720,7 +720,8 @@ async fn proxy(
         }
         Route::Serve => {
             // The user put this tool on Gate models, and the tool's own config
-            // sent it here: Gate serves it on the org's credits, whatever the
+            // sent it here - or, for Claude Desktop, the engine moved its Code
+            // tab here: Gate serves it on the org's credits, whatever the
             // account's billing mode. Payg is forced for that reason - the
             // helper then strips the tool's own key, which would otherwise read
             // as a passthrough token and force BYOK.
