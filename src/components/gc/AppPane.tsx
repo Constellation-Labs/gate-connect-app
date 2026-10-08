@@ -194,10 +194,9 @@ export function AppPane({
    *  is still coming. */
   eventsPending?: boolean;
   /** Open the dashboard's Messages list for this app on this machine, for the
-   *  Recent activity header's "View activity" (`1410:28168`): the feed's own
-   *  filters on a tool pane, the desktop app's and website's names on a domain
-   *  pane, whose card has no feed. Absent when there is nothing to filter on
-   *  (see `viewActivityApps`), which removes the button. */
+   *  Recent activity header's "View activity" (`1410:28168`), filtered by the
+   *  same client names the card is read with. Absent when there is nothing to
+   *  filter on (see `viewActivityApps`), which removes the button. */
   onViewActivity?: () => void;
   /** Which sections have no reading behind them.
    *
