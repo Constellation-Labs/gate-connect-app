@@ -1260,3 +1260,120 @@ fn a_reinstalled_opencode_does_not_inherit_the_old_sidecar() {
     );
     assert!(!sidecar.exists());
 }
+
+/// The Claude Desktop switch's write for the desktop app's Code tab, with
+/// Claude Code itself off: a plain proxy (no route selector), the loopback
+/// bypass and the CA, recorded apart from Claude Code's own marker and put back
+/// exactly.
+#[test]
+fn the_code_tab_write_is_its_own_and_goes_back_exactly() {
+    use gate_connect_core::integrations::claude_code::set_code_tab_routed;
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_ca_cert();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original =
+        r#"{"env":{"HTTPS_PROXY":"http://corp.example:3128","FOO":"bar"},"model":"opus"}"#;
+    fs::write(&settings, original).unwrap();
+
+    set_code_tab_routed(true, Some("http://127.0.0.1:47100")).unwrap();
+    let routed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(routed["env"]["HTTPS_PROXY"], "http://127.0.0.1:47100");
+    assert!(routed["env"]["NODE_EXTRA_CA_CERTS"].is_string());
+    assert!(routed["env"]["NO_PROXY"].is_string());
+    assert_eq!(routed["env"]["FOO"], "bar");
+    assert!(
+        routed["_gateConnect"].get("managed").is_none(),
+        "not Claude Code's connect: its switch stays off"
+    );
+    assert!(!find(ToolId::ClaudeCode)
+        .unwrap()
+        .config_is_managed()
+        .unwrap());
+
+    // Applying again changes nothing on disk.
+    let bytes = fs::read(&settings).unwrap();
+    set_code_tab_routed(true, Some("http://127.0.0.1:47100")).unwrap();
+    assert_eq!(fs::read(&settings).unwrap(), bytes);
+
+    set_code_tab_routed(false, None).unwrap();
+    let back: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    let want: serde_json::Value = serde_json::from_str(original).unwrap();
+    assert_eq!(
+        back, want,
+        "every value goes back, and nothing of Gate's stays"
+    );
+}
+
+/// Connecting Claude Code over the Code tab's write takes it over: the selector
+/// goes on, the Code tab's record goes, and what Claude Code snapshots is the
+/// user's value rather than the Code tab's - so its disconnect restores that.
+#[test]
+fn claude_code_connect_takes_over_from_the_code_tab() {
+    use gate_connect_core::integrations::claude_code::set_code_tab_routed;
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_ca_cert();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{"env":{"HTTPS_PROXY":"http://corp.example:3128"}}"#,
+    )
+    .unwrap();
+    set_code_tab_routed(true, Some("http://127.0.0.1:47100")).unwrap();
+
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+    let connected: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        connected["env"]["HTTPS_PROXY"],
+        "http://gate-claude-code:route@127.0.0.1:9977"
+    );
+    assert!(connected["_gateConnect"].get("codeTab").is_none());
+    assert_eq!(
+        connected["_gateConnect"]["previousEnv"]["HTTPS_PROXY"], "http://corp.example:3128",
+        "the user's proxy, not the Code tab's"
+    );
+
+    // With Claude Code connected, the Code tab has nothing of its own to write.
+    let bytes = fs::read(&settings).unwrap();
+    set_code_tab_routed(true, Some("http://127.0.0.1:47100")).unwrap();
+    assert_eq!(fs::read(&settings).unwrap(), bytes);
+
+    claude.disconnect().unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(after["env"]["HTTPS_PROXY"], "http://corp.example:3128");
+    assert!(after.get("_gateConnect").is_none());
+}
+
+/// A disconnect over the Code tab's write alone - the quit sweep calls it for
+/// any installed Claude Code - puts the user's values back rather than dropping
+/// them with the marker.
+#[test]
+fn claude_code_disconnect_restores_what_the_code_tab_replaced() {
+    use gate_connect_core::integrations::claude_code::set_code_tab_routed;
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_ca_cert();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, r#"{"env":{"NO_PROXY":"corp.internal"}}"#).unwrap();
+    set_code_tab_routed(true, Some("http://127.0.0.1:47100")).unwrap();
+
+    find(ToolId::ClaudeCode).unwrap().disconnect().unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        after,
+        serde_json::json!({"env": {"NO_PROXY": "corp.internal"}})
+    );
+}

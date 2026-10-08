@@ -398,6 +398,8 @@ impl ProxyManager {
             // wedge the toggle; the next status reflects reality.
             self.push_intercept(client, &domains);
         }
+        drop(guard);
+        crate::integrations::claude_code::follow_domain_switch(slug);
         Ok(())
     }
 

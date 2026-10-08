@@ -1106,6 +1106,8 @@ impl HttpHandler for GateHandler {
         let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
         let client = classify_client(header);
         let ua = header("user-agent").unwrap_or_default();
+        let unselected_claude_code =
+            !self.claude_code_route && crate::proxy::is_claude_code_outside_the_app(ua);
         let host = req.uri().host().map(str::to_owned);
         let live_rules = self.rules.borrow().clone();
         // `effective_rules` again rather than the CONNECT's verdict: this arm
@@ -1236,11 +1238,17 @@ impl HttpHandler for GateHandler {
             //
             // The other two are withheld for their own reasons, both given at
             // [`withhold_rewrite`].
-            if let (Decision::Rewrite { upstream_url, slug }, true, false) = (
-                decide(&rules, host, &path),
-                self.peer_allowed(ctx),
-                navigation,
-            ) {
+            //
+            // And Claude Code without its selector is not routed by anyone
+            // else's switch: see `is_claude_code_outside_the_app`.
+            let decision = if unselected_claude_code {
+                Decision::Passthrough
+            } else {
+                decide(&rules, host, &path)
+            };
+            if let (Decision::Rewrite { upstream_url, slug }, true, false) =
+                (decision, self.peer_allowed(ctx), navigation)
+            {
                 // Asked INSIDE the pattern rather than as a fourth arm of it, so
                 // reaching this line means every other reason to withhold the
                 // rewrite has already been ruled out and the log below can only

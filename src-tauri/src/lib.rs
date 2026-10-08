@@ -261,6 +261,10 @@ async fn connect_tool(slug: String) -> Result<StatusDto, String> {
             engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
         };
         integ.connect(&input).map_err(|e| format!("{e:#}"))?;
+        // Best-effort: the switch has landed whether or not the note does.
+        if let Err(e) = gate_connect_core::provider::note_tool_switched(&slug, true) {
+            eprintln!("[gate] recording {slug} switched on failed: {e:#}");
+        }
         Ok(status_for(integ.as_ref()))
     })
     .await
@@ -274,6 +278,11 @@ async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let integ = resolve_integration(&slug)?;
         integ.disconnect().map_err(|e| format!("{e:#}"))?;
+        // So the reconcile pass does not connect it again on the strength of a
+        // provider domain that is still on (`provider::note_tool_switched`).
+        if let Err(e) = gate_connect_core::provider::note_tool_switched(&slug, false) {
+            eprintln!("[gate] recording {slug} switched off failed: {e:#}");
+        }
         Ok(status_for(integ.as_ref()))
     })
     .await

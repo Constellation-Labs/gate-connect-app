@@ -721,3 +721,33 @@ fn opencode_repointed_at_a_local_server_is_not_silently_reverted() {
         "the user's own endpoint was taken back"
     );
 }
+
+/// Since the split, Claude Code has its own switch and the Claude Desktop
+/// switch keeps the `anthropic` domain on. Claude Code switched off on its own
+/// row must stay off: the domain is the desktop app's intent, not its. Switched
+/// back on, the sweep is free to wire it again.
+#[test]
+fn claude_code_switched_off_is_not_reconnected_by_the_desktop_switch() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+
+    // The row's switch: what `disconnect_tool` does.
+    find(ToolId::ClaudeCode).unwrap().disconnect().unwrap();
+    provider::note_tool_switched("claude-code", false).unwrap();
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(
+        claude_status(),
+        Status::Detected,
+        "the Claude Desktop domain is still on, and that is not Claude Code's switch"
+    );
+
+    provider::note_tool_switched("claude-code", true).unwrap();
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+}
