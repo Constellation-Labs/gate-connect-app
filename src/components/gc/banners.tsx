@@ -255,7 +255,9 @@ export function ReopenAlert({
       <button
         type="button"
         onClick={onReopen}
-        className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        // Filled primary, matching `PaneNote`'s action: the two amber cards sit
+        // in the same slot and each offers one fix.
+        className="shrink-0 rounded-control border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] px-3 py-2 text-base-xs font-medium leading-4 text-base-primary-foreground shadow-base-btn-primary transition-colors hover:bg-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {/* "Close", not "Reopen". The button opens the close confirmation,
             because a CLI is a shell session Gate does not own and cannot start
