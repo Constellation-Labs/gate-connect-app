@@ -46,6 +46,17 @@ export interface GateModel {
    * here: the catalogue is loaded only while the picker is open.
    */
   ids: string[];
+  /**
+   * The model the Claude desktop app's Code tab runs on, marked on its cell.
+   *
+   * The Code tab offers only Anthropic models and ignores the picker, so the
+   * engine moves each of its requests onto one Gate model: the one Claude
+   * Code's config starts on. Set only while that move happens - Claude Code
+   * connected on Gate models and the desktop app routed - so the mark never
+   * names a model the Code tab is not on. Not in the Figma; a local addition
+   * owed a design answer.
+   */
+  desktopModelId?: string;
 }
 
 
@@ -670,6 +681,14 @@ function ModelSelection({
                           </p>
                           <p className="truncate text-sm leading-5 text-base-foreground">{id}</p>
                         </div>
+                        {id === gateModel.desktopModelId && (
+                          <Pill
+                            className="ml-auto shrink-0 bg-gray-100 text-gray-600"
+                            title="The Claude desktop app's Code tab runs on this model"
+                          >
+                            Code app
+                          </Pill>
+                        )}
                       </li>
                     );
                   })}

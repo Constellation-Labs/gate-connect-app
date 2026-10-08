@@ -530,6 +530,21 @@ describe("AppPane model selection", () => {
     expect(within(card("Model selection")).queryByText(/models enabled/)).toBeNull();
   });
 
+  it("marks the model the Claude desktop app's Code tab runs on, and only that one", () => {
+    const ids = ["anthropic/claude-opus-5", "moonshot/kimi-k3"];
+    render(pane({ modelChoice: "gate", gateModel: { ids, desktopModelId: ids[1] } }));
+    const cells = within(
+      within(card("Model selection")).getByRole("list", { name: "Gate models for Claude Code" }),
+    ).getAllByRole("listitem");
+    expect(within(cells[0]).queryByText("Code app")).toBeNull();
+    expect(within(cells[1]).getByText("Code app")).toBeTruthy();
+  });
+
+  it("draws no Code tab mark when the Code tab is not on Gate models", () => {
+    render(pane({ modelChoice: "gate", gateModel: { ids: ["anthropic/claude-opus-5"] } }));
+    expect(within(card("Model selection")).queryByText("Code app")).toBeNull();
+  });
+
   it("says why the card moved to App default when the app left its Gate models", () => {
     // R3: the user picked another model inside the app, so its config no longer
     // holds a Gate model and the radio moved without anyone touching it here.

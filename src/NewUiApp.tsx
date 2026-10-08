@@ -3570,7 +3570,22 @@ export function NewUiApp() {
                   ? // The whole set, configured-first, for display only. The
                     // card reads each vendor off the id, which is all the mark
                     // needs and is there before the catalogue lands.
-                    { ids: cardModelIds }
+                    {
+                      ids: cardModelIds,
+                      // The Code tab's model, under the engine's own two
+                      // conditions: Claude Code connected on Gate models (an
+                      // applied config) and the desktop app routed, without
+                      // which its traffic never reaches the engine. See
+                      // `code_tab_gate_models` in `proxy/engine.rs`.
+                      desktopModelId:
+                        openTool === "claude-code" &&
+                        configuredModel &&
+                        groups
+                          .find((g) => g.id === "claude")
+                          ?.members.some((m) => m.key === "anthropic" && m.routed)
+                          ? configuredModel
+                          : undefined,
+                    }
                   : null,
                 onChangeModel: () =>
                   setModelOverlay({
