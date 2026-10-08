@@ -183,6 +183,27 @@ export function proxyMemberStatus(m: GroupMember): AppStatus {
  * has nothing but session surfaces is described by them, because otherwise it is
  * described by nothing and reports "Off" over traffic it is carrying.
  */
+/**
+ * The partly protected card's words, for the surfaces that are off.
+ *
+ * A function of its own because no section today has two off surfaces that
+ * govern it, so the plural can only be reached from a test.
+ */
+export function partlyProtectedCopy(
+  appName: string,
+  off: string[],
+): { title: string; body: string; label: string } {
+  const one = off.length === 1;
+  const names = one ? off[0] : `${off.slice(0, -1).join(", ")} and ${off[off.length - 1]}`;
+  return {
+    title: `${appName} isn’t fully protected`,
+    body: `${names} ${one ? "isn’t" : "aren’t"} routed through Gate, so ${one ? "its" : "their"} traffic goes straight to the provider.`,
+    // "Route", not "Turn on": beside an app's name, "Turn on" reads as
+    // launching it. The body has just named the surface, so "it".
+    label: one ? "Route it" : "Route them",
+  };
+}
+
 export function sectionStatus(
   group: Group,
   statusBySlug: Map<string, SidebarApp>,
@@ -216,6 +237,7 @@ export function sectionStatus(
     return {
       kind: "not-protected",
       detail: `Partly protected: ${routing} of ${governed.length}`,
+      partly: true,
     };
   return group.switchDesired > 0
     ? { kind: "not-protected", detail: "Blocked" }
