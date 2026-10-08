@@ -48,6 +48,22 @@ describe("the Code tab's model mark", () => {
     expect(within(cells()[1]).queryByText("Code app")).toBeNull();
   });
 
+  /**
+   * A config naming a model the set no longer has. The engine then starts the
+   * Code tab on the set's first model, so that is the one the mark names
+   * rather than none at all.
+   */
+  it("marks the set's first model when the config names one outside it", async () => {
+    const state = onGateModels();
+    state.toolModels.configuredModel = { "claude-code": "retired/model" };
+    installFakeTauri(state);
+    const cells = await modelCells();
+
+    await waitFor(() => expect(within(cells()[0]).getByText("Code app")).toBeTruthy());
+    expect(cells()[0].textContent).toContain(OPUS);
+    expect(within(cells()[1]).queryByText("Code app")).toBeNull();
+  });
+
   it("is not drawn while the desktop app is not routed", async () => {
     const state = onGateModels();
     state.proxy.domains.find((d) => d.slug === "anthropic")!.enabled = false;

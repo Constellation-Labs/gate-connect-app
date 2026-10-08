@@ -3577,13 +3577,20 @@ export function NewUiApp() {
                       // applied config) and the desktop app routed, without
                       // which its traffic never reaches the engine. See
                       // `code_tab_gate_models` in `proxy/engine.rs`.
+                      //
+                      // The card's first model, not `configuredModel`: the
+                      // engine starts the Code tab on the config's model when
+                      // it is in the set and on the set's first otherwise,
+                      // which is exactly how `cardModelIds` is ordered. A
+                      // config naming a model the set no longer has would
+                      // otherwise mark no cell while the Code tab runs on one.
                       desktopModelId:
                         openTool === "claude-code" &&
                         configuredModel &&
                         groups
                           .find((g) => g.id === "claude")
                           ?.members.some((m) => m.key === "anthropic" && m.routed)
-                          ? configuredModel
+                          ? cardModelIds[0]
                           : undefined,
                     }
                   : null,

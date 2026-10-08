@@ -538,6 +538,12 @@ describe("AppPane model selection", () => {
     ).getAllByRole("listitem");
     expect(within(cells[0]).queryByText("Code app")).toBeNull();
     expect(within(cells[1]).getByText("Code app")).toBeTruthy();
+    // Said in words for anyone who never sees the hover: the visible label is
+    // hidden from assistive tech, and the sentence stands in for it.
+    expect(within(cells[1]).getByText("Code app").getAttribute("aria-hidden")).toBe("true");
+    expect(
+      within(cells[1]).getByText("The Claude desktop app's Code tab runs on this model"),
+    ).toBeTruthy();
   });
 
   it("draws no Code tab mark when the Code tab is not on Gate models", () => {

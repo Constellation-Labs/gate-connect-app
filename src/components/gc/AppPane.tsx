@@ -682,11 +682,18 @@ function ModelSelection({
                           <p className="truncate text-sm leading-5 text-base-foreground">{id}</p>
                         </div>
                         {id === gateModel.desktopModelId && (
+                          // The label is short because the pane is already
+                          // Claude's; the hidden sentence says what it means
+                          // to a keyboard or screen-reader user, who never
+                          // sees the `title`.
                           <Pill
                             className="ml-auto shrink-0 bg-gray-100 text-gray-600"
                             title="The Claude desktop app's Code tab runs on this model"
                           >
-                            Code app
+                            <span aria-hidden>Code app</span>
+                            <span className="sr-only">
+                              The Claude desktop app&apos;s Code tab runs on this model
+                            </span>
                           </Pill>
                         )}
                       </li>
