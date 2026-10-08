@@ -255,7 +255,9 @@ export function ReopenAlert({
       <button
         type="button"
         onClick={onReopen}
-        className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        // Filled primary, matching `PaneNote`'s action: the two amber cards sit
+        // in the same slot and each offers one fix.
+        className="shrink-0 rounded-control border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] px-3 py-2 text-base-xs font-medium leading-4 text-base-primary-foreground shadow-base-btn-primary transition-colors hover:bg-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {/* "Close", not "Reopen". The button opens the close confirmation,
             because a CLI is a shell session Gate does not own and cannot start
@@ -274,49 +276,32 @@ export function ReopenAlert({
  * rather than about the pane that happens to be open, dismissible because the
  * user is the only one who knows when they have acted on it.
  *
- * Neutral by default, for the reason `PaneNote` gives below: advice with
- * nothing for Gate to re-check afterwards, which drawn amber would read as a
- * fault. `tone="warning"` is for advice that *is* a fault if ignored - the
- * browser-certificate note is the one caller. A browser left open across a
- * trust change rejects every host Gate intercepts, which is exactly what
- * `ReopenAlert` warns about for a tool, and that card is amber; its failure
- * variants (no certutil, a store that refused) are faults outright. Drawn
- * neutral, it read as a footnote beside cards that said less. The tone reuses
- * the drawn amber `StatusTile` the routing banner's unhappy states carry, on
- * the same strip, rather than inventing a palette.
+ * Amber, for the one caller it has: the browser-certificate note. A browser left
+ * open across a trust change rejects every host Gate intercepts, which is exactly
+ * what `ReopenAlert` warns about for a tool, and its failure variants (no
+ * certutil, a store that refused) are faults outright. It had a neutral default
+ * as well, which nothing drew, and was removed on 2026-10-07 with `PaneNote`'s.
  *
- * Not in the Figma. The file draws `banner/update`, `banner/routing`,
- * `banner/partly-routing` and the alert rows, and nothing neutral at this width,
- * so the frame geometry is borrowed from the routing banner (full-bleed strip,
- * hairline bottom border, 16/12 padding, a 16px tile beside a two-line stack)
- * with `base/*` inks in place of the amber.
+ * Not in the Figma. The frame geometry is borrowed from the routing banner
+ * (full-bleed strip, hairline bottom border, 16/12 padding) with the drawn amber
+ * `StatusTile` its unhappy states carry.
  */
 export function NoteBanner({
   title,
   body,
   onDismiss,
-  tone = "neutral",
 }: {
   title: string;
   body: string;
   onDismiss: () => void;
-  tone?: "neutral" | "warning";
 }) {
   return (
     <div
       role="status"
       className="w-full border-b border-base-border bg-base-card px-4 py-3"
     >
-      <div className={`flex w-full gap-3 ${tone === "warning" ? "items-center" : "items-start"}`}>
-        {tone === "warning" ? (
-          <StatusTile tone="amber" icon="triangleAlert" size={32} />
-        ) : (
-          <Icon
-            name="info"
-            size={16}
-            className="mt-0.5 shrink-0 text-neutral-500"
-          />
-        )}
+      <div className="flex w-full items-center gap-3">
+        <StatusTile tone="amber" icon="triangleAlert" size={32} />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium leading-5 text-base-foreground">
             {title}
@@ -337,27 +322,51 @@ export function NoteBanner({
 }
 
 /**
- * A quiet card on a pane: why this app is not protected, when no card with an
- * action already says it (see `statusNote` in `NewUiApp`).
+ * Why this app is not protected, when no card with an action already says it
+ * (see `statusNote` in `NewUiApp`).
  *
- * Neutral rather than amber, like `NoteBanner`: `AlertBanner` and `ReopenAlert`
- * each offer the fix for what they name, and this has no action to offer, so
- * drawing it in their palette would read as a fault the user is expected to
- * clear from here. The amber is already on the status line above it.
+ * Amber, in `ReopenAlert`'s shape (`banner/alert/multiple-apps`, `1410:26594`),
+ * by the user's decision on 2026-10-07. It used to be a neutral info card on the
+ * argument that it had no fix to offer, but every reason it carries is a fault on
+ * an app the user switched on, and a white card under an amber status line read
+ * as a footnote. The action is optional because not every reason has a fix this
+ * pane can run.
  */
-export function PaneNote({ title, body }: { title: string; body: string }) {
+export function PaneNote({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body: string;
+  action?: { label: string; onClick: () => void; busy?: boolean };
+}) {
   return (
-    // `role="status"`, as `NoteBanner`: a reading, announced without taking
-    // focus.
+    // `role="status"`, as `ReopenAlert`: raised by a background sweep, announced
+    // without taking focus.
     <div
       role="status"
-      className="flex items-start gap-3 rounded-md border border-base-border bg-base-card p-4 shadow-base-sm"
+      className="flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5"
     >
-      <Icon name="info" size={16} className="mt-0.5 shrink-0 text-neutral-500" />
-      <div className="min-w-0">
-        <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
-        <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <StatusTile tone="amber" icon="triangleAlert" size={36} />
+        <div className="min-w-0">
+          <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
+          <p className="text-base-xs leading-4 text-gray-600">{body}</p>
+        </div>
       </div>
+      {action && (
+        <button
+          type="button"
+          onClick={action.onClick}
+          disabled={action.busy}
+          // Filled primary, the treatment `Modal`'s primary button draws, at this
+          // card's size: the one action on a card that names a fault.
+          className="shrink-0 rounded-control border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] px-3 py-2 text-base-xs font-medium leading-4 text-base-primary-foreground shadow-base-btn-primary transition-colors hover:bg-blue-ribbon-800 disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }

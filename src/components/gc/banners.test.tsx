@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { AlertBanner, NoteBanner, ReopenAlert, RoutingBanner } from "./banners";
+import { AlertBanner, NoteBanner, PaneNote, ReopenAlert, RoutingBanner } from "./banners";
 
 afterEach(cleanup);
 
@@ -68,6 +68,13 @@ describe("ReopenAlert", () => {
     screen.getByRole("button", { name: "Close tool" }).click();
 
     expect(onReopen).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills the close as primary, as `PaneNote`'s action is", () => {
+    render(<ReopenAlert {...props} />);
+    expect(screen.getByRole("button", { name: "Close tool" }).className).toContain(
+      "bg-base-primary",
+    );
   });
 });
 
@@ -152,22 +159,46 @@ describe("AlertBanner", () => {
 });
 
 /**
- * The shell note, neutral by default and amber when what it says is a fault if
- * ignored - the browser-certificate note, which sits beside `ReopenAlert` and
- * means the same thing for a browser.
+ * The shell note: amber, because its one caller - the browser-certificate note -
+ * means for a browser what `ReopenAlert` means for a tool.
  */
 describe("NoteBanner", () => {
   const props = { title: "Browsers already open need reopening", body: "Quit and reopen.", onDismiss: () => {} };
 
-  it("draws the info glyph and no tile by default", () => {
+  it("draws the amber warning tile", () => {
     const { container } = render(<NoteBanner {...props} />);
-    expect(container.querySelector(".from-amber-50")).toBeNull();
-    expect(screen.getByText(props.title)).toBeTruthy();
-  });
-
-  it("draws the amber warning tile when it is a warning", () => {
-    const { container } = render(<NoteBanner {...props} tone="warning" />);
     expect(container.querySelector(".from-amber-50.border-amber-300")).not.toBeNull();
     expect(screen.getByRole("status").textContent).toContain(props.body);
+  });
+});
+
+/**
+ * The pane's reason card. Its action is optional - most reasons have no fix
+ * the pane can run - and is held while routing is busy, so a click cannot
+ * start a second write over the first.
+ */
+describe("PaneNote", () => {
+  const props = { title: "Claude isn’t fully protected", body: "Claude Code isn’t routed." };
+
+  it("draws no button without an action", () => {
+    render(<PaneNote {...props} />);
+    expect(screen.getByRole("status").textContent).toContain(props.body);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("runs its action on click", () => {
+    const onClick = vi.fn();
+    render(<PaneNote {...props} action={{ label: "Route it", onClick }} />);
+    screen.getByRole("button", { name: "Route it" }).click();
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables its action while busy", () => {
+    const onClick = vi.fn();
+    render(<PaneNote {...props} action={{ label: "Route it", onClick, busy: true }} />);
+    const button = screen.getByRole("button", { name: "Route it" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    button.click();
+    expect(onClick).not.toHaveBeenCalled();
   });
 });

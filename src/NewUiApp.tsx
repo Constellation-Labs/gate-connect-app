@@ -71,9 +71,12 @@ import {
   paneClients,
   SECTION_CLIENTS,
   sectionMemberKeys,
+  governingMembers,
+  surfaceName,
 } from "./lib/groups";
 import {
   CHECKING_DETAIL,
+  partlyProtectedCopy,
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
   sectionStatus,
@@ -1856,8 +1859,6 @@ export function NewUiApp() {
     // same click.
     onBeforeRoute: () => {
       setActionError(null);
-      // And the reload advice, for the same reason one line up: it is a claim
-      // about where this person's traffic is going, and the click in progress
     },
     routeApp: (slug, next) => void routeApp(slug, next),
   });
@@ -1865,6 +1866,7 @@ export function NewUiApp() {
   // on 2026-09-22 and this is the app pane's now. Same section toggle, same
   // consent and drift gates behind it.
   const toggleAppRouting = section.toggle;
+  const routeMembers = section.routeMembers;
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -2752,8 +2754,42 @@ export function NewUiApp() {
       detail === REASON_DETAIL.configuration_changed
     )
       return undefined;
+    // Partly protected is the one reason with a fix this pane owns: some of the
+    // app's surfaces are switched off under a switch that reads on. The app
+    // switch cannot be the fix: this card exists because the switch reads On,
+    // and clicking it turns the app off.
+    //
+    // The body names the surfaces that are off, from the same governing members
+    // `sectionStatus` counted, so the card says which program to look at rather
+    // than a bare "1 of 2".
+    //
+    // The button turns on those surfaces and nothing else. For Claude that
+    // leaves claude.ai alone, which the switch's cascade would sweep in: it is
+    // not a governing member, so the card never named it. A section with no
+    // brokered member - ChatGPT on a machine without the Codex CLI - is
+    // governed by its signed-in surfaces, so there the button can route one;
+    // the card has named it before the click, which is more than the switch
+    // does.
+    if (app.status.partly) {
+      const group = groups.find((g) => g.id === view.slug);
+      const offMembers = group ? governingMembers(group.members).filter((m) => !m.routed) : [];
+      if (offMembers.length > 0) {
+        const copy = partlyProtectedCopy(app.name, offMembers.map(surfaceName));
+        return (
+          <PaneNote
+            title={copy.title}
+            body={copy.body}
+            action={{
+              label: copy.label,
+              busy: routingBusy,
+              onClick: () => void routeMembers(offMembers, true),
+            }}
+          />
+        );
+      }
+    }
     return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
-  }, [view, reopenAlert, paneNotice, paneWriteError, railApps]);
+  }, [view, reopenAlert, paneNotice, paneWriteError, railApps, groups, routingBusy, routeMembers]);
 
   const onMenuSelect = useCallback(
     (action: MenuAction) => {
@@ -3041,12 +3077,11 @@ export function NewUiApp() {
       // neutral: a browser left open across the trust change rejects every
       // host Gate intercepts - the same failure `ReopenAlert` warns about for
       // a tool - and the failure variants are faults outright. See
-      // `NoteBanner`'s `tone`.
+      // `NoteBanner`.
       <NoteBanner
         title={browserRestart.title}
         body={browserRestart.body}
         onDismiss={() => setBrowserRestart(null)}
-        tone="warning"
       />
     ) : undefined;
 
