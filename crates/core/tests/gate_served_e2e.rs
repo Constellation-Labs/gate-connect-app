@@ -513,3 +513,70 @@ async fn the_catalog_route_strips_a_caller_set_model_header() {
         "an ordinary BYOK forward otherwise"
     );
 }
+
+/// Claude Desktop on its one Gate model: the route the engine moves the app's
+/// Code tab to. Served like a tool's - the app's own token dropped, Gate's
+/// credential on, stamped as the app - and refused, naming the app, while it
+/// has no Gate model.
+#[tokio::test]
+async fn the_desktop_app_marker_is_served_like_a_tool() {
+    let _s = SERIAL.lock().await;
+    let _home = TempHome::set();
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(gateway.base_url.clone());
+    let route = "/__gate/t/claude-desktop/gate/v1/messages?beta=true";
+    let body = serde_json::json!({ "model": "anthropic/claude-opus-5", "messages": [] });
+
+    let refused = reqwest::Client::new()
+        .post(url(&engine, route))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let err: serde_json::Value = refused.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "gate_models_off");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Claude Desktop")),
+        "{err}"
+    );
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "nothing is billed for a refusal"
+    );
+
+    gate_connect_core::tool_models::choose_for_desktop_app(
+        ModelSource::Gate,
+        vec!["anthropic/claude-opus-5".into()],
+        true,
+        vec![],
+    )
+    .unwrap();
+    let served = reqwest::Client::new()
+        .post(url(&engine, route))
+        .header("authorization", "Bearer sk-ant-oat01-desktop-token")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(served.status().is_success(), "{}", served.status());
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    let r = &reqs[0];
+    assert_eq!(r.path, "/v1/messages");
+    assert_eq!(
+        r.header("authorization"),
+        None,
+        "the app's own token is dropped"
+    );
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-client"),
+        Some("claude-desktop"),
+        "named by the path marker"
+    );
+}

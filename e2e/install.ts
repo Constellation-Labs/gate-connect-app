@@ -353,8 +353,13 @@ export function installFakeTauri(state: BackendState): void {
     },
     set_tool_model: ({ tool, source, modelIds, acknowledgePaidUse }) => {
       const slug = String(tool);
-      if (!state.tools.some((t) => t.slug === slug)) throw `unknown tool slug "${slug}"`;
       if (source !== "tool" && source !== "gate") throw `unknown model source "${String(source)}"`;
+      // Rust's `choose_for_desktop_app`: not a tool, one Gate model, no config.
+      const desktop = slug === "claude-desktop";
+      if (!desktop && !state.tools.some((t) => t.slug === slug)) throw `unknown tool slug "${slug}"`;
+      if (desktop && source === "gate" && ((modelIds as string[]) ?? []).length > 1) {
+        throw `${(modelIds as string[]).length} Gate models were chosen, and Claude Desktop can use one`;
+      }
       if (source === "gate" && acknowledgePaidUse === true && state.toolModels.paidAckUnix === null) {
         state.toolModels.paidAckUnix = 1787740800;
       }
@@ -365,7 +370,7 @@ export function installFakeTauri(state: BackendState): void {
       // Rust's `tool_models::choose`: `true` only when the tool's config was
       // rewritten, which needs a tool whose integration writes Gate models and
       // that Gate currently manages.
-      return gateManaged(slug);
+      return desktop ? false : gateManaged(slug);
     },
     gate_credits: () =>
       JSON.stringify({

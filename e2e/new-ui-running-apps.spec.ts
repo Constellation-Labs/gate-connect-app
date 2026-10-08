@@ -44,7 +44,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
 
     // The config is already written; this is only about the running process.
     await expect.poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool"))).toBe(
@@ -59,15 +59,15 @@ test.describe("new UI running apps", () => {
    * AG-900: closing Claude left the Claude desktop app running while the dialog
    * reported it closed.
    *
-   * The Claude switch is a section - `claude-code` + `anthropic` +
-   * `claude-web` - and the offer was built from `moved.filter(m => m.kind ===
-   * "config")`, so only the CLI's row survived. The desktop app is routed
-   * through the system proxy rather than by a config write, and it resolves
-   * that proxy at its own launch, which makes it exactly as stale after the
-   * switch as the CLI is. The entry's own copy promises to cover it: "Claude
-   * Code in your terminal, and the Claude desktop app".
+   * The offer was built from `moved.filter(m => m.kind === "config")`, so a
+   * switch whose members are all domains offered nothing. The desktop app is
+   * routed through the system proxy rather than by a config write, and it
+   * resolves that proxy at its own launch, which makes it exactly as stale
+   * after the switch as a CLI is. It has its own row since the 2026-10-08
+   * split, `anthropic` + `claude-web`, so routing it offers the app and not the
+   * CLI, which belongs to the Claude Code row.
    */
-  test("offers the desktop app too, not only the CLI beside it", async ({ boot }) => {
+  test("offers the desktop app when its own row is routed, and not the CLI", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [CLAUDE_CODE],
@@ -76,20 +76,17 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude", "Claude"],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Desktop");
 
     const dialog = app.page.getByRole("dialog");
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
     ).toBeVisible();
-    await expect(dialog.getByText("Claude Code").first()).toBeVisible();
     await expect(dialog.getByText("Claude Desktop").first()).toBeVisible();
-    // And the dialog draws the difference between the two, which is the reason
-    // the desktop app belongs here rather than being quietly left running: Gate
-    // can put it back, and cannot put a shell session back.
-    await expect(
-      dialog.getByText("Gate Connect will reopen Claude Desktop"),
-    ).toBeVisible();
+    // And the dialog draws why the desktop app belongs here rather than being
+    // quietly left running: Gate can put it back, and it is the only app here.
+    await expect(dialog.getByText("Gate Connect will close and reopen them.")).toBeVisible();
+    await expect(dialog.getByText("Claude Code")).toHaveCount(0);
 
     // The scan has to have been asked about it, which is the half a rendered
     // row cannot prove: the slug reaches Rust, where `agent_names_for` turns it
@@ -106,7 +103,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: [],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
 
     await expect.poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool"))).toBe(
       true,
@@ -121,7 +118,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
     // Nothing closed by the offer itself.
     expect(await app.lastCall("close_running_agents")).toBeNull();
 
@@ -142,7 +139,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.routeApp("Claude");
+    await app.routeApp("Claude Code");
     await app.page.getByRole("button", { name: "No, I will reopen later" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -369,7 +366,7 @@ test.describe("new UI running apps", () => {
         proxy: { running: true, ca_trusted: true },
       });
 
-      await app.page.getByRole("button", { name: "Claude" }).first().click();
+      await app.page.getByRole("button", { name: "Claude Code" }).first().click();
     });
   }
 

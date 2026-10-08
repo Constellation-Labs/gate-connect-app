@@ -81,6 +81,9 @@ const NEEDS: Record<string, ToolNeeds> = {
   codex: { tools: true, freeformTools: false },
   // Claude Code sends ordinary tool definitions.
   "claude-code": { tools: true, freeformTools: false },
+  // Claude Desktop's Gate model serves its Code tab, which is Claude Code, so
+  // it asks what Claude Code asks: a model with no tool use fails its first turn.
+  "claude-desktop": { tools: true, freeformTools: false },
   // Hermes is an agent and sends ordinary tool definitions on its turns, so a
   // model with no tool use cannot drive it.
   hermes: { tools: true, freeformTools: false },

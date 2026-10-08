@@ -14,7 +14,8 @@ import { TrayApp } from "./TrayApp";
  */
 afterEach(cleanup);
 
-const CLAUDE = ["claude-code", "claude-desktop", "claude-web"];
+/** The Claude Desktop pane's senders: the Code tab is stamped as the app. */
+const CLAUDE = ["claude-desktop", "claude-web"];
 const CHATGPT = ["chatgpt", "chatgpt-web", "codex"];
 
 /** One feed page whose rows all carry `status`. */
@@ -89,10 +90,11 @@ async function openApp(name: RegExp) {
   const row = await screen.findAllByRole("button", { name });
   fireEvent.click(row[0]);
 }
-const openClaude = () => openApp(/^Claude/);
+const openClaude = () => openApp(/^Claude Desktop/);
+const openClaudeCode = () => openApp(/^Claude Code/);
 
 describe("an app pane reads its whole section", () => {
-  it("asks for Claude Code, the desktop app and claude.ai together", async () => {
+  it("asks for the desktop app and claude.ai together, the Code tab included", async () => {
     boot();
     await openClaude();
 
@@ -104,13 +106,27 @@ describe("an app pane reads its whole section", () => {
     expect(callsTo("activity_overview")).toContainEqual(
       expect.objectContaining({ tools: CLAUDE, installId: "m-1" }),
     );
-    // No Gate model, so no tool-only read for the warning.
+    // No Gate model, so no app-only read for the warning.
     expect(callsTo("activity_tool_events")).not.toContainEqual(
-      expect.objectContaining({ tools: ["claude-code"] }),
+      expect.objectContaining({ tools: ["claude-desktop"] }),
     );
   });
 
-  it("reads the section even with no config tool installed", async () => {
+  it("reads Claude Code alone on its own pane", async () => {
+    boot();
+    await openClaudeCode();
+
+    await waitFor(() =>
+      expect(callsTo("activity_tool_events")).toContainEqual(
+        expect.objectContaining({ tools: ["claude-code"], installId: "m-1" }),
+      ),
+    );
+    expect(callsTo("activity_tool_events")).not.toContainEqual(
+      expect.objectContaining({ tools: CLAUDE }),
+    );
+  });
+
+  it("reads the desktop app's section with no Claude Code installed", async () => {
     boot((s) => {
       s.tools = s.tools.map((t) =>
         t.slug === "claude-code" ? { ...t, status: { kind: "not_installed" } } : t,
@@ -140,13 +156,13 @@ describe("an app pane reads its whole section", () => {
     );
   });
 
-  it("builds the Gate model warning from the tool's own rows, not the section's", async () => {
+  it("builds the Gate model warning from the app's own rows, not the section's", async () => {
     // The section feed answers all successes and the tool alone all errors:
     // the warning has to follow the second. Read off the section, the
     // successes would hide it.
     boot(
       (s) => {
-        s.toolModels.choices["claude-code"] = { source: "gate", model_ids: ["claude-opus-4"] };
+        s.toolModels.choices["claude-desktop"] = { source: "gate", model_ids: ["claude-opus-4"] };
       },
       (tools) => page(tools.length === 1 ? "error" : "success"),
     );
@@ -160,7 +176,7 @@ describe("an app pane reads its whole section", () => {
   it("does not let section errors raise the Gate model warning", async () => {
     boot(
       (s) => {
-        s.toolModels.choices["claude-code"] = { source: "gate", model_ids: ["claude-opus-4"] };
+        s.toolModels.choices["claude-desktop"] = { source: "gate", model_ids: ["claude-opus-4"] };
       },
       (tools) => page(tools.length === 1 ? "success" : "error"),
     );
@@ -168,7 +184,7 @@ describe("an app pane reads its whole section", () => {
 
     // Both reads answered, and React has drawn what they said.
     await waitFor(() => {
-      expect(answered.get("claude-code")).toBeGreaterThan(0);
+      expect(answered.get("claude-desktop")).toBeGreaterThan(0);
       expect(answered.get(CLAUDE.join(","))).toBeGreaterThan(0);
     });
     await act(async () => {
@@ -177,15 +193,15 @@ describe("an app pane reads its whole section", () => {
     expect(screen.queryByText(/The last few requests from this app have failed/)).toBeNull();
   });
 
-  it("reads the config tool alone for the Gate model warning", async () => {
+  it("reads the app alone for the Gate model warning", async () => {
     boot((s) => {
-      s.toolModels.choices["claude-code"] = { source: "gate", model_ids: ["claude-opus-4"] };
+      s.toolModels.choices["claude-desktop"] = { source: "gate", model_ids: ["claude-opus-4"] };
     });
     await openClaude();
 
     await waitFor(() =>
       expect(callsTo("activity_tool_events")).toContainEqual(
-        expect.objectContaining({ tools: ["claude-code"], installId: "m-1" }),
+        expect.objectContaining({ tools: ["claude-desktop"], installId: "m-1" }),
       ),
     );
   });
@@ -239,7 +255,8 @@ describe("the tray's section rows read what the panes read", () => {
     );
     const trayReads = callsTo("activity_overview").map((a) => a.tools);
     expect(trayReads).toContainEqual(["opencode"]);
-    expect(trayReads).not.toContainEqual(["claude-code"]);
+    // Claude Code is its own row, a tool like OpenCode.
+    expect(trayReads).toContainEqual(["claude-code"]);
     expect(trayReads).not.toContainEqual(["codex"]);
   });
 });
@@ -273,7 +290,7 @@ describe("the tray's section row draws the section's figures", () => {
     provider: "anthropic",
   });
 
-  it("counts the whole section's messages and alerts on the Claude row", async () => {
+  it("counts the whole section's messages and alerts on the Claude Desktop row", async () => {
     const state = defaultState();
     state.windowLabel = "tray";
     state.installations = {
@@ -313,10 +330,13 @@ describe("the tray's section row draws the section's figures", () => {
     };
     render(<TrayApp />);
 
-    const row = (await screen.findByRole("switch", { name: "Claude" })).closest("li")!;
+    const row = (await screen.findByRole("switch", { name: "Claude Desktop" })).closest("li")!;
     await waitFor(() => expect(row.textContent).toContain("7 messages"));
-    // Claude Code, claude.ai and the desktop app; not Codex's, not the
-    // unattributed one.
-    expect(row.textContent).toContain("3 alerts");
+    // claude.ai and the desktop app; not Claude Code's, which has its own row,
+    // not Codex's, not the unattributed one.
+    expect(row.textContent).toContain("2 alerts");
+    const cli = (await screen.findByRole("switch", { name: "Claude Code" })).closest("li")!;
+    await waitFor(() => expect(cli.textContent).toContain("1 message"));
+    expect(cli.textContent).toContain("1 alert");
   });
 });

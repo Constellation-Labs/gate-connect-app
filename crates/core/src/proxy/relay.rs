@@ -720,7 +720,8 @@ async fn proxy(
         }
         Route::Serve => {
             // The user put this tool on Gate models, and the tool's own config
-            // sent it here: Gate serves it on the org's credits, whatever the
+            // sent it here - or, for Claude Desktop, the engine moved its Code
+            // tab here: Gate serves it on the org's credits, whatever the
             // account's billing mode. Payg is forced for that reason - the
             // helper then strips the tool's own key, which would otherwise read
             // as a passthrough token and force BYOK.
@@ -739,18 +740,18 @@ async fn proxy(
             // has accepted paid use: a set stored some other way (an older build,
             // a hand edit) is not a licence to spend the org's credits.
             let tool_id = routed.tool.and_then(crate::registry::ToolId::from_slug);
-            let supported = tool_id
-                .and_then(crate::registry::find)
-                .is_some_and(|i| i.supports_gate_models());
+            // Claude Desktop is not a tool, and has Gate models all the same:
+            // the engine sends its Code tab here (`code_tab_gate_models`).
+            let supported = routed.tool == Some(crate::tool_models::DESKTOP_APP)
+                || tool_id
+                    .and_then(crate::registry::find)
+                    .is_some_and(|i| i.supports_gate_models());
             let enabled = routed
                 .tool
                 .filter(|_| supported)
                 .and_then(crate::preferences::gate_models_served_for);
             if enabled.is_none() {
-                let display = tool_id
-                    .and_then(crate::registry::find)
-                    .map(|i| i.display_name())
-                    .unwrap_or("This app");
+                let display = routed_display_name(routed.tool).unwrap_or("This app");
                 let refusal = super::gate_served::check_model(
                     routed.tool.unwrap_or("this app"),
                     display,
@@ -839,12 +840,7 @@ async fn proxy(
     // fetches for its picker carries no body and needs no check.
     if route == Route::Serve && method == hyper::Method::POST {
         let tool = routed.tool.unwrap_or("this app");
-        let display = routed
-            .tool
-            .and_then(crate::registry::ToolId::from_slug)
-            .and_then(crate::registry::find)
-            .map(|i| i.display_name())
-            .unwrap_or(tool);
+        let display = routed_display_name(routed.tool).unwrap_or(tool);
         let enabled = routed
             .tool
             .and_then(crate::preferences::gate_models_served_for);
@@ -1142,6 +1138,10 @@ struct Routed {
 /// would put a value in `x-gate-client` that the ledger's own vocabulary has no
 /// name for. Nothing writes such a URL; this keeps the set we accept equal to
 /// the set we write.
+///
+/// Claude Desktop is accepted although it is not a tool, because the engine
+/// writes it: the app's Code tab is moved onto the Gate models route under the
+/// app's own client slug ([`super::gate_served::desktop_app_root_url`]).
 fn split_tool_segment(path_and_query: &str) -> (Option<&'static str>, Cow<'_, str>) {
     let Some(rest) = path_and_query.strip_prefix(TOOL_PATH_PREFIX) else {
         return (None, Cow::Borrowed(path_and_query));
@@ -1154,8 +1154,22 @@ fn split_tool_segment(path_and_query: &str) -> (Option<&'static str>, Cow<'_, st
     };
     let tool = crate::registry::ToolId::from_slug(segment)
         .filter(|id| *id != crate::registry::ToolId::EnvProxy)
-        .map(crate::registry::ToolId::slug);
+        .map(crate::registry::ToolId::slug)
+        .or_else(|| {
+            (segment == crate::tool_models::DESKTOP_APP).then_some(crate::tool_models::DESKTOP_APP)
+        });
     (tool, Cow::Owned(inner))
+}
+
+/// The product name a refusal on the Gate models route names, for the tool
+/// marker [`split_tool_segment`] accepted.
+fn routed_display_name(tool: Option<&str>) -> Option<&'static str> {
+    if tool == Some(crate::tool_models::DESKTOP_APP) {
+        return Some(crate::taxonomy::Client::ClaudeDesktop.display_name());
+    }
+    tool.and_then(crate::registry::ToolId::from_slug)
+        .and_then(crate::registry::find)
+        .map(|i| i.display_name())
 }
 
 // Shared with the forwarder's relay listener, which splits the slug off the
@@ -1539,6 +1553,25 @@ mod tests {
                 id.slug()
             );
         }
+    }
+
+    /// Claude Desktop is the one marker that is not a tool: the engine moves
+    /// the app's Code tab onto its Gate model under it. It names the app on the
+    /// Gate models route, and it is a name the activity reads accept.
+    #[test]
+    fn the_desktop_app_marker_names_the_app() {
+        let r = resolved("/__gate/t/claude-desktop/gate/v1/messages?beta=true").expect("routes");
+        assert_eq!(r.tool, Some(crate::tool_models::DESKTOP_APP));
+        assert_eq!(r.route, Route::Serve);
+        assert_eq!(r.path_and_query, "/v1/messages?beta=true");
+        assert_eq!(
+            crate::proxy::stamped_client(crate::tool_models::DESKTOP_APP),
+            Some(crate::tool_models::DESKTOP_APP)
+        );
+        assert_eq!(
+            routed_display_name(Some(crate::tool_models::DESKTOP_APP)),
+            Some("Claude Desktop")
+        );
     }
 
     /// Whatever the marker names is a name the activity reads accept: the

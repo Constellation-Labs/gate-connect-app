@@ -69,6 +69,35 @@ export const GATE_MODEL_TOOLS: ReadonlySet<string> = new Set(["codex", "hermes",
  */
 export const MAX_GATE_MODELS = 4;
 
+/**
+ * The key Claude Desktop's model choice is stored under: its client slug, since
+ * the app is not a tool and Gate writes no config for it. The backend reads it
+ * per request and moves the app's Code tab onto it
+ * (`tool_models::choose_for_desktop_app`).
+ */
+export const DESKTOP_APP_MODEL_KEY = "claude-desktop";
+
+/**
+ * The Gate model choice an app pane's card reads and writes, or null for a pane
+ * with no card.
+ *
+ * A config tool's own slug where it takes Gate models ({@link GATE_MODEL_TOOLS});
+ * otherwise the Claude Desktop pane's own key, which has no tool behind it.
+ */
+export function gateModelKey(sectionId: string, openTool: string | null): string | null {
+  if (openTool !== null && GATE_MODEL_TOOLS.has(openTool)) return openTool;
+  return sectionId === "claude-desktop" ? DESKTOP_APP_MODEL_KEY : null;
+}
+
+/**
+ * How many Gate models one choice may hold: one for Claude Desktop, whose own
+ * picker cannot choose between Gate models (design, 2026-10-08), and
+ * {@link MAX_GATE_MODELS} for every tool. The backend refuses past each.
+ */
+export function maxGateModels(key: string | null): number {
+  return key === DESKTOP_APP_MODEL_KEY ? 1 : MAX_GATE_MODELS;
+}
+
 /** What Gate serves for one platform. Mirrors the gateway's `source`. */
 export type ModelSource = "tool" | "gate";
 
@@ -213,13 +242,17 @@ export type ModelChoiceStep =
  * made that a loss: a round trip through App default dropped every model after
  * the first, and the Gate radio then named one where the user had enabled six.
  */
-export function stepForChoice(choice: "app" | "gate", modelIds: string[]): ModelChoiceStep {
+export function stepForChoice(
+  choice: "app" | "gate",
+  modelIds: string[],
+  limit: number = MAX_GATE_MODELS,
+): ModelChoiceStep {
   if (choice === "app") return { kind: "remember", modelIds: [...modelIds] };
   // Gate cannot serve a model nobody enabled. Nor more than the limit: a set
   // remembered from before it existed would be refused by the backend, so the
   // picker opens on it instead and Apply waits until it is trimmed (review on
-  // #388).
-  return modelIds.length > 0 && modelIds.length <= MAX_GATE_MODELS
+  // #388). `limit` is the app's own ({@link maxGateModels}).
+  return modelIds.length > 0 && modelIds.length <= limit
     ? { kind: "activate", modelIds: [...modelIds] }
     : { kind: "pick" };
 }

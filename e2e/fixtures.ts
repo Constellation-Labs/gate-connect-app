@@ -51,7 +51,7 @@ export class App {
     }, patch as Record<string, unknown>);
   }
 
-  /** A section row on Home ("Claude", "ChatGPT / Codex", "Terminal"). */
+  /** A section row on Home ("Claude Desktop", "ChatGPT / Codex", "Terminal"). */
   familyRow(name: string) {
     return this.page.getByRole("button", { name: `${name} details` });
   }

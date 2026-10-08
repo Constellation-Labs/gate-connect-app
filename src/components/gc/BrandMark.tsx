@@ -122,10 +122,12 @@ export function brandMarkFor(slug: string, size?: BrandMarkSize): JSX.Element | 
 /**
  * Sections whose mark is not their first member's.
  *
- * Both multi-surface sections, and for one reason: their first member is a CLI,
- * so the row named for a whole app wore its terminal tool's mark - Claude the
- * Claude Code chevrons, ChatGPT / Codex the Codex knot. A row is the app now, so
- * it takes the app's mark and the CLI keeps its own inside the pane.
+ * The multi-surface sections, and for one reason: their first member is not the
+ * app's own mark. ChatGPT / Codex leads with Codex, so the row named for a whole
+ * app wore its terminal tool's knot; Claude Desktop leads with the API host,
+ * which carries the same starburst, and is listed so the row does not depend on
+ * that coincidence. Claude Code is its own row since the 2026-10-08 split and
+ * takes its chevrons from the member walk below.
  *
  * The member walk below answers for every other section, where the app's own
  * tool is the first member and its mark is already the right one - OpenCode,
@@ -137,7 +139,7 @@ export function brandMarkFor(slug: string, size?: BrandMarkSize): JSX.Element | 
  * component.
  */
 const BRAND_BY_SECTION: Record<string, BrandName> = {
-  claude: "claude",
+  "claude-desktop": "claude",
   chatgpt: "openai",
 };
 
@@ -153,8 +155,8 @@ const BRAND_BY_SECTION: Record<string, BrandName> = {
  * first SURVIVING member, so uninstalling Claude Code silently changed the row's
  * icon.
  *
- * Section order, not member order: `SECTIONS` lists the app's own tool first, so
- * the Claude row keeps the Claude Code mark whether or not the CLI is installed.
+ * Section order, not member order: `SECTIONS` lists the app's own member first,
+ * so a row keeps its mark whether or not a later member is installed.
  * Falls back to the id so a section synthesised from an unplaced member (whose
  * id IS its member key) still resolves.
  */

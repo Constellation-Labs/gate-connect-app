@@ -240,3 +240,37 @@ fn a_gate_choice_is_limited_to_four_models() {
     choose(tool, ModelSource::Tool, ids(6), false, vec![])
         .expect("App default is not held to the limit");
 }
+
+/// Claude Desktop takes one Gate model, and is served it like any tool once
+/// paid use is accepted. A set is refused before anything is stored, so the
+/// engine never has to pick between models the app has no picker for.
+#[test]
+fn claude_desktop_takes_one_gate_model() {
+    use gate_connect_core::preferences::gate_models_served_for;
+    use gate_connect_core::tool_models::{choose_for_desktop_app, DESKTOP_APP};
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+
+    let two = vec!["a/one".to_string(), "b/two".to_string()];
+    assert!(choose_for_desktop_app(ModelSource::Gate, two.clone(), true, vec![]).is_err());
+    assert!(
+        !load().tool_models.contains_key(DESKTOP_APP),
+        "nothing stored"
+    );
+    assert!(
+        load().gate_model_paid_ack_unix.is_none(),
+        "nothing accepted"
+    );
+
+    // App default may remember a set: it spends nothing.
+    choose_for_desktop_app(ModelSource::Tool, two, false, vec![]).expect("app default");
+    assert_eq!(gate_models_served_for(DESKTOP_APP), None);
+
+    choose_for_desktop_app(ModelSource::Gate, vec!["a/one".into()], true, vec![])
+        .expect("one model");
+    assert_eq!(
+        gate_models_served_for(DESKTOP_APP),
+        Some(vec!["a/one".to_string()])
+    );
+    assert_eq!(DESKTOP_APP, "claude-desktop");
+}

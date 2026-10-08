@@ -23,7 +23,7 @@ test.describe("tray popover", () => {
 
     // One switch per app. Claude holds a session surface, so `routeApp` answers
     // the confirmation the switch raises before it routes anything.
-    await app.routeTrayApp("Claude");
+    await app.routeTrayApp("Claude Code");
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -131,7 +131,7 @@ test.describe("tray popover", () => {
       // The TRAY's own switch, which it still has - `appSwitch` now opens the
       // window's app pane, which is a different surface.
       .filter({
-        has: app.page.getByRole("switch", { name: "Claude", exact: true }),
+        has: app.page.getByRole("switch", { name: "Claude Code", exact: true }),
       });
     await expect(row).toContainText("2 alerts");
 
@@ -165,7 +165,7 @@ test.describe("tray popover", () => {
     // the absence check below cannot pass on a popover that has not read yet.
     const row = app.page
       .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Claude", exact: true }) });
+      .filter({ has: app.page.getByRole("switch", { name: "Claude Code", exact: true }) });
     await expect(row).toContainText("1 alert");
     await expect(app.page.getByText(/security event/i)).toHaveCount(0);
   });
