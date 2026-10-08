@@ -1124,28 +1124,24 @@ impl HttpHandler for GateHandler {
         // written to the debug log below. `Uri::path()` excludes the query, so
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
-        // Claude Code in the desktop app's Code tab, while the user has put
-        // Claude Code on Gate models. See `code_tab_gate_models`.
-        if self.intercepting() && self.peer_allowed(ctx) {
-            if let Some(enabled) = code_tab_gate_models(&req, host.as_deref(), &path) {
-                let default = enabled[0].clone();
-                return match onto_gate_models_route(req, self.relay_port, &enabled).await {
-                    Ok(req) => {
-                        self.forwarded = Some(format!(
-                            "POST {}{path} -> gate-models",
-                            host.as_deref().unwrap_or("?")
-                        ));
-                        if debug_log() {
-                            eprintln!("[gate-proxy] {path} from the desktop Code tab -> gate models ({default})");
-                        }
-                        req.into()
-                    }
-                    Err(e) => {
-                        eprintln!("[gate-proxy] {path} from the desktop Code tab could not go to gate models: {e:#}");
-                        RequestOrResponse::Response(gate_models_unavailable_response())
-                    }
-                };
+        // Claude Code in the desktop app's Code tab, while Claude Code is on
+        // Gate models. See `code_tab_gate_models`.
+        let intercepting = self.intercepting();
+        if let Some(enabled) = code_tab_gate_models(
+            intercepting,
+            || self.peer_allowed(ctx),
+            &req,
+            host.as_deref(),
+            &path,
+        ) {
+            let (answer, moved) = move_code_tab_turn(req, self.relay_port, &enabled, &path).await;
+            if moved {
+                self.forwarded = Some(format!(
+                    "POST {}{path} -> gate-models",
+                    host.as_deref().unwrap_or("?")
+                ));
             }
+            return answer;
         }
         // Asked before the rewrite below, which has to know: a navigation on
         // chatgpt.com is never routed, and never carries anything of ours.
@@ -1711,8 +1707,9 @@ impl HttpHandler for GateHandler {
     }
 }
 
-/// The enabled Gate models to serve this request on, the default first, when it is Claude Code in
-/// the desktop app's Code tab and the user has put Claude Code on Gate models.
+/// The enabled Gate models to serve this request on, the default first, when it
+/// is Claude Code in the desktop app's Code tab and Claude Code is on Gate
+/// models.
 ///
 /// **The one place Gate models substitute rather than refuse.** Everywhere else
 /// the model lives in the tool's own config and the route refuses anything
@@ -1729,16 +1726,36 @@ impl HttpHandler for GateHandler {
 /// Only the two inference paths the route serves; the Code tab's other calls to
 /// the host keep going to Anthropic as they did. A model already in the enabled
 /// set is kept, so a desktop build that does honour the picker gets what it
-/// asked for. `served_for` is [`crate::preferences::gate_models_served_for`]
-/// in production: the set only once paid use has been accepted, so nothing is
-/// substituted that the route would then refuse.
+/// asked for.
+///
+/// Two readings, both required. `served_for` is
+/// [`crate::preferences::gate_models_served_for`] in production: the set, only
+/// once paid use has been accepted, so nothing is substituted that the route
+/// would then refuse. `applied` is
+/// [`crate::integrations::claude_code::applied_gate_model`]: the model Claude
+/// Code is running on while it is connected on Gate models. The preference alone
+/// is not enough, because it outlives Claude Code's switch - disconnecting puts
+/// `settings.json` back and keeps the choice for the next connect - so with
+/// Claude Code off and the Claude desktop app routed, it would bill the Code tab
+/// to the organization for a tool the user had turned off. The relay route never
+/// had that problem: a request only reaches it through a config that points
+/// there. `applied` also leads the set, because the CLI keeps the user's
+/// `/model` pick and the Code tab should start on the same one.
+///
+/// Parked, or a peer that is not the owner, and nothing is moved: the same two
+/// gates every rewrite in `handle_request` sits behind. `peer_allowed` is asked
+/// last of the request's own checks, since it can cost a UID lookup.
 fn code_tab_gate_models_with<T>(
+    intercepting: bool,
+    peer_allowed: impl FnOnce() -> bool,
     req: &Request<T>,
     host: Option<&str>,
     path: &str,
     served_for: impl Fn(&str) -> Option<Vec<String>>,
+    applied: impl Fn() -> Option<String>,
 ) -> Option<Vec<String>> {
-    if req.method() != Method::POST
+    if !intercepting
+        || req.method() != Method::POST
         || !matches!(path, "/v1/messages" | "/v1/messages/count_tokens")
         || !host.is_some_and(|h| crate::proxy::claude_code_route_domain().matches_host(h))
     {
@@ -1748,18 +1765,65 @@ fn code_tab_gate_models_with<T>(
         .headers()
         .get(hudsucker::hyper::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())?;
-    if !crate::proxy::is_desktop_code_tab(ua) {
+    if !crate::proxy::is_desktop_code_tab(ua) || !peer_allowed() {
         return None;
     }
-    served_for(crate::registry::ToolId::ClaudeCode.slug()).filter(|set| !set.is_empty())
+    let mut set =
+        served_for(crate::registry::ToolId::ClaudeCode.slug()).filter(|set| !set.is_empty())?;
+    let current = applied()?;
+    if let Some(i) = set.iter().position(|id| *id == current) {
+        set[..=i].rotate_right(1);
+    }
+    Some(set)
 }
 
 fn code_tab_gate_models<T>(
+    intercepting: bool,
+    peer_allowed: impl FnOnce() -> bool,
     req: &Request<T>,
     host: Option<&str>,
     path: &str,
 ) -> Option<Vec<String>> {
-    code_tab_gate_models_with(req, host, path, crate::preferences::gate_models_served_for)
+    code_tab_gate_models_with(
+        intercepting,
+        peer_allowed,
+        req,
+        host,
+        path,
+        crate::preferences::gate_models_served_for,
+        crate::integrations::claude_code::applied_gate_model,
+    )
+}
+
+/// Send a Code tab request matched by [`code_tab_gate_models`] to the Gate
+/// models route, and whether it went: a request that could not be moved is
+/// answered with [`gate_models_unavailable_response`] and never forwarded.
+async fn move_code_tab_turn(
+    req: Request<Body>,
+    relay_port: u16,
+    enabled: &[String],
+    path: &str,
+) -> (RequestOrResponse, bool) {
+    match onto_gate_models_route(req, relay_port, enabled).await {
+        Ok(req) => {
+            if debug_log() {
+                eprintln!(
+                    "[gate-proxy] {path} from the desktop Code tab -> gate models ({})",
+                    enabled[0]
+                );
+            }
+            (req.into(), true)
+        }
+        Err(e) => {
+            eprintln!(
+                "[gate-proxy] {path} from the desktop Code tab could not go to gate models: {e:#}"
+            );
+            (
+                RequestOrResponse::Response(gate_models_unavailable_response()),
+                false,
+            )
+        }
+    }
 }
 
 /// Point a Code tab request at the relay's Gate models route for Claude Code,
@@ -3223,9 +3287,10 @@ mod tests {
         let on = |_: &str| Some(vec!["deepseek/deepseek-flash-latest".to_string()]);
         let off = |_: &str| None;
         let host = Some("api.anthropic.com");
+        let connected = || Some("deepseek/deepseek-flash-latest".to_string());
         let moved =
             |req: &Request<()>, path: &str, served: &dyn Fn(&str) -> Option<Vec<String>>| {
-                code_tab_gate_models_with(req, host, path, served)
+                code_tab_gate_models_with(true, || true, req, host, path, served, connected)
             };
 
         for path in ["/v1/messages", "/v1/messages/count_tokens"] {
@@ -3258,9 +3323,95 @@ mod tests {
         assert!(moved(&get, "/v1/messages", &on).is_none());
         // And only on Anthropic's host.
         let turn = code_tab_turn("/v1/messages", CODE_TAB_UA);
+        assert!(code_tab_gate_models_with(
+            true,
+            || true,
+            &turn,
+            Some("example.com"),
+            "/v1/messages",
+            on,
+            connected
+        )
+        .is_none());
+    }
+
+    /// The gates around the match: what decides whether the organization pays.
+    #[test]
+    fn a_code_tab_turn_is_moved_only_while_claude_code_is_connected_on_gate_models() {
+        let set = || {
+            Some(vec![
+                "deepseek/deepseek-flash-latest".to_string(),
+                "qwen/qwen3-max".to_string(),
+            ])
+        };
+        let turn = code_tab_turn("/v1/messages", CODE_TAB_UA);
+        let host = Some("api.anthropic.com");
+        let decide = |intercepting: bool, allowed: bool, applied: Option<&str>| {
+            code_tab_gate_models_with(
+                intercepting,
+                || allowed,
+                &turn,
+                host,
+                "/v1/messages",
+                |_| set(),
+                || applied.map(str::to_owned),
+            )
+        };
+
+        // The preference outlives the switch: Claude Code off, with the
+        // desktop app still routed, must not bill the Code tab to Gate.
         assert!(
-            code_tab_gate_models_with(&turn, Some("example.com"), "/v1/messages", on).is_none()
+            decide(true, true, None).is_none(),
+            "Claude Code not connected"
         );
+        // The two gates every rewrite sits behind.
+        assert!(
+            decide(false, true, Some("qwen/qwen3-max")).is_none(),
+            "parked"
+        );
+        assert!(
+            decide(true, false, Some("qwen/qwen3-max")).is_none(),
+            "not the owner"
+        );
+        // Connected: the CLI's current pick leads, so the Code tab starts on it.
+        assert_eq!(
+            decide(true, true, Some("qwen/qwen3-max")),
+            Some(vec![
+                "qwen/qwen3-max".to_string(),
+                "deepseek/deepseek-flash-latest".to_string(),
+            ])
+        );
+        // A pick outside the set (a stale config) keeps the set's own order.
+        assert_eq!(decide(true, true, Some("other/model")), set());
+    }
+
+    /// A turn that cannot be moved is answered here, never sent on to
+    /// Anthropic on the user's own plan.
+    #[tokio::test]
+    async fn a_turn_that_cannot_be_moved_is_refused_not_forwarded() {
+        let body = Body::from_stream(futures_util::stream::iter(vec![Err::<
+            bytes::Bytes,
+            std::io::Error,
+        >(
+            std::io::Error::other("client went away"),
+        )]));
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages")
+            .body(body)
+            .unwrap();
+        let (answer, moved) = move_code_tab_turn(
+            req,
+            47106,
+            &["deepseek/deepseek-flash-latest".to_string()],
+            "/v1/messages",
+        )
+        .await;
+        assert!(!moved);
+        let RequestOrResponse::Response(res) = answer else {
+            panic!("an unmovable turn was forwarded");
+        };
+        assert_eq!(res.status(), hudsucker::hyper::StatusCode::BAD_GATEWAY);
     }
 
     #[test]
