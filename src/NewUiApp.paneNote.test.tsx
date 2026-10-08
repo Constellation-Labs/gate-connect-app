@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { defaultState } from "../e2e/backend";
 import { installFakeTauri } from "../e2e/install";
-import { NewUiApp, partlyProtectedCopy } from "./NewUiApp";
+import { NewUiApp } from "./NewUiApp";
+import { partlyProtectedCopy } from "./lib/verdict";
 
 /**
  * The app pane's card for a section that is only partly routing: it names the

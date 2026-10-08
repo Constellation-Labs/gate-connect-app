@@ -76,6 +76,7 @@ import {
 } from "./lib/groups";
 import {
   CHECKING_DETAIL,
+  partlyProtectedCopy,
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
   sectionStatus,
@@ -237,27 +238,6 @@ function detectionSignature(reading: unknown): string {
  * Gate model catalogue, which the picker draws empty. Disconnect and reset wait
  * on a first-run screen to return to.
  */
-/**
- * The partly protected card's words, for the surfaces that are off.
- *
- * A function of its own because no section today has two off surfaces that
- * govern it, so the plural can only be reached from a test.
- */
-export function partlyProtectedCopy(
-  appName: string,
-  off: string[],
-): { title: string; body: string; label: string } {
-  const one = off.length === 1;
-  const names = one ? off[0] : `${off.slice(0, -1).join(", ")} and ${off[off.length - 1]}`;
-  return {
-    title: `${appName} isn’t fully protected`,
-    body: `${names} ${one ? "isn’t" : "aren’t"} routed through Gate, so ${one ? "its" : "their"} traffic goes straight to the provider.`,
-    // "Route", not "Turn on": beside an app's name, "Turn on" reads as
-    // launching it. The body has just named the surface, so "it".
-    label: one ? "Route it" : "Route them",
-  };
-}
-
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
   /** Observed routing, by slug. Separate from `tools` because it answers a
