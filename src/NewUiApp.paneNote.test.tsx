@@ -42,7 +42,10 @@ describe("the partly protected card", () => {
     // Amber, not the neutral info card it replaced.
     expect(note.className).toContain("bg-amber-50");
 
-    fireEvent.click(screen.getByRole("button", { name: "Route it" }));
+    const button = screen.getByRole("button", { name: "Route it" });
+    // Filled primary, not the outline button `ReopenAlert` draws.
+    expect(button.className).toContain("bg-base-primary");
+    fireEvent.click(button);
 
     await waitFor(() => expect(callsTo("connect_tool")).toEqual([{ slug: "claude-code" }]));
     expect(callsTo("proxy_set_domain")).toEqual([]);

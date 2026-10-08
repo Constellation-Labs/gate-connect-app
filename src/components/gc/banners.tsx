@@ -358,7 +358,9 @@ export function PaneNote({
           type="button"
           onClick={action.onClick}
           disabled={action.busy}
-          className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          // Filled primary, the treatment `Modal`'s primary button draws, at this
+          // card's size: the one action on a card that names a fault.
+          className="shrink-0 rounded-control border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] px-3 py-2 text-base-xs font-medium leading-4 text-base-primary-foreground shadow-base-btn-primary transition-colors hover:bg-blue-ribbon-800 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           {action.label}
         </button>
