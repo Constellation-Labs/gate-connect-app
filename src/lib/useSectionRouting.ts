@@ -59,10 +59,10 @@ export function useSectionRouting({
   /**
    * Route exactly these members, with the certificate gate and the close offer.
    * `routeSection` passes the section's cascade; the pane's partly-protected
-   * card passes the surfaces it names, and nothing else the cascade would sweep
-   * in with them.
+   * card passes the surfaces it names, through `routeMembers`, and nothing else
+   * the cascade would sweep in with them.
    */
-  const routeMembers = useCallback(
+  const routeTargets = useCallback(
     async (targets: GroupMember[], next: boolean) => {
       if (inFlight.current) return;
       if (targets.length === 0) return;
@@ -145,8 +145,23 @@ export function useSectionRouting({
    */
   const routeSection = useCallback(
     (section: Group, next: boolean) =>
-      routeMembers(cascadeTargets(section, next, { sessions: true }), next),
-    [routeMembers],
+      routeTargets(cascadeTargets(section, next, { sessions: true }), next),
+    [routeTargets],
+  );
+
+  /**
+   * Route these members from a click: the pane card's counterpart of `toggle`.
+   *
+   * It clears the last failure first, for the reason `toggle` does: a card that
+   * retried a member and succeeded otherwise left "Could not connect" on screen
+   * over a section that had just come back.
+   */
+  const routeMembers = useCallback(
+    (targets: GroupMember[], next: boolean) => {
+      onBeforeRoute();
+      return routeTargets(targets, next);
+    },
+    [onBeforeRoute, routeTargets],
   );
 
   /**

@@ -20,6 +20,7 @@ import {
   notInstalledSections,
   paneClients,
   sectionMemberKeys,
+  surfaceName,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -355,6 +356,7 @@ describe("sectionStatus", () => {
     expect(sectionStatus(claude, apps)).toEqual({
       kind: "not-protected",
       detail: "Partly protected: 1 of 2",
+      partly: true,
     });
   });
 
@@ -417,6 +419,31 @@ describe("sectionStatus", () => {
     // brokered surface routing, the section is routing.
     const [claude] = buildGroups([], [domain(), sessionDomain()], ON);
     expect(sectionStatus(claude, new Map())).toEqual({ kind: "protected" });
+  });
+});
+
+/**
+ * What the partly protected card calls a surface. Each step of the fallback,
+ * because the card's two integration tests reach only two of them.
+ */
+describe("surfaceName", () => {
+  const member = (key: string, name: string, tool?: Tool) =>
+    ({ key, name, tool }) as GroupMember;
+
+  it("names a proxy surface for its program, not its row label", () => {
+    expect(surfaceName(member("anthropic", "API"))).toBe("Claude Desktop");
+    expect(surfaceName(member("chatgpt", "Subscription"))).toBe("ChatGPT Work");
+  });
+
+  it("names a config tool by its product", () => {
+    const t = tool("claude-code", "CLI", { kind: "connected" });
+    expect(surfaceName(member("claude-code", "CLI", { ...t, product_name: "Claude Code" }))).toBe(
+      "Claude Code",
+    );
+  });
+
+  it("falls back to the row label when nothing else names it", () => {
+    expect(surfaceName(member("openrouter", "OpenRouter"))).toBe("OpenRouter");
   });
 });
 

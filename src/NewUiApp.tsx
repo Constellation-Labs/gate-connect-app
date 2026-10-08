@@ -76,7 +76,6 @@ import {
 } from "./lib/groups";
 import {
   CHECKING_DETAIL,
-  PARTLY_PROTECTED,
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
   sectionStatus,
@@ -238,6 +237,27 @@ function detectionSignature(reading: unknown): string {
  * Gate model catalogue, which the picker draws empty. Disconnect and reset wait
  * on a first-run screen to return to.
  */
+/**
+ * The partly protected card's words, for the surfaces that are off.
+ *
+ * A function of its own because no section today has two off surfaces that
+ * govern it, so the plural can only be reached from a test.
+ */
+export function partlyProtectedCopy(
+  appName: string,
+  off: string[],
+): { title: string; body: string; label: string } {
+  const one = off.length === 1;
+  const names = one ? off[0] : `${off.slice(0, -1).join(", ")} and ${off[off.length - 1]}`;
+  return {
+    title: `${appName} isn’t fully protected`,
+    body: `${names} ${one ? "isn’t" : "aren’t"} routed through Gate, so ${one ? "its" : "their"} traffic goes straight to the provider.`,
+    // "Route", not "Turn on": beside an app's name, "Turn on" reads as
+    // launching it. The body has just named the surface, so "it".
+    label: one ? "Route it" : "Route them",
+  };
+}
+
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
   /** Observed routing, by slug. Separate from `tools` because it answers a
@@ -1859,8 +1879,6 @@ export function NewUiApp() {
     // same click.
     onBeforeRoute: () => {
       setActionError(null);
-      // And the reload advice, for the same reason one line up: it is a claim
-      // about where this person's traffic is going, and the click in progress
     },
     routeApp: (slug, next) => void routeApp(slug, next),
   });
@@ -2757,37 +2775,38 @@ export function NewUiApp() {
     )
       return undefined;
     // Partly protected is the one reason with a fix this pane owns: some of the
-    // app's surfaces are switched off under a switch that reads on, and the app
-    // switch's own cascade turns on exactly those (`cascadeTargets` skips the
-    // members already on).
+    // app's surfaces are switched off under a switch that reads on. The app
+    // switch cannot be the fix: this card exists because the switch reads On,
+    // and clicking it turns the app off.
     //
     // The body names the surfaces that are off, from the same governing members
     // `sectionStatus` counted, so the card says which program to look at rather
     // than a bare "1 of 2".
     //
-    // The button turns on those surfaces and nothing else. The app switch's
-    // cascade would also sweep in a signed-in surface the card never named
-    // (claude.ai), and it is the switch anyway: this card exists because the
-    // switch reads On, and clicking it turns the app off.
-    const group = groups.find((g) => g.id === view.slug);
-    const offMembers = group ? governingMembers(group.members).filter((m) => !m.routed) : [];
-    const off = offMembers.map(surfaceName);
-    if (detail.startsWith(PARTLY_PROTECTED) && off.length > 0) {
-      const names =
-        off.length === 1 ? off[0] : `${off.slice(0, -1).join(", ")} and ${off[off.length - 1]}`;
-      return (
-        <PaneNote
-          title={`${app.name} isn’t fully protected`}
-          body={`${names} ${off.length === 1 ? "isn’t" : "aren’t"} routed through Gate, so ${off.length === 1 ? "its" : "their"} traffic goes straight to the provider.`}
-          action={{
-            // "Route", not "Turn on": beside an app's name, "Turn on" reads as
-            // launching it. The body has just named the surface, so "it".
-            label: off.length === 1 ? "Route it" : "Route them",
-            busy: routingBusy,
-            onClick: () => void routeMembers(offMembers, true),
-          }}
-        />
-      );
+    // The button turns on those surfaces and nothing else. For Claude that
+    // leaves claude.ai alone, which the switch's cascade would sweep in: it is
+    // not a governing member, so the card never named it. A section with no
+    // brokered member - ChatGPT on a machine without the Codex CLI - is
+    // governed by its signed-in surfaces, so there the button can route one;
+    // the card has named it before the click, which is more than the switch
+    // does.
+    if (app.status.partly) {
+      const group = groups.find((g) => g.id === view.slug);
+      const offMembers = group ? governingMembers(group.members).filter((m) => !m.routed) : [];
+      if (offMembers.length > 0) {
+        const copy = partlyProtectedCopy(app.name, offMembers.map(surfaceName));
+        return (
+          <PaneNote
+            title={copy.title}
+            body={copy.body}
+            action={{
+              label: copy.label,
+              busy: routingBusy,
+              onClick: () => void routeMembers(offMembers, true),
+            }}
+          />
+        );
+      }
     }
     return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
   }, [view, reopenAlert, paneNotice, paneWriteError, railApps, groups, routingBusy, routeMembers]);
