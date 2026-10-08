@@ -1131,7 +1131,10 @@ impl HttpHandler for GateHandler {
                 let default = enabled[0].clone();
                 return match onto_gate_models_route(req, self.relay_port, &enabled).await {
                     Ok(req) => {
-                        self.forwarded = Some(format!("POST {path} -> gate-models"));
+                        self.forwarded = Some(format!(
+                            "POST {}{path} -> gate-models",
+                            host.as_deref().unwrap_or("?")
+                        ));
                         if debug_log() {
                             eprintln!("[gate-proxy] {path} from the desktop Code tab -> gate models ({default})");
                         }
@@ -1708,8 +1711,6 @@ impl HttpHandler for GateHandler {
     }
 }
 
-/// The response sent in place of a declined upgrade.
-///
 /// The enabled Gate models to serve this request on, the default first, when it is Claude Code in
 /// the desktop app's Code tab and the user has put Claude Code on Gate models.
 ///
@@ -1791,15 +1792,6 @@ async fn onto_gate_models_route(
     parts.uri = format!("{root}{pq}")
         .parse()
         .context("building the Gate models route URI")?;
-    let authority = parts
-        .uri
-        .authority()
-        .map(|a| a.to_string())
-        .unwrap_or_default();
-    parts.headers.insert(
-        hudsucker::hyper::header::HOST,
-        HeaderValue::from_str(&authority).context("building the relay host header")?,
-    );
     parts.headers.insert(
         hudsucker::hyper::header::CONTENT_LENGTH,
         HeaderValue::from(bytes.len()),
@@ -1844,6 +1836,8 @@ fn gate_models_unavailable_response() -> hudsucker::hyper::Response<Body> {
         .expect("static gate models response builds")
 }
 
+/// The response sent in place of a declined upgrade.
+///
 /// Shaped like the provider's own error envelope so a client that surfaces the
 /// body shows something coherent, and typed distinctly (`gate_ws_downgrade`) so
 /// this is greppable in a client log and cannot be mistaken for an upstream 400.
@@ -3312,7 +3306,6 @@ mod tests {
             moved.uri().to_string(),
             "http://127.0.0.1:47106/__gate/t/claude-code/gate/v1/messages?beta=true"
         );
-        assert_eq!(moved.headers()["host"], "127.0.0.1:47106");
         use http_body_util::BodyExt;
         let len = moved.headers()["content-length"].clone();
         let body = moved.into_body().collect().await.unwrap().to_bytes();
