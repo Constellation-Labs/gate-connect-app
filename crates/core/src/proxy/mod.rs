@@ -3135,7 +3135,7 @@ const ANTHROPIC_DESKTOP_PLATFORM: &str = "desktop_app";
 /// also runs Claude Code from inside the desktop app and its headers have not
 /// been captured. Until they are, anything else carrying `desktop_app` stays
 /// the desktop app's, which is what it was before this existed.
-fn is_desktop_code_tab(user_agent: &str) -> bool {
+pub(crate) fn is_desktop_code_tab(user_agent: &str) -> bool {
     user_agent
         .trim_start()
         .strip_prefix("claude-cli/")

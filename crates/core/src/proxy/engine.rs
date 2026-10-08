@@ -755,6 +755,9 @@ struct GateHandler {
     /// One-shot latch for the "unrecognised app shell" line in
     /// `handle_request`, shared across handler clones for the same reason.
     app_shell_unrecognised_logged: Arc<AtomicBool>,
+    /// The relay this engine runs beside, which serves the Gate models route a
+    /// desktop Code tab request is sent to ([`code_tab_gate_models`]).
+    relay_port: u16,
     /// What `handle_request` forwarded, as `<method> <host><path> -> <action>`,
     /// so `handle_error` can name the request that failed: hudsucker hands it
     /// only the client error, and its `HttpContext` carries just the peer
@@ -1121,6 +1124,26 @@ impl HttpHandler for GateHandler {
         // written to the debug log below. `Uri::path()` excludes the query, so
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
+        // Claude Code in the desktop app's Code tab, while the user has put
+        // Claude Code on Gate models. See `code_tab_gate_models`.
+        if self.intercepting() && self.peer_allowed(ctx) {
+            if let Some(enabled) = code_tab_gate_models(&req, host.as_deref(), &path) {
+                let default = enabled[0].clone();
+                return match onto_gate_models_route(req, self.relay_port, &enabled).await {
+                    Ok(req) => {
+                        self.forwarded = Some(format!("POST {path} -> gate-models"));
+                        if debug_log() {
+                            eprintln!("[gate-proxy] {path} from the desktop Code tab -> gate models ({default})");
+                        }
+                        req.into()
+                    }
+                    Err(e) => {
+                        eprintln!("[gate-proxy] {path} from the desktop Code tab could not go to gate models: {e:#}");
+                        RequestOrResponse::Response(gate_models_unavailable_response())
+                    }
+                };
+            }
+        }
         // Asked before the rewrite below, which has to know: a navigation on
         // chatgpt.com is never routed, and never carries anything of ours.
         // Scoped to that host so these header reads stay off every other
@@ -1687,6 +1710,140 @@ impl HttpHandler for GateHandler {
 
 /// The response sent in place of a declined upgrade.
 ///
+/// The enabled Gate models to serve this request on, the default first, when it is Claude Code in
+/// the desktop app's Code tab and the user has put Claude Code on Gate models.
+///
+/// **The one place Gate models substitute rather than refuse.** Everywhere else
+/// the model lives in the tool's own config and the route refuses anything
+/// outside the enabled set (`gate_served`), because rewriting it would leave the
+/// tool reasoning about a model it is not being served. The Code tab leaves no
+/// other way in: the desktop app launches `claude` with `ANTHROPIC_BASE_URL` set
+/// to `https://api.anthropic.com` over whatever `settings.json` says, starts the
+/// session on the full model id its own picker chose, so the tier variables
+/// never resolve, and ignores `modelPicker`. Observed 2026-10-07 on the Windows
+/// app 2.19675.1 with Claude Code 2.1.288. So the request is moved here instead,
+/// with the cost named: the app keeps showing an Anthropic model and sizes its
+/// context window for it.
+///
+/// Only the two inference paths the route serves; the Code tab's other calls to
+/// the host keep going to Anthropic as they did. A model already in the enabled
+/// set is kept, so a desktop build that does honour the picker gets what it
+/// asked for. `served_for` is [`crate::preferences::gate_models_served_for`]
+/// in production: the set only once paid use has been accepted, so nothing is
+/// substituted that the route would then refuse.
+fn code_tab_gate_models_with<T>(
+    req: &Request<T>,
+    host: Option<&str>,
+    path: &str,
+    served_for: impl Fn(&str) -> Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    if req.method() != Method::POST
+        || !matches!(path, "/v1/messages" | "/v1/messages/count_tokens")
+        || !host.is_some_and(|h| crate::proxy::claude_code_route_domain().matches_host(h))
+    {
+        return None;
+    }
+    let ua = req
+        .headers()
+        .get(hudsucker::hyper::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())?;
+    if !crate::proxy::is_desktop_code_tab(ua) {
+        return None;
+    }
+    served_for(crate::registry::ToolId::ClaudeCode.slug()).filter(|set| !set.is_empty())
+}
+
+fn code_tab_gate_models<T>(
+    req: &Request<T>,
+    host: Option<&str>,
+    path: &str,
+) -> Option<Vec<String>> {
+    code_tab_gate_models_with(req, host, path, crate::preferences::gate_models_served_for)
+}
+
+/// Point a Code tab request at the relay's Gate models route for Claude Code,
+/// with `model` set to the first of `enabled` unless it already names one of the set.
+///
+/// The relay does the rest exactly as it does for the CLI: it checks the model
+/// against the enabled set, replaces the tool's own credential with Gate's, and
+/// attributes the request to Claude Code by the route's tool marker. The body is
+/// buffered for the swap; these are JSON requests, and the relay buffers them
+/// again anyway.
+async fn onto_gate_models_route(
+    req: Request<Body>,
+    relay_port: u16,
+    enabled: &[String],
+) -> Result<Request<Body>> {
+    use http_body_util::BodyExt;
+    let (mut parts, body) = req.into_parts();
+    let bytes = body
+        .collect()
+        .await
+        .map_err(|e| anyhow::anyhow!("reading the request body: {e}"))?
+        .to_bytes();
+    let default = enabled.first().context("no Gate model is enabled")?;
+    let bytes = with_gate_model(&bytes, default, enabled).unwrap_or(bytes);
+    let root = crate::proxy::gate_served::relay_root_url(
+        &crate::proxy::relay::base_url(relay_port),
+        crate::registry::ToolId::ClaudeCode,
+    );
+    let pq = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
+    parts.uri = format!("{root}{pq}")
+        .parse()
+        .context("building the Gate models route URI")?;
+    let authority = parts
+        .uri
+        .authority()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    parts.headers.insert(
+        hudsucker::hyper::header::HOST,
+        HeaderValue::from_str(&authority).context("building the relay host header")?,
+    );
+    parts.headers.insert(
+        hudsucker::hyper::header::CONTENT_LENGTH,
+        HeaderValue::from(bytes.len()),
+    );
+    Ok(Request::from_parts(
+        parts,
+        Body::from(http_body_util::Full::new(bytes)),
+    ))
+}
+
+/// `body` with its `model` set to `default`, or `None` to send it unchanged:
+/// not a JSON object, or already on a model of `enabled`. An unchanged body
+/// that is not on the set is the relay's to refuse, in words the tool shows.
+fn with_gate_model(body: &[u8], default: &str, enabled: &[String]) -> Option<bytes::Bytes> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object_mut()?;
+    if object
+        .get("model")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| enabled.iter().any(|id| id == m))
+    {
+        return None;
+    }
+    object.insert("model".into(), serde_json::Value::String(default.into()));
+    serde_json::to_vec(&value).ok().map(bytes::Bytes::from)
+}
+
+/// The answer when a Code tab request meant for Gate models cannot be moved
+/// there. Never sent on to Anthropic instead: the user chose Gate models, and
+/// quietly spending their own Anthropic plan is the thing they opted out of.
+fn gate_models_unavailable_response() -> hudsucker::hyper::Response<Body> {
+    hudsucker::hyper::Response::builder()
+        .status(hudsucker::hyper::StatusCode::BAD_GATEWAY)
+        .header(
+            hudsucker::hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(Body::from(crate::proxy::gate_served::error_body(
+            "gate_models_unavailable",
+            "Gate Connect could not send this request to your Gate model. Try again, or switch Claude Code back to App default in Gate Connect.",
+        )))
+        .expect("static gate models response builds")
+}
+
 /// Shaped like the provider's own error envelope so a client that surfaces the
 /// body shows something coherent, and typed distinctly (`gate_ws_downgrade`) so
 /// this is greppable in a client log and cannot be mistaken for an upstream 400.
@@ -2818,6 +2975,7 @@ where
         intercept: intercept_rx.clone(),
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
         app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
+        relay_port,
         forwarded: None,
     };
 
@@ -3052,6 +3210,116 @@ mod tests {
     use super::*;
     use crate::proxy::ClientClass;
 
+    /// The desktop Code tab's turn, with the headers captured 2026-10-07
+    /// (Claude Code 2.1.288 under the Windows app 2.19675.1).
+    fn code_tab_turn(path: &str, ua: &str) -> Request<()> {
+        Request::builder()
+            .method("POST")
+            .uri(format!("https://api.anthropic.com{path}?beta=true"))
+            .header("user-agent", ua)
+            .header("anthropic-client-platform", "desktop_app")
+            .body(())
+            .unwrap()
+    }
+
+    const CODE_TAB_UA: &str = "claude-cli/2.1.288 (external, claude-desktop, agent-sdk/0.3.288)";
+
+    #[test]
+    fn only_a_code_tab_turn_on_gate_models_is_moved() {
+        let on = |_: &str| Some(vec!["deepseek/deepseek-flash-latest".to_string()]);
+        let off = |_: &str| None;
+        let host = Some("api.anthropic.com");
+        let moved =
+            |req: &Request<()>, path: &str, served: &dyn Fn(&str) -> Option<Vec<String>>| {
+                code_tab_gate_models_with(req, host, path, served)
+            };
+
+        for path in ["/v1/messages", "/v1/messages/count_tokens"] {
+            assert_eq!(
+                moved(&code_tab_turn(path, CODE_TAB_UA), path, &on),
+                Some(vec!["deepseek/deepseek-flash-latest".to_string()]),
+                "{path}"
+            );
+            assert!(
+                moved(&code_tab_turn(path, CODE_TAB_UA), path, &off).is_none(),
+                "{path}: not on Gate models"
+            );
+        }
+        // The terminal CLI reaches Gate models through its own base URL, and
+        // the desktop app's own requests are not Claude Code.
+        for ua in [
+            "claude-cli/2.1.288 (external, sdk-cli, agent-sdk/0.3.288)",
+            "Mozilla/5.0 (Windows NT 10.0) Claude/2.19675.1 Chrome/120",
+        ] {
+            assert!(
+                moved(&code_tab_turn("/v1/messages", ua), "/v1/messages", &on).is_none(),
+                "{ua}"
+            );
+        }
+        // Anything the route does not serve keeps going to Anthropic.
+        let other = code_tab_turn("/api/oauth/profile", CODE_TAB_UA);
+        assert!(moved(&other, "/api/oauth/profile", &on).is_none());
+        let mut get = code_tab_turn("/v1/messages", CODE_TAB_UA);
+        *get.method_mut() = Method::GET;
+        assert!(moved(&get, "/v1/messages", &on).is_none());
+        // And only on Anthropic's host.
+        let turn = code_tab_turn("/v1/messages", CODE_TAB_UA);
+        assert!(
+            code_tab_gate_models_with(&turn, Some("example.com"), "/v1/messages", on).is_none()
+        );
+    }
+
+    #[test]
+    fn the_model_is_swapped_unless_it_is_already_enabled() {
+        let enabled = vec!["deepseek/deepseek-flash-latest".to_string()];
+        let swapped = with_gate_model(
+            br#"{"model":"claude-opus-5-5","max_tokens":10,"stream":true}"#,
+            "deepseek/deepseek-flash-latest",
+            &enabled,
+        )
+        .expect("an Anthropic model is swapped");
+        let v: serde_json::Value = serde_json::from_slice(&swapped).unwrap();
+        assert_eq!(v["model"], "deepseek/deepseek-flash-latest");
+        assert_eq!(v["max_tokens"], 10, "the rest of the body is kept");
+        assert_eq!(v["stream"], true);
+
+        assert!(with_gate_model(
+            br#"{"model":"deepseek/deepseek-flash-latest"}"#,
+            "deepseek/deepseek-flash-latest",
+            &enabled
+        )
+        .is_none());
+        // Not JSON: left for the relay to refuse.
+        assert!(with_gate_model(b"not json", "x", &enabled).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_moved_turn_lands_on_claude_codes_gate_models_route() {
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages?beta=true")
+            .header("host", "api.anthropic.com")
+            .header("content-length", "27")
+            .body(Body::from(http_body_util::Full::new(
+                bytes::Bytes::from_static(br#"{"model":"claude-opus-5-5"}"#),
+            )))
+            .unwrap();
+        let moved =
+            onto_gate_models_route(req, 47106, &["deepseek/deepseek-flash-latest".to_string()])
+                .await
+                .unwrap();
+        assert_eq!(
+            moved.uri().to_string(),
+            "http://127.0.0.1:47106/__gate/t/claude-code/gate/v1/messages?beta=true"
+        );
+        assert_eq!(moved.headers()["host"], "127.0.0.1:47106");
+        use http_body_util::BodyExt;
+        let len = moved.headers()["content-length"].clone();
+        let body = moved.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(len, body.len().to_string().as_str());
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["model"], "deepseek/deepseek-flash-latest");
+    }
     /// Work's turn, as captured: a GET on a path the `chatgpt` entry claims,
     /// upgraded to a WebSocket.
     ///
