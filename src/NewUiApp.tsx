@@ -2780,7 +2780,9 @@ export function NewUiApp() {
           title={`${app.name} isn’t fully protected`}
           body={`${names} ${off.length === 1 ? "isn’t" : "aren’t"} routed through Gate, so ${off.length === 1 ? "its" : "their"} traffic goes straight to the provider.`}
           action={{
-            label: off.length === 1 ? `Turn on ${off[0]}` : "Turn on both",
+            // "Route", not "Turn on": beside an app's name, "Turn on" reads as
+            // launching it. The body has just named the surface, so "it".
+            label: off.length === 1 ? "Route it" : "Route them",
             busy: routingBusy,
             onClick: () => void routeMembers(offMembers, true),
           }}

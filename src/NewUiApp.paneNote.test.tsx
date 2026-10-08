@@ -42,7 +42,7 @@ describe("the partly protected card", () => {
     // Amber, not the neutral info card it replaced.
     expect(note.className).toContain("bg-amber-50");
 
-    fireEvent.click(screen.getByRole("button", { name: "Turn on Claude Code" }));
+    fireEvent.click(screen.getByRole("button", { name: "Route it" }));
 
     await waitFor(() => expect(callsTo("connect_tool")).toEqual([{ slug: "claude-code" }]));
     expect(callsTo("proxy_set_domain")).toEqual([]);
@@ -59,7 +59,7 @@ describe("the partly protected card", () => {
       "Claude Desktop isn’t routed through Gate",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Turn on Claude Desktop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Route it" }));
 
     await waitFor(() =>
       expect(callsTo("proxy_set_domain")).toEqual([{ slug: "anthropic", enabled: true }]),
