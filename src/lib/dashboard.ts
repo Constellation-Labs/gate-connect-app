@@ -80,52 +80,30 @@ export function dashboardOrigin(gatewayBaseUrl: string | null | undefined): stri
 }
 
 /**
- * The `client_tool` names a section's desktop-app and website traffic is stored
- * under, for the "View activity" link on a pane with no installed tool behind
- * it (Claude without Claude Code, ChatGPT without Codex).
- *
- * These are what `client_tool` in `crates/core/src/proxy/mod.rs` stamps from the
- * vendor's own headers: `anthropic-client-platform` for Claude's app and
- * claude.ai, `originator` / `oai-*` on chatgpt.com. They are not `ToolId`s, so
- * the app's own feed cannot read them back, but the dashboard filters on them
- * like any other. A section with no entry here (OpenAI API, whose traffic names
- * no app) gets no link: nothing it routes carries a name to filter on.
- *
- * Claude's list carries `claude-code` although the pane has no Claude Code
- * installed: the desktop app's Code tab runs its own bundled `claude`, which
- * `client_tool` stamps `claude-code` from its User-Agent, not `claude-desktop`.
- * Without it, a desktop-only install's Code tab sessions would be missing from
- * the one link that is meant to cover the app.
- */
-export const SECTION_SURFACE_CLIENTS: Readonly<Record<string, readonly string[]>> = {
-  claude: ["claude-code", "claude-desktop", "claude-web"],
-  chatgpt: ["chatgpt", "chatgpt-web"],
-};
-
-/**
  * The `client_tool` names an app pane's "View activity" filters Messages by, or
  * `null` when the pane gets no button.
  *
- * A pane with an installed tool links to that tool, which is the slug its own
- * feed is read with. A pane without one links to its section's
- * {@link SECTION_SURFACE_CLIENTS}, and a section with no entry there has no
- * name to filter on. None at all while the gateway does not know this machine:
- * the link is scoped to it, and an unscoped list would be the whole org's.
+ * `clients` is the pane's own reading (`paneClients` in `groups.ts`), the same
+ * list its counters, chart and feed are read with, so the dashboard list opens
+ * on exactly what the card above the button showed. It used to be worked out
+ * separately, and the two disagreed: a Claude pane with Claude Code installed
+ * showed the desktop app's and claude.ai's rows and linked to Claude Code's
+ * alone. `null` there is a pane with no per-app reading, which has no name to
+ * filter on.
+ *
+ * None at all while the gateway does not know this machine: the link is scoped
+ * to it, and an unscoped list would be the whole org's.
  */
 export function viewActivityApps({
   machineKnown,
-  section,
-  tool,
+  clients,
 }: {
   machineKnown: boolean;
-  /** The open pane's section id. */
-  section: string;
-  /** The section's installed config tool, or null. */
-  tool: string | null;
+  /** The open pane's client names, or null when it has no per-app reading. */
+  clients: readonly string[] | null;
 }): readonly string[] | null {
   if (!machineKnown) return null;
-  if (tool !== null) return [tool];
-  return SECTION_SURFACE_CLIENTS[section] ?? null;
+  return clients;
 }
 
 /** Every dashboard destination the app links to, for one gateway. */

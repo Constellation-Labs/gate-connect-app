@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { SECTION_SURFACE_CLIENTS, dashboardLinks, dashboardOrigin, viewActivityApps } from "./dashboard";
-import { isDeclaredSection } from "./groups";
+import { dashboardLinks, dashboardOrigin, viewActivityApps } from "./dashboard";
+import { SECTION_CLIENTS, paneClients } from "./groups";
 
 describe("dashboardOrigin", () => {
   it("maps the production gateway to the production dashboard", () => {
@@ -110,41 +110,32 @@ describe("dashboardLinks", () => {
   });
 });
 
-describe("SECTION_SURFACE_CLIENTS", () => {
-  it("is keyed by sections the rail declares", () => {
-    // A renamed section would silently drop its pane's View activity link.
-    for (const id of Object.keys(SECTION_SURFACE_CLIENTS)) {
-      expect(isDeclaredSection(id), id).toBe(true);
-    }
-  });
-});
-
 describe("viewActivityApps", () => {
-  it("links a tool pane to the tool its feed is read with", () => {
-    expect(viewActivityApps({ machineKnown: true, section: "claude", tool: "claude-code" })).toEqual([
-      "claude-code",
+  it("links a section pane to every sender its card reads, tool installed or not", () => {
+    // The card reads the whole section with or without the config tool, so the
+    // link does too: otherwise it would drop the desktop app and the website.
+    for (const tool of ["claude-code", null]) {
+      expect(viewActivityApps({ machineKnown: true, clients: paneClients("claude", tool) })).toEqual(
+        SECTION_CLIENTS.claude,
+      );
+    }
+    expect(viewActivityApps({ machineKnown: true, clients: paneClients("chatgpt", "codex") })).toEqual(
+      SECTION_CLIENTS.chatgpt,
+    );
+  });
+
+  it("links a tool pane outside any section to that tool", () => {
+    expect(viewActivityApps({ machineKnown: true, clients: paneClients("opencode", "opencode") })).toEqual([
+      "opencode",
     ]);
   });
 
-  it("links a pane with no tool to its desktop app and website", () => {
-    // `claude-code` too: the desktop app's Code tab is stamped Claude Code.
-    expect(viewActivityApps({ machineKnown: true, section: "claude", tool: null })).toEqual([
-      "claude-code",
-      "claude-desktop",
-      "claude-web",
-    ]);
-    expect(viewActivityApps({ machineKnown: true, section: "chatgpt", tool: null })).toEqual([
-      "chatgpt",
-      "chatgpt-web",
-    ]);
-  });
-
-  it("has nothing for a section whose traffic names no app", () => {
-    expect(viewActivityApps({ machineKnown: true, section: "openai-api", tool: null })).toBeNull();
+  it("has nothing for a pane with no per-app reading", () => {
+    expect(viewActivityApps({ machineKnown: true, clients: paneClients("openai-api", null) })).toBeNull();
   });
 
   it("has nothing while the gateway does not know this machine", () => {
     // The link is scoped to the install; without one it would be org-wide.
-    expect(viewActivityApps({ machineKnown: false, section: "claude", tool: "claude-code" })).toBeNull();
+    expect(viewActivityApps({ machineKnown: false, clients: paneClients("claude", "claude-code") })).toBeNull();
   });
 });
