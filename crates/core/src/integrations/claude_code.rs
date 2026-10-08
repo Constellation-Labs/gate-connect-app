@@ -404,6 +404,9 @@ impl Integration for ClaudeCode {
         // Refuse to clobber a malformed non-object `env` before ensure_object
         // would silently replace it with `{}` (see reject_non_object_env).
         reject_non_object_env(&settings)?;
+        // The Claude Desktop switch's write goes first, so the snapshot below
+        // records the user's values rather than the Code tab's.
+        revert_code_tab(&mut settings);
 
         // Drift is read off the settings AS LOADED, before the routing block
         // below touches them: that block removes `ANTHROPIC_BASE_URL` on every
@@ -513,47 +516,71 @@ impl Integration for ClaudeCode {
     }
 
     fn disconnect(&self) -> Result<()> {
-        let path = settings_path()?;
-        let Some(mut settings) = load_settings()? else {
+        disconnect_cli()?;
+        // Claude Code going off is not Claude Desktop going off: with that
+        // switch still on, the Code tab keeps its transport (`CODE_TAB_MARKER`).
+        reconcile_code_tab()
+    }
+}
+
+fn disconnect_cli() -> Result<()> {
+    let path = settings_path()?;
+    let Some(mut settings) = load_settings()? else {
+        return Ok(());
+    };
+    // Only a connect of ours has anything here to take back. The quit sweep
+    // calls this for every installed Claude Code, and without the marker the
+    // loop below read "no previous value" for every managed key and deleted
+    // the user's own `HTTPS_PROXY` / `NO_PROXY` from a file Gate never touched.
+    let connected = cli_managed(&settings);
+    // Gate models first: their record lives in the marker removed below.
+    revert_gate_models(&mut settings);
+    // And the Code tab's record, so its snapshot of the user's values is
+    // put back rather than dropped with the marker.
+    let code_tab = revert_code_tab(&mut settings);
+    if !connected {
+        if !code_tab {
             return Ok(());
-        };
-        // Gate models first: their record lives in the marker removed below.
-        revert_gate_models(&mut settings);
+        }
+        if settings.is_empty() {
+            return crate::config_changes::remove(&path);
+        }
+        return write_settings(&settings);
+    }
 
-        let prev = settings
-            .get(MARKER_KEY)
-            .and_then(|m| m.get("previousEnv"))
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default();
+    let prev = settings
+        .get(MARKER_KEY)
+        .and_then(|m| m.get("previousEnv"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
 
-        if let Some(env_block) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
-            for key in MANAGED_KEYS {
-                match prev.get(key) {
-                    Some(v) => {
-                        env_block.insert(key.into(), v.clone());
-                    }
-                    None => {
-                        env_block.remove(key);
-                    }
+    if let Some(env_block) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
+        for key in MANAGED_KEYS {
+            match prev.get(key) {
+                Some(v) => {
+                    env_block.insert(key.into(), v.clone());
+                }
+                None => {
+                    env_block.remove(key);
                 }
             }
-            // Drop the env block entirely if we left it empty so settings.json
-            // stays tidy.
-            if env_block.is_empty() {
-                settings.remove("env");
-            }
         }
-        settings.remove(MARKER_KEY);
-
-        // The file now holds nothing but our additions - remove it rather
-        // than leaving a stray `{}` behind (matching Codex's disconnect).
-        if settings.is_empty() {
-            crate::config_changes::remove(&path)?;
-            return Ok(());
+        // Drop the env block entirely if we left it empty so settings.json
+        // stays tidy.
+        if env_block.is_empty() {
+            settings.remove("env");
         }
-        write_settings(&settings)
     }
+    settings.remove(MARKER_KEY);
+
+    // The file now holds nothing but our additions - remove it rather
+    // than leaving a stray `{}` behind (matching Codex's disconnect).
+    if settings.is_empty() {
+        crate::config_changes::remove(&path)?;
+        return Ok(());
+    }
+    write_settings(&settings)
 }
 
 /// `_gateConnect.gateModels`: what Gate models wrote and what they replaced.
@@ -916,6 +943,214 @@ fn override_in(
 
 fn load_settings() -> Result<Option<Map<String, Value>>> {
     super::json_config::load_object(&settings_path()?)
+}
+
+/// `_gateConnect.codeTab`: what the Claude Desktop switch wrote, and what it
+/// replaced, while Claude Code itself is not connected.
+///
+/// **Why Claude Desktop writes to Claude Code's file.** The desktop app's Code
+/// tab is a `claude` the app launches, and it reads this same `settings.json`.
+/// Its proxy and the Gate CA reach it from here and nowhere else: the app does
+/// not hand it the system proxy. So with Claude Desktop on and Claude Code off
+/// the Code tab used to go straight to Anthropic, and the only thing that hid it
+/// was the reconcile pass quietly reconnecting Claude Code.
+///
+/// The write is the transport half of [`ClaudeCode::connect`] without the route
+/// selector: a plain proxy URL, the loopback bypass and the CA. The terminal
+/// `claude` reads the file too, so it reaches the engine as well, and the engine
+/// passes it through untouched because it carries no selector (see
+/// `is_unselected_terminal_claude` in the engine). A Code tab request carries
+/// none either - the app strips the URL's userinfo - and the Claude Desktop
+/// switch is what routes it.
+///
+/// Kept apart from Claude Code's own `managed` / `previousEnv` so the two
+/// switches cannot undo each other: [`ClaudeCode::status`] never reads it, and
+/// a connect takes it back out first, so Claude Code's snapshot is of the
+/// user's values and not of these.
+const CODE_TAB_MARKER: &str = "codeTab";
+const CODE_TAB_KEYS: [&str; 3] = [KEY_HTTPS_PROXY, KEY_NO_PROXY, KEY_NODE_EXTRA_CA_CERTS];
+
+/// Whether Claude Code's own connect is in the file.
+fn cli_managed(settings: &Map<String, Value>) -> bool {
+    settings
+        .get(MARKER_KEY)
+        .and_then(|m| m.get("managed"))
+        .is_some()
+}
+
+/// Write the Code tab's transport. Returns whether anything changed.
+fn apply_code_tab(settings: &mut Map<String, Value>, proxy_url: &str, ca: &str) -> bool {
+    let wanted = [
+        (KEY_HTTPS_PROXY, proxy_url),
+        (KEY_NO_PROXY, NO_PROXY_VALUE),
+        (KEY_NODE_EXTRA_CA_CERTS, ca),
+    ];
+    let recorded = settings
+        .get(MARKER_KEY)
+        .and_then(|m| m.get(CODE_TAB_MARKER))
+        .is_some();
+    let env_str = |key: &str| {
+        settings
+            .get("env")
+            .and_then(|e| e.get(key))
+            .and_then(|v| v.as_str())
+    };
+    if recorded && wanted.iter().all(|(k, v)| env_str(k) == Some(*v)) {
+        return false;
+    }
+    // Snapshot once, the first time: a later apply must not record our own
+    // values as the user's.
+    if !recorded {
+        let prev: Map<String, Value> = CODE_TAB_KEYS
+            .iter()
+            .map(|k| {
+                let v = settings
+                    .get("env")
+                    .and_then(|e| e.get(*k))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                ((*k).to_string(), v)
+            })
+            .collect();
+        ensure_object(settings, MARKER_KEY).insert(
+            CODE_TAB_MARKER.into(),
+            serde_json::json!({ "previousEnv": prev }),
+        );
+    }
+    let env = ensure_object(settings, "env");
+    for (k, v) in wanted {
+        env.insert(k.into(), Value::String(v.into()));
+    }
+    true
+}
+
+/// Put back what [`apply_code_tab`] replaced. Returns whether anything changed.
+fn revert_code_tab(settings: &mut Map<String, Value>) -> bool {
+    let Some(record) = settings
+        .get_mut(MARKER_KEY)
+        .and_then(|m| m.as_object_mut())
+        .and_then(|m| m.remove(CODE_TAB_MARKER))
+    else {
+        return false;
+    };
+    let prev = record
+        .get("previousEnv")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    if let Some(env) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
+        for key in CODE_TAB_KEYS {
+            match prev.get(key) {
+                Some(v) if !v.is_null() => {
+                    env.insert(key.into(), v.clone());
+                }
+                _ => {
+                    env.remove(key);
+                }
+            }
+        }
+        if env.is_empty() {
+            settings.remove("env");
+        }
+    }
+    if settings
+        .get(MARKER_KEY)
+        .and_then(|m| m.as_object())
+        .is_some_and(|m| m.is_empty())
+    {
+        settings.remove(MARKER_KEY);
+    }
+    true
+}
+
+/// Route or release the desktop app's Code tab for the Claude Desktop switch.
+///
+/// `routed` with no `proxy_url` (nothing bound yet) leaves the file alone; the
+/// next reconcile has one. While Claude Code is connected this only drops a
+/// leftover record: its own write already carries the transport, and a Code
+/// tab request is told apart from a CLI one on the wire, not in the file.
+///
+/// Does not need Claude Code installed. The Code tab ships inside the desktop
+/// app and reads `~/.claude/settings.json` whether or not a terminal `claude`
+/// exists.
+pub fn set_code_tab_routed(routed: bool, proxy_url: Option<&str>) -> Result<()> {
+    let path = settings_path()?;
+    let loaded = load_settings()?;
+    if loaded.is_none() && !routed {
+        return Ok(());
+    }
+    let mut settings = loaded.unwrap_or_default();
+    reject_non_object_env(&settings)?;
+    let changed = if cli_managed(&settings) || !routed {
+        revert_code_tab(&mut settings)
+    } else {
+        let Some(proxy_url) = proxy_url else {
+            return Ok(());
+        };
+        let ca_cert_path = crate::proxy::ca_cert_path()?;
+        if !ca_cert_path.exists() {
+            // The same refusal connect makes, for the same reason: a proxy with
+            // no CA is an SSL error that never mentions Gate.
+            return Ok(());
+        }
+        apply_code_tab(
+            &mut settings,
+            proxy_url,
+            &ca_cert_path.display().to_string(),
+        )
+    };
+    if !changed {
+        return Ok(());
+    }
+    if settings.is_empty() {
+        return crate::config_changes::remove(&path);
+    }
+    write_settings(&settings)
+}
+
+/// [`set_code_tab_routed`] for whatever the Claude Desktop switch says now.
+pub fn reconcile_code_tab() -> Result<()> {
+    if !desktop_app_routed() {
+        return set_code_tab_routed(false, None);
+    }
+    set_code_tab_routed(true, crate::proxy::tool_proxy_url().as_deref())
+}
+
+/// Follow a domain switch: the Claude Desktop one moves the Code tab with it.
+/// Best-effort, like the reconcile passes: the switch itself has already
+/// landed, and the next reconcile retries the file.
+pub fn follow_domain_switch(slug: &str) {
+    if slug != "anthropic" || KEEP_CODE_TAB.with(|k| k.get()) {
+        return;
+    }
+    if let Err(e) = reconcile_code_tab() {
+        crate::logging::failure(&format!(
+            "routing the Claude desktop app's Code tab failed: {e:#}"
+        ));
+    }
+}
+
+thread_local! {
+    static KEEP_CODE_TAB: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with the Code tab's file left as it is, whatever domains it turns
+/// off. For the routing-off sweep (`provider::ToolConfigs::Kept`), which keeps
+/// every tool's configuration for the reason it gives: the engine parks and
+/// passes the traffic through, and a rewrite would only make running sessions
+/// restart.
+pub(crate) fn keeping_code_tab<R>(f: impl FnOnce() -> R) -> R {
+    KEEP_CODE_TAB.with(|k| k.set(true));
+    let out = f();
+    KEEP_CODE_TAB.with(|k| k.set(false));
+    out
+}
+
+/// Whether the Claude Desktop switch is on: its `anthropic` domain, persisted.
+fn desktop_app_routed() -> bool {
+    crate::proxy::config::load_domains()
+        .map(|ds| ds.iter().any(|d| d.slug == "anthropic" && d.enabled))
+        .unwrap_or(false)
 }
 
 fn write_settings(settings: &Map<String, Value>) -> Result<()> {

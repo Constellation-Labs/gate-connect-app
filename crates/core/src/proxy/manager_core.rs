@@ -874,6 +874,7 @@ impl<O: DesktopOps> DesktopManager<O> {
         {
             running.update_domains(&domains);
         }
+        crate::integrations::claude_code::follow_domain_switch(slug);
         Ok(())
     }
 

@@ -646,13 +646,24 @@ fn disable_inner(slug: &str, audit: bool, configs: ToolConfigs) -> Result<Provid
     // immediately; otherwise persist the flag directly (the config-route tools
     // don't need the proxy running to be turned off).
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    for domain in cascade_domains(&p) {
-        // Best-effort: an already-off or unknown domain isn't an error.
-        let _ = if proxy_running() {
-            crate::proxy::manager().set_domain_quiet(domain, false)
-        } else {
-            crate::proxy::config::set_enabled(domain, false).map(|_| ())
-        };
+    crate::integrations::claude_code::keeping_code_tab(|| {
+        for domain in cascade_domains(&p) {
+            // Best-effort: an already-off or unknown domain isn't an error.
+            let _ = if proxy_running() {
+                crate::proxy::manager().set_domain_quiet(domain, false)
+            } else {
+                crate::proxy::config::set_enabled(domain, false).map(|_| ())
+            };
+        }
+    });
+    // The Claude Desktop switch's Code tab write is a tool config like any
+    // other, so it goes back exactly when they do - and on both paths above,
+    // where the domain hook only ran on one.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    if configs == ToolConfigs::Reverted {
+        for domain in cascade_domains(&p) {
+            crate::integrations::claude_code::follow_domain_switch(domain);
+        }
     }
 
     let state = state(&p);
@@ -735,6 +746,7 @@ pub fn reconcile_enabled() -> Result<()> {
         return Ok(()); // no gateway configured yet - nothing to point tools at
     };
     let relay_base_url = crate::proxy::relay_base_url();
+    let switched_off = load_snapshot(TOOLS_SWITCHED_OFF).unwrap_or_default();
     for p in providers() {
         // The switch gates auto-*connecting*, not repairing. A `Detected` tool
         // has never been routed, so something has to say the user wants it to
@@ -761,7 +773,15 @@ pub fn reconcile_enabled() -> Result<()> {
                 continue;
             };
             let reapply = match integ.status() {
-                Ok(Status::Detected) => enabled,
+                // Unless the user switched this tool off themselves. A tool
+                // that shares its provider with a domain - Claude Code with the
+                // Claude Desktop switch since the split - is `Detected` after
+                // its own switch goes off while the domain stays on, and reading
+                // the domain as its intent reconnected it on the next launch or
+                // tray open. `switched_off` is what tells that apart from a tool
+                // installed after its provider was enabled, which this still
+                // wires up.
+                Ok(Status::Detected) => enabled && !switched_off.contains(&id.slug().to_string()),
                 // Our own writes gone stale - safe to reassert, but only with
                 // a relay to point at (connect() bails without one, and this
                 // drift may *be* "relay not enabled yet").
@@ -791,6 +811,17 @@ pub fn reconcile_enabled() -> Result<()> {
                     integ.display_name()
                 ));
             }
+        }
+    }
+    // The desktop app's Code tab, for the Claude Desktop switch: written when it
+    // is on, taken back out when it is off, and repointed if the forwarder's port
+    // moved. Only while routing is on - routing off keeps every tool's file as
+    // it was (`ToolConfigs::Kept`), and this one is no different.
+    if crate::proxy::intent::load_intent() {
+        if let Err(e) = crate::integrations::claude_code::reconcile_code_tab() {
+            crate::logging::failure(&format!(
+                "configuring the Claude desktop app's Code tab failed: {e:#}"
+            ));
         }
     }
     reconcile_unmapped_tools(&account, relay_base_url.as_deref())
@@ -874,6 +905,28 @@ const SWEPT_TOOLS_SNAPSHOT: &str = "restore-tools-snapshot.json";
 /// Scoped to one master cycle, not a durable preference: it is written at
 /// master-off and cleared once the restore completes.
 const RESTORE_SKIP_MEMBERS: &str = "restore-skip-members.json";
+
+/// Tool slugs the user switched off on their own row, so the reconcile pass
+/// does not read their provider's still-enabled domain as a reason to connect
+/// them again. Written by the row's own switch only ([`note_tool_switched`]);
+/// a provider or master toggle has its own records above.
+const TOOLS_SWITCHED_OFF: &str = "tools-switched-off.json";
+
+/// Record a tool's own switch: off is remembered until it is next turned on.
+pub fn note_tool_switched(slug: &str, on: bool) -> Result<()> {
+    let mut off = load_snapshot(TOOLS_SWITCHED_OFF)?;
+    let had = off.iter().any(|s| s == slug);
+    match (on, had) {
+        (true, true) => off.retain(|s| s != slug),
+        (false, false) => off.push(slug.to_string()),
+        _ => return Ok(()),
+    }
+    if off.is_empty() {
+        clear_snapshot(TOOLS_SWITCHED_OFF)
+    } else {
+        save_snapshot(TOOLS_SWITCHED_OFF, &off)
+    }
+}
 
 fn snapshot_path(file: &str) -> Result<PathBuf> {
     Ok(crate::env::app_support_dir()?.join("provider").join(file))

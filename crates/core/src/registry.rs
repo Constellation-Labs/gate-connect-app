@@ -472,6 +472,12 @@ pub fn disconnect_all_managed() -> Result<()> {
             failures.push(format!("{}: {e}", integ.display_name()));
         }
     }
+    // The Claude Desktop switch's write into Claude Code's file, which no
+    // integration's status reports: it names the forwarder, which sign-out
+    // stops, and a Code tab left pointing at it would reach nothing at all.
+    if let Err(e) = crate::integrations::claude_code::set_code_tab_routed(false, None) {
+        failures.push(format!("the Claude desktop app's Code tab: {e}"));
+    }
     if failures.is_empty() {
         return Ok(());
     }

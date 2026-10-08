@@ -3145,6 +3145,20 @@ pub(crate) fn is_desktop_code_tab(user_agent: &str) -> bool {
         .is_some_and(|entrypoint| entrypoint.trim() == "claude-desktop")
 }
 
+/// Whether this is Claude Code from anywhere but the desktop app's Code tab -
+/// the terminal, an IDE, the SDK - by its `claude-cli/` User-Agent.
+///
+/// The engine routes these only on Claude Code's own route selector, never on
+/// the Claude Desktop switch. Since the split they are two switches, and the
+/// desktop app's `anthropic` domain is not Claude Code's: with Claude Desktop
+/// on and Claude Code off, `settings.json` carries a plain proxy for the Code
+/// tab (`integrations::claude_code::CODE_TAB_MARKER`), the terminal `claude`
+/// reads the same file, and without this it would be routed by a switch that
+/// says it is off.
+pub(crate) fn is_claude_code_outside_the_app(user_agent: &str) -> bool {
+    user_agent.trim_start().starts_with("claude-cli/") && !is_desktop_code_tab(user_agent)
+}
+
 /// One entry's browser scope. See [`BROWSER_ROUTED`].
 pub(crate) struct BrowserScope {
     slug: &'static str,
@@ -5598,6 +5612,29 @@ mod tests {
             HeaderValue::from_static("com.anthropic.claudefordesktop"),
         );
         assert_eq!(client_tool(&only_app, None), Some("claude-desktop"));
+    }
+
+    /// Which Claude Code requests only Claude Code's own selector may route:
+    /// every `claude-cli/` agent except the Code tab, which the Claude Desktop
+    /// switch routes.
+    #[test]
+    fn claude_code_outside_the_app_is_told_apart_from_the_code_tab() {
+        for ua in [
+            "claude-cli/2.1.288 (external, cli)",
+            "claude-cli/2.1.288 (external, sdk-cli, agent-sdk/0.3.288)",
+            "claude-cli/2.1.288 (external, claude-vscode)",
+            "claude-cli/2.1.288",
+        ] {
+            assert!(is_claude_code_outside_the_app(ua), "{ua}");
+        }
+        for ua in [
+            "claude-cli/2.1.288 (external, claude-desktop, agent-sdk/0.3.288)",
+            "Mozilla/5.0 (Windows NT 10.0) Claude/2.19675.1 Chrome/120",
+            "anthropic-python/0.40.0",
+            "",
+        ] {
+            assert!(!is_claude_code_outside_the_app(ua), "{ua}");
+        }
     }
 
     /// Claude Code launched by the desktop app's Code tab is the desktop app's:
