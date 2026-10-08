@@ -3483,6 +3483,13 @@ async fn routing_verdicts() -> Vec<VerdictDto> {
         .unwrap_or_default()
 }
 
+/// What [`routing_verdicts_now`] remembers between sweeps. See
+/// [`gate_connect_core::routing_health::VerdictHold`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static VERDICT_HOLD: std::sync::LazyLock<
+    std::sync::Mutex<gate_connect_core::routing_health::VerdictHold>,
+> = std::sync::LazyLock::new(Default::default);
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn routing_verdicts_now() -> Vec<VerdictDto> {
     use gate_connect_core::routing_health::{self, ConfigState, Evidence};
@@ -3497,6 +3504,11 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
         .unwrap_or_else(|| "Constellation Gate".to_string());
 
     let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
+    // One hold for the process, so both shells' sweeps count toward the same
+    // run of checks. A poisoned lock only loses the history, which reads as
+    // nothing held.
+    let mut hold = VERDICT_HOLD.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
     let verdicts: Vec<VerdictDto> = registry::registry()
         .iter()
         .filter(|integ| !integ.hidden_in_ui())
@@ -3512,8 +3524,10 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
                 session,
                 reopen_pending: reopen_pending_for(&slug),
             });
-            let reason = verdict.reason();
+            // The log keeps what the check found; only the row is held.
             recorded.push((slug.clone(), verdict));
+            let verdict = hold.apply(&slug, verdict, now);
+            let reason = verdict.reason();
             // Only the half that was read off disk. The surfaces draw the pair
             // when both are present and omit it otherwise, so a reopen notice
             // now names the action rather than an endpoint nobody measured.
