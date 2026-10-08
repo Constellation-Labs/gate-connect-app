@@ -2286,13 +2286,18 @@ fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str
     // browser-shaped string its shell inherits, which matches nothing below, so
     // nothing is lost by preferring the header - and the web value must be read
     // here too or the UA would send a claude.ai tab through the allowlist.
+    // Claude Code in the desktop app's Code tab carries the app's platform
+    // header, so it is picked out before that header is read.
+    let raw_ua = headers
+        .get(hyper::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    if raw_ua.is_some_and(is_desktop_code_tab) {
+        return Some(crate::taxonomy::Client::ClaudeCode.slug());
+    }
     if let Some(slug) = anthropic_client(headers) {
         return Some(slug);
     }
-    let ua = headers
-        .get(hyper::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_ascii_lowercase());
+    let ua = raw_ua.map(|v| v.to_ascii_lowercase());
     // `claude-cli` is Claude Code's agent; the rest identify themselves by name.
     // The slugs come off the enum rather than being retyped beside the needle:
     // this function's doc says the two vocabularies "coincide by construction",
@@ -3115,6 +3120,30 @@ const ANTHROPIC_CLIENT_PLATFORM: &str = "anthropic-client-platform";
 const ANTHROPIC_WEB_PLATFORM: &str = "web_claude_ai";
 const ANTHROPIC_DESKTOP_PLATFORM: &str = "desktop_app";
 
+/// Whether this is Claude Code running inside the desktop app's Code tab.
+///
+/// The desktop app launches its own `claude` and that process sends
+/// `anthropic-client-platform: desktop_app`, the same value the app itself
+/// sends, so the platform header alone files a Code tab session under the
+/// desktop app. Its User-Agent says what it is: `claude-cli/<version>
+/// (<type>, <entrypoint>, ...)`, with the entrypoint `claude-desktop`.
+/// Captured 2026-10-07 from Claude Code 2.1.288 launched by the Windows app
+/// 2.19675.1: `claude-cli/2.1.288 (external, claude-desktop,
+/// agent-sdk/0.3.288)`.
+///
+/// Matched on that entrypoint and not on `claude-cli/` alone, because Cowork
+/// also runs Claude Code from inside the desktop app and its headers have not
+/// been captured. Until they are, anything else carrying `desktop_app` stays
+/// the desktop app's, which is what it was before this existed.
+fn is_desktop_code_tab(user_agent: &str) -> bool {
+    user_agent
+        .trim_start()
+        .strip_prefix("claude-cli/")
+        .and_then(|rest| rest.split_once('('))
+        .and_then(|(_, detail)| detail.split([',', ')']).nth(1))
+        .is_some_and(|entrypoint| entrypoint.trim() == "claude-desktop")
+}
+
 /// One entry's browser scope. See [`BROWSER_ROUTED`].
 pub(crate) struct BrowserScope {
     slug: &'static str,
@@ -3278,7 +3307,11 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
         if platform.eq_ignore_ascii_case(ANTHROPIC_WEB_PLATFORM) {
             return ClientClass::Web;
         }
-        if platform.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM) {
+        // Not the app: Claude Code in its Code tab, which `client_tool` files
+        // under Claude Code. The two must not disagree about one request.
+        if platform.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM)
+            && !is_desktop_code_tab(header("user-agent").unwrap_or_default())
+        {
             return ClientClass::App;
         }
         // Any OTHER value falls through deliberately rather than being read as
@@ -5566,6 +5599,65 @@ mod tests {
             HeaderValue::from_static("com.anthropic.claudefordesktop"),
         );
         assert_eq!(client_tool(&only_app, None), Some("claude-desktop"));
+    }
+
+    /// Claude Code launched by the desktop app's Code tab sends the app's
+    /// platform header too. Its User-Agent is what names it, and both readers
+    /// have to take it from there or one request lands in two places.
+    ///
+    /// The headers are the capture from 2026-10-07 (Claude Code 2.1.288 under
+    /// the Windows app 2.19675.1), not a reconstruction.
+    #[test]
+    fn claude_code_in_the_desktop_code_tab_is_claude_code() {
+        const CODE_TAB_UA: &str =
+            "claude-cli/2.1.288 (external, claude-desktop, agent-sdk/0.3.288)";
+        let mut h = HeaderMap::new();
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static(CODE_TAB_UA),
+        );
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static(ANTHROPIC_DESKTOP_PLATFORM),
+        );
+        h.insert(
+            HeaderName::from_static("anthropic-client-version"),
+            HeaderValue::from_static("2.19675.1"),
+        );
+        assert_eq!(client_tool(&h, None), Some("claude-code"));
+        assert_eq!(
+            classify_client(|name| h.get(name).and_then(|v| v.to_str().ok())),
+            ClientClass::Unknown,
+            "not the app: App would file it beside the desktop app's own traffic"
+        );
+
+        // Anything else on the app's platform header stays the app's - Cowork
+        // runs Claude Code inside the app too and has not been captured.
+        for ua in [
+            "claude-cli/2.1.288 (external, local-agent, agent-sdk/0.3.288)",
+            "claude-cli/2.1.288",
+            "Mozilla/5.0 (Windows NT 10.0) Claude/2.19675.1 Chrome/120",
+            "something-else (external, claude-desktop)",
+        ] {
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            assert_eq!(client_tool(&h, None), Some("claude-desktop"), "{ua}");
+            assert_eq!(
+                classify_client(|name| h.get(name).and_then(|v| v.to_str().ok())),
+                ClientClass::App,
+                "{ua}"
+            );
+        }
+
+        // The terminal CLI is untouched: no platform header, matched by name.
+        let mut cli = HeaderMap::new();
+        cli.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("claude-cli/2.1.288 (external, sdk-cli, agent-sdk/0.3.288)"),
+        );
+        assert_eq!(client_tool(&cli, None), Some("claude-code"));
     }
 
     /// Every value `client_tool` can stamp is one the activity reads accept, so
