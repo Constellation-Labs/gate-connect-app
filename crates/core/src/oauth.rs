@@ -790,8 +790,17 @@ fn refresh_stored(
         }
     })?;
     // A keychain write failing says nothing about the session: the token in
-    // hand is good, it just will not survive a restart.
-    store(&refreshed).map_err(RefreshError::Unavailable)?;
+    // hand is good, it just will not survive a restart. So it is returned
+    // anyway. Failing the refresh here read as `Unavailable`, and every caller
+    // treats that as "keep what you have": the 30s tick left the engine on
+    // the expired bearer and the 401 re-check answered `Unchanged`, so routed
+    // traffic was refused while the app showed Protected, until a relaunch.
+    // The stored bundle is still the old one, so the next read refreshes again.
+    if let Err(e) = store(&refreshed) {
+        crate::logging::failure(&format!(
+            "storing the refreshed OAuth session failed; using the new token anyway: {e:#}"
+        ));
+    }
     Ok(Some(refreshed))
 }
 
