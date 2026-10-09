@@ -126,6 +126,6 @@ describe("the collected-data disclosure", () => {
     // disclosure, not only on the one where the extra data is about to leave.
     render(<CollectedDataDialog onClose={noop} />);
     expect(screen.getByText("Only in a report you send yourself")).toBeTruthy();
-    expect(screen.getByText(/your email and organization name and id/i)).toBeTruthy();
+    expect(screen.getByText(/your email, organization name and id/i)).toBeTruthy();
   });
 });

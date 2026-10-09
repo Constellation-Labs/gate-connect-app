@@ -244,7 +244,7 @@ export function browserTrustRestartAdvice(
       // prints a line per entry, so the title must not undercount what the
       // body and the report both say.
       title: "A browser certificate store refused the certificate",
-      body: `The certificate was refused by at least one browser store; the diagnostics report says which. Firefox with a Primary Password needs it imported by hand. Then turn routing off and on again. ${BROWSER_RESTART}`,
+      body: `The certificate was refused by at least one browser store; the diagnostics report says which. Fix it, then turn routing off and on again. Firefox with a Primary Password needs it imported by hand. ${BROWSER_RESTART}`,
     };
   }
   if (nss === "not_written") {
