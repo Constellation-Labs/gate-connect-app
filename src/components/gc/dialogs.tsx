@@ -261,8 +261,7 @@ export function SwitchGatewayDialog({
           Switching starts a fresh session.
         </p>
         <p className="mt-1">
-          Your stored key is forgotten, managed tools disconnect, and Gate
-          Connect relaunches against the new server.
+          This forgets your key, disconnects tools and restarts Gate Connect.
         </p>
       </ModalNote>
     </Modal>
@@ -307,7 +306,7 @@ export function OAuthOfferDialog({
     <Modal
       icon="shieldCheck"
       title="Sign in instead of pasting a key"
-      subtitle={`Constellation sign-in keeps your session in ${secretStore} and refreshes it on its own, so there is nothing to rotate when a key expires.`}
+      subtitle={`Your session lives in ${secretStore} and renews itself. No key to rotate.`}
       // The decline works mid-flow, and that is the whole point of it.
       //
       // It used to be guarded as `() => !busy && onKeepKey()`, on the reasoning
@@ -336,8 +335,8 @@ export function OAuthOfferDialog({
       onDismiss={onDismissOffer ?? onKeepKey}
     >
       <p className="text-sm leading-5 text-neutral-600">
-        Your gateway and your routing stay exactly as they are. You can switch
-        either way later, under Connection in Settings.
+        Keeping your key changes nothing. Switch anytime under Connection in
+        Settings.
       </p>
       {error}
     </Modal>
@@ -1039,8 +1038,7 @@ export function ModelPickerDialog({
             Gate could not list its models
           </p>
           <p className="mt-1">
-            Nothing has changed: this app keeps the model it is using. Close
-            this and try again.
+            Nothing changed. Close this and try again.
           </p>
         </ModalNote>
       ) : models.length === 0 ? (
@@ -1049,8 +1047,7 @@ export function ModelPickerDialog({
             No models to choose from yet
           </p>
           <p className="mt-1">
-            This gateway offers no models of its own, so apps keep using the
-            model they are configured with.
+            This gateway has no models, so apps keep their own.
           </p>
         </ModalNote>
       ) : (
@@ -1251,8 +1248,8 @@ export function ModelPickerDialog({
                 <>
                   <p className="font-medium text-base-foreground">No models enabled</p>
                   <p className="mt-1">
-                    Gate needs at least one model to serve this app. Choose one, or cancel
-                    and switch the app back to App default.
+                    Choose at least one model, or cancel and return the app to App
+                    default.
                   </p>
                 </>
               ) : (
@@ -1365,8 +1362,8 @@ export function UseGateModelDialog({
           </p>
         </div>
         <p className="mt-3 text-sm leading-5 text-neutral-600">
-          Gate sets {app.name}&apos;s model to these in its own config. Return to
-          App default at any time to restore your previous model.
+          Gate writes these into {app.name}&apos;s config. Return to App default
+          anytime to undo.
         </p>
       </div>
     </Modal>
@@ -1549,18 +1546,18 @@ export function OpenCodeEnvDialog({
     >
       {/* Why OpenCode asks, then what saying yes reaches. The first sentence
           used to claim the variables are how Gate routes OpenCode, which the
-          component doc above explains is false; the breadth sentence and the
-          certificate sentence are unchanged. An earlier drawn ending, "...that
+          component doc above explains is false. Shortened on 2026-10-09,
+          keeping all three qualifiers: existing providers stay on OpenCode's
+          settings, only tools that read the variables, only Node programs
+          started afterwards. An earlier drawn ending, "...that
           reads them, not OpenCode", was cut on 2026-09-04 as contradicting the
           clause before it; with the clause corrected the cut still stands,
           since naming git, curl and npm carries the breadth on its own. */}
       <p className="text-sm leading-5 text-neutral-600">
-        OpenCode&apos;s own settings cover the providers you had set up when you
-        turned it on. Anything you add later reaches Gate through your
-        machine&apos;s proxy variables instead, and those apply to every command
-        line tool that reads them, git, curl and npm included. One of them also
-        tells Node to trust Gate&apos;s certificate, so every Node program you
-        start afterwards accepts the traffic Gate inspects.
+        Providers you already set up keep OpenCode&apos;s own settings. Ones you
+        add later route through your proxy variables, which apply to any
+        command-line tool that reads them, git, curl and npm included, and make
+        Node programs you start afterwards trust Gate&apos;s certificate.
       </p>
       {/* AG-895. The ticket reads "toggling OpenCode asks me to close Codex",
           and the literal claim does not survive the code - every caller of
@@ -1581,8 +1578,7 @@ export function OpenCodeEnvDialog({
           trust prompt's hint: it is the line that decides whether the person
           gets what they just asked for. */}
       <p className="mt-3 text-sm font-medium leading-5 text-base-foreground">
-        Terminals and tools that are already open keep the environment they
-        started with. Reopen them if you want their traffic covered.
+        Terminals and tools already open aren&apos;t covered until you reopen them.
       </p>
     </Modal>
   );
@@ -1753,7 +1749,7 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
       // than claiming one rule: automatic collection can carry the account id
       // after sign-in, so it says what is and is not in it, not that it is
       // anonymous.
-      subtitle="Automatic collection never includes your name, email or keys. A report you send yourself carries more, and is listed last."
+      subtitle="Automatic collection never includes your name, email or keys. Reports you send carry more."
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
     >
@@ -1813,10 +1809,9 @@ export function CollectedDataLists({
               dialog is reached from Settings, where there is a switch rather
               than a question, so the copy names the switch. */}
           <li>
-            A device id generated on this machine. Once you sign in, and while
-            sharing is on, your organization id too, and your account id if you
-            signed in with Constellation, so setup can be measured from download
-            to first request. Never your name or email.
+            A device id made on this machine. Once you sign in, and while
+            sharing is on, your organization id too, and your account id with
+            Constellation sign-in. Never your name or email.
           </li>
           {/* AG-960's opt-out record: at most once per install (a marker the
               core claims), on the onboarding No and Skip as well as the
@@ -1825,31 +1820,27 @@ export function CollectedDataLists({
               the sentence true after a second opt-out, which sends nothing. */}
           <li>
             The first time you say no, or turn sharing off later, one final note
-            says so, with your organization id, and tied to your account if you
-            signed in with Constellation.
+            says so, tied to your organization and account when known.
           </li>
           <li>App version and operating system.</li>
           <li>
-            Which action happened, from a fixed list - routing turned on or off,
-            an app connected, a setup step completed or failed, an update
-            installed. Never free text.
+            Which action happened, from a fixed list: routing on or off, an app
+            connected, a setup step, an update. Never free text.
           </li>
           <li>
-            A short label for each action: which app or provider it concerned,
-            and whether it was on or off.
+            A short label per action: which app or provider, and on or off.
           </li>
           <li>
-            A classified title when something fails, e.g. &ldquo;keychain
-            denied&rdquo;. The underlying message stays on this machine.
+            A short error title, like &ldquo;keychain denied&rdquo;. The full message
+            stays here.
           </li>
           {/* Errors only, and it says so: this rides a failure and no other
               event. The device name is deliberately left out of the error
               context, and the organization id rides only as the group named
               in the first bullet, never as a field here. */}
           <li>
-            When something fails, the state Gate was in: your operating system
-            version, which tools are installed, whether routing was on, and
-            whether the event stream was connected. Not what you were doing.
+            On a failure: your OS version, installed tools, and whether routing and
+            the event stream were on. Not what you were doing.
           </li>
         </ul>
       </Wrapper>
@@ -1871,14 +1862,12 @@ export function CollectedDataLists({
               so rather than claiming it is linked to nobody. What it does not
               do is join this device's diagnostic data to a person. */}
           <li>
-            The same device id, stored with each request your account sends, so
-            your activity view can group requests by machine. It authorizes
-            nothing.
+            The same device id, stored with each request your account sends, to
+            group your activity by machine. It grants no access.
           </li>
           <li>
-            Which app made the request, when Gate can tell from the request
-            itself - Claude Code, Codex, and so on. Unrecognised apps are sent
-            unlabelled rather than guessed at.
+            Which app sent the request, when Gate can tell: Claude Code, Codex and
+            so on. Unknown apps go unlabelled.
           </li>
         </ul>
       </Wrapper>
@@ -1905,16 +1894,16 @@ export function CollectedDataLists({
         </p>
         <ul className="mt-1 list-disc pl-4">
           <li>
-            Your email, organization name and organization id, so a support
-            thread can find the account it is about.
+            Your email, organization name and id, so support can find your
+            account.
           </li>
           <li>
-            Where Gate keeps its files, and the gateway, proxy and relay
-            addresses this machine is using.
+            Where Gate keeps its files, and the gateway, proxy and relay addresses
+            in use.
           </li>
           <li>
-            Which tools are installed, their routing status, and which agents
-            were running when you sent it.
+            Installed tools, their routing status, and agents running when you sent
+            it.
           </li>
         </ul>
       </Wrapper>
@@ -1998,8 +1987,8 @@ export function SendDiagnosticsDialog({
       title={sent ? "Diagnostics sent" : "Send diagnostics now"}
       subtitle={
         sent
-          ? "Paste this reference into your support request so we can find the report."
-          : "One report, sent once. This does not change your Share diagnostic data setting."
+          ? "Paste this reference into your support request."
+          : "Sends one report. Your sharing setting doesn’t change."
       }
       secondary={
         sent
@@ -2039,8 +2028,7 @@ export function SendDiagnosticsDialog({
             {state.reference}
           </div>
           <ModalNote>
-            The report is on its way to Constellation Gate. Routing and event
-            delivery were not interrupted.
+            The report is on its way. Routing was not interrupted.
           </ModalNote>
         </>
       ) : (
@@ -2049,8 +2037,8 @@ export function SendDiagnosticsDialog({
             <DialogError>
               <p className="font-medium">{state.title}</p>
               <p className="mt-1">{state.hint}</p>
-              {/* The hint is `classifyError`'s fallback, which ends "the
-                * details below help when reporting it" - and there were no
+              {/* The hint is `classifyError`'s fallback, which points to
+                * "the details below" - and there were no
                 * details below. The classifier had the raw message all along;
                 * this dialog was the one surface that dropped it on the way in.
                 * Same disclosure `ErrorBanner` and the setup screen use, so the
@@ -2132,8 +2120,7 @@ export function TeardownLeftBehindDialog({
       <p className="text-sm leading-5 text-neutral-600">
         Couldn’t put {joinNames(tools)} back on{" "}
         {plural ? "their own settings" : "its own settings"}.{" "}
-        {plural ? "They still point" : "It still points"} at Gate, which has no
-        session behind {plural ? "them" : "it"} now.
+        {plural ? "They still point" : "It still points"} at Gate, which is now signed out.
       </p>
     </Modal>
   );

@@ -187,7 +187,7 @@ export function trustPromptHint(p: Platform): string {
     case "windows":
       return "Windows will show a security warning: that’s expected, choose Yes.";
     case "macos":
-      return "macOS will ask for your login password. The prompt is named “security”, not Gate Connect.";
+      return "macOS will ask for your password, in a prompt named “security”.";
     case "linux":
       return "You’ll be asked for your administrator password.";
     default:

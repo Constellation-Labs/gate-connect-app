@@ -550,7 +550,7 @@ export function buildSettingsSections({
                 icon: "headset" as IconName,
                 label: "Send diagnostics now",
                 description:
-                  "Send one report to Constellation Gate and get a reference for your support request.",
+                  "Send one report and get a reference for support.",
                 action: { label: "Send", onClick: onSendDiagnostics },
               } as SettingsRow,
             ]

@@ -449,8 +449,8 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
 /**
  * The underlying message, behind an expander, with a copy button.
  *
- * Two of `classifyError`'s hints end on "the details below help when reporting
- * it", and one of them is the catch-all fallback - so every context without a
+ * Two of `classifyError`'s hints point to "the details below", and one of them
+ * is the catch-all fallback - so every context without a
  * branch of its own lands on copy that promises something below. That makes
  * this the surface for any failure nobody classified. `ErrorBanner` grew it
  * first and the setup screen still had none, which meant a first-run or

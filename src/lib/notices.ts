@@ -79,7 +79,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
       return {
         id: `needs-trust:${member.key}`,
         title: `${name} needs the Gate certificate`,
-        body: "Gate cannot read this app's traffic until its certificate is trusted on this machine.",
+        body: "Gate can’t read its traffic until the certificate is trusted.",
         switchLabel: `Trust the certificate so ${name} can route`,
         action: { kind: "trust-certificate" },
       };

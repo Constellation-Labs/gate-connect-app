@@ -187,7 +187,7 @@ test.describe("new UI certificate and diagnostics", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByText("Routing turns off")).toBeVisible();
     await expect(
-      dialog.getByText("quit and reopen any AI tools"),
+      dialog.getByText("quit and reopen any running AI tools"),
     ).toBeVisible();
 
     expect(await app.lastCall("proxy_untrust_ca")).toBeNull();
@@ -221,7 +221,7 @@ test.describe("new UI certificate and diagnostics", () => {
 
     await expect(app.page.getByText("Certificate removed", { exact: true })).toBeVisible();
     await expect(
-      app.page.getByText("Quit and reopen any open browser so it stops trusting the certificate.", {
+      app.page.getByText("Quit and reopen any open browser to finish.", {
         exact: false,
       }),
     ).toBeVisible();

@@ -183,13 +183,13 @@ describe("adaptPreferences: what each tool's config says", () => {
 describe("leftGateModelsNotice", () => {
   it("names the app and the model it moved to", () => {
     expect(leftGateModelsNotice("Codex", "gpt-6-sol")).toBe(
-      "You switched Codex to gpt-6-sol in Codex, so it is back on App default.",
+      "You picked gpt-6-sol in Codex, so it’s back on App default.",
     );
   });
 
   it("does not invent a model when the config names none", () => {
     expect(leftGateModelsNotice("Hermes", null)).toBe(
-      "You switched Hermes to another model in Hermes, so it is back on App default.",
+      "You picked another model in Hermes, so it’s back on App default.",
     );
   });
 });

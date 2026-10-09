@@ -181,7 +181,7 @@ export function sectionNotice(
       // cause that blames the wrong thing.
       return {
         subject: section,
-        cause: "Your role in this organization cannot see this. An owner or admin can.",
+        cause: "Only an owner or admin can see this.",
         actions: [],
       };
     case "attribution":
@@ -191,7 +191,7 @@ export function sectionNotice(
       // than to a machine.
       return {
         subject: section,
-        cause: "The credential in use has no user attached, so Gate cannot tell whose activity this is.",
+        cause: "This credential has no user, so activity can’t be attributed.",
         actions: [API_KEYS, DOCS],
       };
     case "not_configured":

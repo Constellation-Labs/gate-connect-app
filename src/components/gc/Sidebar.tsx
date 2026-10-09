@@ -512,8 +512,8 @@ function InventoryState({
         {failed
           ? // Not "no apps": the difference between "we looked and found none"
             // and "we could not look" is the whole point of this component.
-            "Gate couldn’t read this device’s app list, so it doesn’t know what is installed. Nothing has been changed."
-          : "Gate looked for supported AI apps and found none installed. Install one and refresh, and it will appear here."}
+            "Couldn’t read this device’s app list. Nothing was changed."
+          : "No supported AI apps found. Install one and refresh."}
       </p>
       {state.kind === "none" && (
         // The scan time is what makes "none" an answer rather than a shrug.

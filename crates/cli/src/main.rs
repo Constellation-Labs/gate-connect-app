@@ -957,8 +957,7 @@ const BROWSER_RESTART: &str = "Quit and reopen any open browser so it trusts the
 
 /// The removal's counterpart, `BROWSER_REMOVED_RESTART` in `src/lib/groups.ts`.
 #[cfg(target_os = "linux")]
-const BROWSER_REMOVED_RESTART: &str =
-    "Quit and reopen any open browser so it stops trusting the certificate.";
+const BROWSER_REMOVED_RESTART: &str = "Quit and reopen any open browser to finish.";
 
 /// What a removal did to the browser stores, on Linux, where a running browser
 /// keeps the stores it read at launch: one still open goes on trusting a root
