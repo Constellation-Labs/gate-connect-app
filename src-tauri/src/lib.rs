@@ -6584,9 +6584,10 @@ pub fn run() {
                     // A clock jump invalidates the local expiry test that
                     // `live_session` trusts, so renew unconditionally on the
                     // tick that saw one. Skipped once the session is known
-                    // dead: a forced refresh stores whatever it gets and
-                    // clears the gateway's rejection with it, which would
-                    // report a refused session as signed in again.
+                    // dead: a forced refresh stores whatever it gets (or hands
+                    // back what a concurrent one just stored) and the store
+                    // clears the gateway's rejection, which would report a
+                    // refused session as signed in again.
                     if clock_jumped && !SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed) {
                         eprintln!(
                             "[gate] the system clock moved out of step with elapsed time \

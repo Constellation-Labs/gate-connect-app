@@ -480,8 +480,14 @@ fn post_token(
 
     // Control-plane call: reach Cognito directly, never through the app's own
     // data-plane proxy. `.no_proxy()` ignores any `HTTP(S)_PROXY` the app set.
+    //
+    // Bounded at 10s, the same as the gateway probe (`org::probe_session`).
+    // Callers wait on this one at a time (see `refresh_stored`), so its bound
+    // is how long a window read or the 30s tick can stall on a Cognito that
+    // does not answer; reqwest's own default is 30s.
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .context("building the Cognito token HTTP client")
         .map_err(RefreshError::Unavailable)?;
@@ -757,8 +763,10 @@ fn refresh_stored(
     cfg: &OAuthConfig,
     force: bool,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
-    // Read before the bundle, so a refresh that lands between the two is seen.
+    // Both read before the bundle, so a refresh that ends between the two is
+    // seen, whichever way it ends.
     let seen = session_generation();
+    let attempts = REFRESH_ATTEMPTS.load(Ordering::Acquire);
     let Some(mut tokens) = stored_for(cfg)? else {
         return Ok(None);
     };
@@ -768,12 +776,19 @@ fn refresh_stored(
     // One refresh at a time. Every reader finds an expired bundle at once after
     // a sleep or a reboot - startup, the security feed, the window's reads, the
     // 30s tick - and each used to mint its own token and store it, which is
-    // what deadlocked the keychain (see `keychain::STORE_LOCK`). A caller that
-    // waited here while another refresh was stored takes that one instead:
-    // fresh, it is the answer to `force` too, which only asks for a token newer
-    // than the one the gateway refused. A sign-out meanwhile reads as `None`.
-    let _one = REFRESH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // what deadlocked the keychain (see `keychain::STORE_LOCK`).
+    //
+    // A caller that waited here takes the outcome of the refresh it waited on,
+    // whichever way it went. Stored: that bundle, which also answers `force`,
+    // since all `force` asks for is a token newer than the one the gateway
+    // refused; and a sign-out meanwhile reads as `None`. Failed: the same
+    // failure, rather than an attempt of its own. Retrying in turn would put
+    // each caller behind every earlier one's timeout, on exactly the wake from
+    // sleep where the network is likeliest to be down.
+    let mut last = REFRESH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut basis = seen;
     if session_generation() != seen {
+        basis = session_generation();
         let Some(latest) = stored_for(cfg)? else {
             return Ok(None);
         };
@@ -781,8 +796,12 @@ fn refresh_stored(
             return Ok(Some(latest));
         }
         tokens = latest;
+    } else if REFRESH_ATTEMPTS.load(Ordering::Acquire) != attempts {
+        if let Some(failed) = last.as_ref() {
+            return Err(failed.to_error());
+        }
     }
-    let refreshed = post_token(
+    let minted = post_token(
         cfg,
         &[
             ("grant_type", "refresh_token"),
@@ -800,15 +819,72 @@ fn refresh_stored(
         RefreshError::Unavailable(e) => {
             RefreshError::Unavailable(e.context("refreshing expired access token"))
         }
-    })?;
-    // A keychain write failing says nothing about the session: the token in
-    // hand is good, it just will not survive a restart.
-    store(&refreshed).map_err(RefreshError::Unavailable)?;
-    Ok(Some(refreshed))
+    });
+    let outcome = match minted {
+        // A sign-in or sign-out landed while Cognito was answering: the bundle
+        // this refreshed is not the session any more, and storing the result
+        // would put a signed-out user back in, or one user's session over
+        // another's. What is stored now is the answer instead, and nothing is
+        // passed on to the callers waiting here - they read the new session
+        // themselves. A sign-in or sign-out that lands between this check and
+        // the store below is not caught: neither takes this lock, and the
+        // window is one keychain write.
+        Ok(_) if session_generation() != basis => {
+            *last = None;
+            REFRESH_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+            return match stored_for(cfg)? {
+                None => Ok(None),
+                Some(t) if !t.is_expired(OffsetDateTime::now_utc().unix_timestamp()) => Ok(Some(t)),
+                Some(_) => Err(RefreshError::Unavailable(anyhow::anyhow!(
+                    "the session changed while it was being refreshed"
+                ))),
+            };
+        }
+        // A keychain write failing says nothing about the session: the token
+        // in hand is good, it just will not survive a restart.
+        Ok(refreshed) => store(&refreshed)
+            .map(|()| Some(refreshed))
+            .map_err(RefreshError::Unavailable),
+        Err(e) => Err(e),
+    };
+    *last = outcome.as_ref().err().map(SharedFailure::of);
+    REFRESH_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+    outcome
 }
 
-/// Held across a refresh and the store of its result; see [`refresh_stored`].
-static REFRESH_LOCK: Mutex<()> = Mutex::new(());
+/// Held across a refresh and the store of its result, and holding how the
+/// last refresh failed, if it did; see [`refresh_stored`].
+static REFRESH_LOCK: Mutex<Option<SharedFailure>> = Mutex::new(None);
+
+/// Bumped as each refresh ends, so a caller that waited for one can tell it
+/// ran. Outside the lock, because the caller reads it before taking the lock.
+static REFRESH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+
+/// A refresh failure, kept for the callers that waited on it. `RefreshError`
+/// holds an `anyhow::Error`, which cannot be cloned, so it keeps the
+/// classification and the message.
+struct SharedFailure {
+    refused: bool,
+    message: String,
+}
+
+impl SharedFailure {
+    fn of(e: &RefreshError) -> Self {
+        SharedFailure {
+            refused: e.is_refusal(),
+            message: format!("{e}"),
+        }
+    }
+
+    fn to_error(&self) -> RefreshError {
+        let e = anyhow::anyhow!("{}", self.message);
+        if self.refused {
+            RefreshError::Refused(e)
+        } else {
+            RefreshError::Unavailable(e)
+        }
+    }
+}
 
 /// The stored bundle, refused when this build's Cognito client did not mint it.
 fn stored_for(cfg: &OAuthConfig) -> std::result::Result<Option<OAuthTokens>, RefreshError> {

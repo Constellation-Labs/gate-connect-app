@@ -291,16 +291,23 @@ fn store_lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// Delete the secret at `(service, account)`, whether stored as a single entry
 /// or a chunk manifest plus its chunks. Returns whether anything was present.
+///
+/// The manifest goes first, the mirror of `set` writing it last. A delete cut
+/// short - a force-quit, a failed entry - then leaves no secret rather than a
+/// manifest naming chunks that are gone. That one never healed: every read
+/// failed with "chunk i of n missing", which reads as the store being
+/// unavailable, so the app neither signed the user out nor asked them to sign
+/// in. A chunk left behind instead is unreachable, and the next `set` of the
+/// same secret overwrites it by name.
 fn remove(service: &str, account: &str) -> Result<bool> {
-    if let Some(n) = get_raw(service, account)?
+    let chunks = get_raw(service, account)?
         .as_deref()
-        .and_then(parse_manifest)
-    {
-        for i in 0..n {
-            delete_raw(service, &chunk_account(account, i))?;
-        }
+        .and_then(parse_manifest);
+    let removed = delete_raw(service, account)?;
+    for i in 0..chunks.unwrap_or(0) {
+        delete_raw(service, &chunk_account(account, i))?;
     }
-    delete_raw(service, account)
+    Ok(removed)
 }
 
 pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
