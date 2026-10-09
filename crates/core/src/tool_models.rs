@@ -174,10 +174,11 @@ pub fn states() -> BTreeMap<&'static str, ToolModelView> {
                         "putting {} back on its own model failed: {e:#}",
                         integ.display_name()
                     ));
+                    // The card's title already says the requests are refused,
+                    // so this is the cause and the fix only.
                     view.problem = Some(format!(
-                        "{name} was moved off its Gate models, and Gate Connect could not put \
-                         it back on its own model, so its requests are refused. Choose a model \
-                         for {name} again under Model selection below.",
+                        "{name} left Gate models and couldn’t go back to its own model. Choose \
+                         a model again under Model selection.",
                         name = integ.display_name()
                     ));
                 }
