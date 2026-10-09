@@ -790,17 +790,19 @@ fn coverage_from(
 
 /// The lookup behind [`coverage_from`], over an explicit catalog and URL list.
 ///
-/// Loopback hosts are absent from both lists: `NO_PROXY` exempts them, so a
-/// self-hosted provider is reached directly and never passes the engine at all.
-/// Keyed by slug, not host: two hosts one row claims are one switch, and a
-/// caller that named the row per host would ask about it twice.
+/// Hosts `NO_PROXY` exempts are absent from both lists - loopback, and since
+/// that list grew, the private, CGNAT and `.ts.net`/`.local` ranges too. A
+/// model on the LAN or a Tailscale VM is reached directly and never passes the
+/// engine, so it is not a gap in what Gate sees but something Gate chose not to
+/// look at. Keyed by slug, not host: two hosts one row claims are one switch,
+/// and a caller that named the row per host would ask about it twice.
 fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
     let mut coverage = Coverage::default();
     for url in urls {
-        if is_loopback_url(url) {
+        let host = url_host(url);
+        if crate::proxy::no_proxy_exempts(&host) {
             continue;
         }
-        let host = url_host(url);
         match crate::proxy::domain_claiming_host(catalog, &host) {
             Some(d) if d.enabled => {}
             Some(d) => {
@@ -1372,6 +1374,23 @@ mod tests {
         );
         assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
         assert_eq!(coverage.unknown.len(), 1, "{coverage:?}");
+    }
+
+    #[test]
+    fn a_model_on_the_tailnet_or_lan_is_not_a_gap() {
+        // Reported on a Hermes pointed at a model in a VM over Tailscale: the
+        // row read "Routed, not inspected: 100.x" over traffic NO_PROXY sends
+        // straight to the VM.
+        let coverage = coverage_of(
+            &catalog_with("anthropic"),
+            &urls(&[
+                "http://100.101.102.103:8000/v1",
+                "http://gpu-box.tail1234.ts.net:11434/v1",
+                "http://192.168.1.20:1234/v1",
+                "http://llm.local:8080/v1",
+            ]),
+        );
+        assert!(coverage.is_covered(), "{coverage:?}");
     }
 
     #[test]

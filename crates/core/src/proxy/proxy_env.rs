@@ -65,6 +65,43 @@ pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 fc00::/7,fe80::/10,.local,.ts.net,.internal";
 
+/// Whether [`NO_PROXY_VALUE`] exempts `host`, read the way the clients that
+/// honour every entry read it: a name exactly, a `.suffix` as any name under
+/// it, a CIDR as any address inside it.
+///
+/// For callers that report what Gate will see. A host this answers yes for is
+/// one Gate tells the tool to reach directly, so calling it "routed, not
+/// inspected" describes traffic Gate itself sent elsewhere - a Hermes pointed
+/// at a model on a Tailscale VM read amber over a request that never came near
+/// the engine.
+pub(crate) fn no_proxy_exempts(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    let addr = host.parse::<std::net::IpAddr>().ok();
+    NO_PROXY_VALUE.split(',').any(|entry| {
+        if let Some((net, bits)) = entry.split_once('/') {
+            let (Some(addr), Ok(net), Ok(bits)) =
+                (addr, net.parse::<std::net::IpAddr>(), bits.parse::<u32>())
+            else {
+                return false;
+            };
+            return match (addr, net) {
+                (std::net::IpAddr::V4(a), std::net::IpAddr::V4(n)) => {
+                    let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+                    u32::from(a) & mask == u32::from(n) & mask
+                }
+                (std::net::IpAddr::V6(a), std::net::IpAddr::V6(n)) => {
+                    let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+                    u128::from(a) & mask == u128::from(n) & mask
+                }
+                _ => false,
+            };
+        }
+        entry.strip_prefix('.').map_or(host == entry, |suffix| {
+            host.ends_with(&format!(".{suffix}"))
+        })
+    })
+}
+
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set
 /// because tools disagree about which they read - curl wants lower-case, most
@@ -372,6 +409,37 @@ mod tests {
             second.is_none(),
             "a re-enable must keep the original record, not overwrite it"
         );
+    }
+
+    #[test]
+    fn no_proxy_exempts_reads_names_suffixes_and_ranges() {
+        for host in [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "100.101.102.103",
+            "100.64.0.1",
+            "100.127.255.255",
+            "192.168.1.20",
+            "10.0.0.5",
+            "fd7a:115c:a1e0::1",
+            "model-box.tail1234.ts.net",
+            "nas.local",
+            "MODEL-BOX.TS.NET",
+        ] {
+            assert!(no_proxy_exempts(host), "{host} should be exempt");
+        }
+        for host in [
+            "openrouter.ai",
+            "100.63.255.255",
+            "100.128.0.1",
+            "8.8.8.8",
+            "2001:4860::1",
+            "notlocal",
+            "ts.net.example.com",
+        ] {
+            assert!(!no_proxy_exempts(host), "{host} should not be exempt");
+        }
     }
 
     #[test]
