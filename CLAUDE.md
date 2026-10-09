@@ -257,9 +257,10 @@ one-to-one so any value can be traced back without guessing.
   it does not, since the 2026-09-29 redraw**: its three guardrail glyphs are in
   colour, sampled red-700 / green-700 / blue-700 off `1390:13599`, and the
   Overview feed's Category cell takes the same three for the same guardrails.
-  Both are 24px on the table rows (20 in the feed). Resolve the node before
-  applying any of this; the old `116:26721` reading was one table generalised
-  to two.
+  Both are 20px beside a `label/14` label on the table rows, as in the feed:
+  the file drew 24px beside `label/16` for a while and reverted the pair
+  (`1402:18180`, AG-1055). Resolve the node before applying any of this; the
+  old `116:26721` reading was one table generalised to two.
   **A model row is a third case, and takes neither ink**: it draws the
   provider's own full-colour brand mark (`src/components/gc/ProviderMark.tsx`),
   because the frames do - `anthropic 2` is `#E8704E`, `deepseek-color 1`
