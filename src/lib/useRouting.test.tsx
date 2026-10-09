@@ -809,6 +809,27 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     (hermesUpstreamCoverage as Mock).mockResolvedValue(covered);
   });
 
+  it("turns nothing on from the pane card when the certificate prompt is declined", async () => {
+    // The card's button goes through the same trust gate as every enable.
+    // Declining is an answer, not a failure: no write, no error, and the
+    // window is clickable again.
+    const { api, onError } = harness(
+      [tool("hermes", { kind: "connected" })],
+      proxyState({ ca_trusted: false }),
+    );
+
+    await act(async () => {
+      void api.current!.enableHermesProviders(["openrouter"]);
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+    });
+
+    expect(proxySetDomain).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(api.current!.busy).toBe(false);
+  });
+
   it("turns the provider on without asking, after the connect", async () => {
     (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());

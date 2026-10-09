@@ -111,13 +111,12 @@ export function verdictStatus(
  *
  * All three lists count. `local` is a tool on local models alone, switched on
  * and sending Gate nothing; the backend lists them only then. `unknown` is the
- * irremediable one - no
- * catalog entry claims that host - and `switched_off` is a domain whose switch
- * is off, which AG-930's dialog offers to fix at the moment a tool is
- * connected. The row still has to say it, because the dialog fires once and
- * the switch can be flipped afterwards from somewhere else: removing and
- * re-trusting a certificate reset one to off hours after the fact, which is
- * how this was found.
+ * irremediable one - no catalog entry claims that host - and `switched_off` is
+ * a domain whose switch is off, which AG-930's dialog offers to fix at the
+ * moment a tool is connected. The row still has to say it, because the dialog
+ * fires once and the switch can be flipped afterwards from somewhere else:
+ * removing and re-trusting a certificate reset one to off hours after the
+ * fact, which is how this was found.
  *
  * Every host, not one plus a count: the rail prints no reason at all now, and
  * the pane card that does has the room.

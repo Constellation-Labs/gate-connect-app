@@ -75,10 +75,12 @@ pub(crate) mod test_relay;
 mod proxy_env;
 
 /// Re-exported so the per-tool integrations that write their own `NO_PROXY`
-/// use the same list as the machine-wide export. They carried three copies of
-/// it, which is three places to forget when the list grows - and it just did.
-/// The environment form, because each of them writes one; see the constant.
-/// `no_proxy_exempts` reads what the full list means, for Hermes' local hosts.
+/// build on the same list as the machine-wide export. They carried three
+/// copies of it, which is three places to forget when the list grows - and it
+/// just did. The environment form, because each of them writes one: Claude
+/// Code as it stands, Hermes with its local addresses added (see the
+/// constant). `no_proxy_exempts` reads what the full list means, for those
+/// addresses.
 pub(crate) use proxy_env::{no_proxy_exempts, ENV_NO_PROXY_VALUE, LEGACY_ENV_NO_PROXY_VALUE};
 
 #[cfg(target_os = "macos")]

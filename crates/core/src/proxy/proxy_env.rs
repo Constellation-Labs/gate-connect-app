@@ -29,9 +29,10 @@
 //! is exactly what Linux has always done.
 //!
 //! There are two lists, not one. [`NO_PROXY_VALUE`] is what Gate means to keep
-//! off the engine and is what GNOME's `ignore-hosts` carries;
-//! [`ENV_NO_PROXY_VALUE`] is that list in a shape every client can parse, and
-//! is the one written into any process environment.
+//! off the engine: GNOME's `ignore-hosts` carries it, and [`no_proxy_exempts`]
+//! reads it to decide which hosts are local. [`ENV_NO_PROXY_VALUE`] is that
+//! list in a shape every client can parse, and is the base of every process
+//! environment Gate writes.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -85,10 +86,11 @@ fc00::/7,fe80::/10,.local,.ts.net,.internal";
 /// there: blind-tunnelled, uninspected, working while Gate runs. A bracketed
 /// address (`[fd00::1]`) fails the same way; a bare one (`::1`) is fine.
 ///
-/// Every environment Gate writes takes this: the shell export, Claude Code's
+/// Every environment Gate writes takes this: the shell export and Claude Code's
 /// settings (inherited by its Bash tool and stdio MCP servers, which is where
-/// the Python is) and Hermes' `.env`. Only GNOME's ignore list keeps the full
-/// list, and `httpx` never reads it.
+/// the Python is) as it stands, and Hermes' `.env` as its base, with the local
+/// addresses Hermes' config names added. Only GNOME's ignore list keeps the
+/// full list, and `httpx` never reads it.
 pub(crate) const ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 .local,.ts.net,.internal";
@@ -97,11 +99,15 @@ pub(crate) const ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 /// [`ENV_NO_PROXY_VALUE`]: the full list, IPv6 CIDRs and all.
 ///
 /// Frozen on purpose rather than derived from [`NO_PROXY_VALUE`]: it is what
-/// is on disk, and that does not change when the list next grows. Each
-/// integration's `status` reads exactly this value as its own stale write, so
-/// the startup reconcile rewrites it - which is the only thing that would on
+/// is on disk, and that does not change when the list next grows. Claude
+/// Code's `status` reads exactly this value as its own stale write, so the
+/// startup reconcile rewrites it - which is the only thing that would on
 /// Linux, where no quit sweep reconnects anything. Exactly this value and no
 /// other, so a `NO_PROXY` the user edited is never mistaken for Gate's.
+///
+/// Hermes does not need it by name: its `status` compares Gate's recorded
+/// line with what a connect would write now, and this value is one case of
+/// that.
 pub(crate) const LEGACY_ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 fc00::/7,fe80::/10,.local,.ts.net,.internal";

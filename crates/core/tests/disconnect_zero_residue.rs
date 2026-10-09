@@ -1014,6 +1014,149 @@ fn hermes_does_not_override_a_user_owned_no_proxy() {
     );
 }
 
+/// A Hermes install against this test HOME: launcher, config.yaml with
+/// `config`, and an empty .env. Returns the .env path.
+fn install_hermes(config: &str) -> std::path::PathBuf {
+    seed_relay_port(9977);
+    seed_engine_port(9977);
+    seed_ca_cert();
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+    let cfg = env::hermes_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(&cfg, config).unwrap();
+    env::hermes_config_dir().unwrap().join(".env")
+}
+
+fn env_line(envfile: &std::path::Path, key: &str) -> Option<String> {
+    fs::read_to_string(envfile)
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{key}=")).map(str::to_string))
+}
+
+#[test]
+fn hermes_stands_its_lower_case_no_proxy_down_when_the_user_takes_no_proxy() {
+    // Gate's lower-case line wins over NO_PROXY in urllib, so once the user
+    // has written their own NO_PROXY, keeping Gate's would override it.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let envfile = install_hermes("model:\n  base_url: https://openrouter.ai/api/v1\n");
+    let integ = find(ToolId::Hermes).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    assert!(env_line(&envfile, "no_proxy").is_some());
+
+    let body = fs::read_to_string(&envfile).unwrap();
+    let ours = env_line(&envfile, "NO_PROXY").unwrap();
+    fs::write(
+        &envfile,
+        body.replace(&format!("NO_PROXY={ours}"), "NO_PROXY=corp.example"),
+    )
+    .unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    assert_eq!(
+        env_line(&envfile, "NO_PROXY").as_deref(),
+        Some("corp.example")
+    );
+    assert_eq!(
+        env_line(&envfile, "no_proxy"),
+        None,
+        "{}",
+        fs::read_to_string(&envfile).unwrap()
+    );
+}
+
+#[test]
+fn hermes_refreshes_no_proxy_when_its_models_change() {
+    // Gate models rewrite config.yaml; leaving them never touched .env, so a
+    // model on a LAN address read as drift straight after the switch.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let envfile = install_hermes("model:\n  base_url: https://openrouter.ai/api/v1\n");
+    let integ = find(ToolId::Hermes).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    assert!(!env_line(&envfile, "NO_PROXY")
+        .unwrap()
+        .contains("192.168.1.20"));
+
+    fs::write(
+        env::hermes_config_path().unwrap(),
+        "model:\n  base_url: http://192.168.1.20:1234/v1\n",
+    )
+    .unwrap();
+    integ.leave_gate_models(&connect_input(9977)).unwrap();
+
+    for key in ["NO_PROXY", "no_proxy"] {
+        let value = env_line(&envfile, key).unwrap();
+        assert!(
+            value.split(',').any(|e| e == "192.168.1.20"),
+            "{key}={value}"
+        );
+    }
+}
+
+#[test]
+fn hermes_backfills_no_proxy_on_an_install_from_before_it() {
+    // A sidecar from a build that never wrote the lower-case line: a
+    // re-connect adds it, owns it, and disconnect takes it back out.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let envfile = install_hermes("model:\n  base_url: https://openrouter.ai/api/v1\n");
+    let integ = find(ToolId::Hermes).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    // Roll the install back to before `no_proxy` existed.
+    let body = fs::read_to_string(&envfile).unwrap();
+    let kept: String = body
+        .lines()
+        .filter(|l| !l.starts_with("no_proxy="))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&envfile, kept).unwrap();
+    let sidecar = env::app_support_dir().unwrap().join("hermes-state.json");
+    let mut state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&sidecar).unwrap()).unwrap();
+    state["added_vars"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|k| k != "no_proxy");
+    state["written_vars"]
+        .as_object_mut()
+        .unwrap()
+        .remove("no_proxy");
+    fs::write(&sidecar, serde_json::to_string(&state).unwrap()).unwrap();
+
+    integ.connect(&connect_input(9977)).unwrap();
+    assert!(env_line(&envfile, "no_proxy").is_some());
+
+    integ.disconnect().unwrap();
+    let after = fs::read_to_string(&envfile).unwrap_or_default();
+    assert!(!after.to_ascii_lowercase().contains("no_proxy"), "{after}");
+}
+
+#[test]
+fn hermes_coverage_reads_the_no_proxy_line_hermes_uses() {
+    // urllib lets the lower-case value win (on Windows, the later line), so
+    // that is the one coverage has to judge the bypass by.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let envfile = install_hermes("model:\n  base_url: http://100.101.102.103:8000/v1\n");
+    fs::write(
+        &envfile,
+        "NO_PROXY=localhost\nno_proxy=localhost,100.101.102.103\n",
+    )
+    .unwrap();
+
+    let coverage = gate_connect_core::integrations::hermes::upstream_coverage();
+    assert_eq!(
+        coverage.local,
+        vec!["100.101.102.103".to_string()],
+        "{coverage:?}"
+    );
+}
+
 #[test]
 fn hermes_leaves_a_user_owned_proxy_alone() {
     // A pre-existing HTTPS_PROXY is likely a corporate egress proxy the rest of

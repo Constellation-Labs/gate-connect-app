@@ -293,7 +293,8 @@ impl Integration for Hermes {
             return Ok(());
         };
         revert_gate_models(&mut state)?;
-        save_state(&state)
+        save_state(&state)?;
+        refresh_no_proxy(&mut state)
     }
 
     fn gate_model_state(&self) -> Result<GateModelState> {
@@ -344,21 +345,32 @@ impl Integration for Hermes {
             crate::proxy::address_health(&configured),
             crate::proxy::exported_proxy_url().as_deref(),
         );
-        // Drift, so the reconcile reconnects it: the `NO_PROXY` Gate wrote no
-        // longer matches what a connect would write now - a local model added
-        // to `config.yaml` since, or a value from an older build (IPv6 CIDRs
-        // that stop httpx). Nothing else would rewrite it on Linux.
-        if matches!(status, Status::Connected)
-            && no_proxy_is_stale(
-                &state.written_vars,
-                dotenv::read_var(&env_file_path()?, "NO_PROXY")?.as_deref(),
-                &no_proxy_for(&config_base_urls().unwrap_or_default()),
-            )
-        {
-            return Ok(Status::Drifted(
-                "NO_PROXY in ~/.hermes/.env is not the list Gate would write for this config"
-                    .into(),
-            ));
+        // Drift, so the reconcile reconnects it: a `NO_PROXY` line Gate wrote,
+        // in either case, no longer matches what a connect would write now - a
+        // local model added to `config.yaml` since, or a value from an older
+        // build (IPv6 CIDRs that stop httpx). Nothing else would rewrite it on
+        // Linux.
+        //
+        // Not while `config.yaml` is there and does not parse: that is most
+        // often an editor halfway through a save, and reading it as "names
+        // nothing" would flag drift for one poll and reconnect for nothing.
+        if matches!(status, Status::Connected) && !config_unparseable() {
+            let expected = no_proxy_for(&config_base_urls().unwrap_or_default());
+            let path = env_file_path()?;
+            for key in ["NO_PROXY", "no_proxy"] {
+                let on_disk = dotenv::read_var(&path, key)?;
+                if no_proxy_is_stale(
+                    &state.written_vars,
+                    &state.added_vars,
+                    key,
+                    on_disk.as_deref(),
+                    &expected,
+                ) {
+                    return Ok(Status::Drifted(format!(
+                        "{key} in ~/.hermes/.env is not the list Gate would write for this config"
+                    )));
+                }
+            }
         }
         Ok(status)
     }
@@ -399,8 +411,13 @@ impl Integration for Hermes {
             .collect();
         // Keys from an install that predates `written_vars`: ours by key alone,
         // for this one connect, and recorded with a value on the way out.
-        for key in &state.added_vars {
-            if !state.written_vars.contains_key(key) {
+        //
+        // Only when the record is empty, i.e. really that old. Once values are
+        // recorded, a key Gate added that is missing from them is one the user
+        // took over - `add_vars` left it out of `owned_values` for exactly that
+        // reason - and claiming it back by key would overwrite their value.
+        if state.written_vars.is_empty() {
+            for key in &state.added_vars {
                 ours.push(dotenv::Owned {
                     key: key.clone(),
                     value: None,
@@ -480,7 +497,14 @@ impl Integration for Hermes {
                 }
             }
         }
+        // The lower-case line is not part of that write; its record carries
+        // over, so the step below and `refresh_no_proxy` can still tell Gate's
+        // line from the user's.
+        let lower_record = state.written_vars.remove("no_proxy");
         state.written_vars = applied.owned_values.clone().into_iter().collect();
+        if let Some(value) = lower_record {
+            state.written_vars.insert("no_proxy".to_string(), value);
+        }
         save_state(&state)?;
 
         // Lower-case `no_proxy` too, and not as a courtesy: `urllib` lets it
@@ -531,7 +555,7 @@ impl Integration for Hermes {
             })
             .ok()
             .flatten();
-        // Same rule as `added_vars` below, and the same trap: on a re-connect
+        // Same rule as `added_vars` above, and the same trap: on a re-connect
         // the header is already there and correct, so `write_tool_header`
         // reports creating nothing - and assigning that would erase the record
         // of what the FIRST connect created. Disconnect reads this to know how
@@ -550,9 +574,11 @@ impl Integration for Hermes {
             (Some(ids), Some(relay)) => apply_gate_models(&mut state, ids, relay)?,
             _ => revert_gate_models(&mut state)?,
         }
+        refresh_no_proxy(&mut state)?;
 
-        // Preserve the ORIGINAL record across re-connects: a second connect
-        // must not claim credit for variables the first one added.
+        // `added_vars` above keeps the ORIGINAL record across re-connects, so a
+        // second connect never claims credit for variables the first one added
+        // - only for a key it added itself, which the backfill there appends.
         // The values, unlike `added_vars`, are replaced every time: they are
         // what the file holds now, not who put it there. Recorded even when
         // nothing changed, so a sidecar that predates the field stops relying
@@ -712,18 +738,101 @@ fn configured_proxy() -> Result<Option<String>> {
     dotenv::read_var(&env_file_path()?, PRIMARY_VAR)
 }
 
-/// Whether Gate's own `NO_PROXY` in `.env` is out of date: the sidecar recorded
-/// the value on disk (so it is still Gate's, not the user's) and it differs from
-/// `expected`. A value the user changed is theirs and never stale.
+/// Whether Gate's own `key` line in `.env` is out of date: it is still Gate's
+/// and it differs from `expected`. A value the user changed is theirs and never
+/// stale.
+///
+/// Gate's by the same test connect applies: the sidecar recorded this exact
+/// value, or - a sidecar from before values were recorded at all - Gate added
+/// the key and has nothing to compare against, so it is Gate's by key alone.
 fn no_proxy_is_stale(
     written: &BTreeMap<String, String>,
+    added: &[String],
+    key: &str,
     on_disk: Option<&str>,
     expected: &str,
 ) -> bool {
-    match (written.get("NO_PROXY"), on_disk) {
-        (Some(ours), Some(disk)) => ours == disk && disk != expected,
-        _ => false,
+    let Some(disk) = on_disk else {
+        return false;
+    };
+    let ours = match written.get(key) {
+        Some(recorded) => recorded == disk,
+        None => written.is_empty() && added.iter().any(|k| k == key),
+    };
+    ours && disk != expected
+}
+
+/// Whether `config.yaml` exists and does not parse - as opposed to missing, or
+/// naming nothing, which [`config_base_urls`] reports the same way.
+fn config_unparseable() -> bool {
+    crate::env::hermes_config_path().is_ok_and(|p| p.exists()) && parsed_config().is_none()
+}
+
+/// Bring Gate's own `NO_PROXY` lines in `.env` up to what `config.yaml` needs
+/// now, and stand Gate's lower-case line down if the upper-case one is no
+/// longer Gate's.
+///
+/// After every Gate models change, because they rewrite `config.yaml` and the
+/// list is computed from it: connect writes `.env` before the models step, and
+/// leaving Gate models never touched `.env` at all, so a model on a LAN or
+/// tailnet address read as drift straight after either switch.
+///
+/// The lower-case line goes when the user has taken `NO_PROXY` over: it wins
+/// in `urllib`, and on Windows as the later line, so leaving Gate's would
+/// override the list the user just wrote.
+fn refresh_no_proxy(state: &mut State) -> Result<()> {
+    let path = env_file_path()?;
+    let expected = no_proxy_for(&config_base_urls().unwrap_or_default());
+    // Ownership as connect reads it: by recorded value, or by key alone only
+    // for a sidecar that has no values recorded at all.
+    let owned = |state: &State, key: &str| -> Option<dotenv::Owned> {
+        match state.written_vars.get(key) {
+            Some(value) => Some(dotenv::Owned {
+                key: key.to_string(),
+                value: Some(value.clone()),
+            }),
+            None => (state.written_vars.is_empty() && state.added_vars.iter().any(|k| k == key))
+                .then(|| dotenv::Owned {
+                    key: key.to_string(),
+                    value: None,
+                }),
+        }
+    };
+    let refresh = |state: &mut State, key: &str| -> Result<bool> {
+        let Some(ours) = owned(state, key) else {
+            return Ok(false);
+        };
+        let applied = dotenv::add_vars(&path, &[(key, expected.clone())], &[ours])?;
+        match applied.owned_values.into_iter().next() {
+            Some((k, v)) => {
+                state.written_vars.insert(k, v);
+                Ok(true)
+            }
+            None => {
+                // The user's now: stop recording a value of ours for it.
+                state.written_vars.remove(key);
+                Ok(false)
+            }
+        }
+    };
+    let upper_is_ours = refresh(state, "NO_PROXY")?;
+    if upper_is_ours {
+        refresh(state, "no_proxy")?;
+    } else if let Some(ours) = owned(state, "no_proxy") {
+        let still_ours = ours.value.as_deref().is_none_or(|v| {
+            dotenv::read_var(&path, "no_proxy")
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some(v)
+        });
+        if still_ours {
+            dotenv::remove_vars(&path, &["no_proxy".to_string()], false)?;
+            state.added_vars.retain(|k| k != "no_proxy");
+            state.written_vars.remove("no_proxy");
+        }
     }
+    save_state(state)
 }
 
 /// Whether a proxy URL points at loopback - i.e. is one of ours rather than a
@@ -910,10 +1019,25 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
     let mut inspected = false;
     let mut local = Vec::new();
     for url in urls {
+        // Gate's own relay, where Gate models point Hermes: inspected, and on
+        // loopback, so the bypass below would file it as a local model and
+        // every Hermes on Gate models would read as protecting nothing.
+        if crate::proxy::gate_served::is_relay_base_url(url, ToolId::Hermes) {
+            inspected = true;
+            continue;
+        }
         let host = url_host(url);
         if python_bypasses(no_proxy, &host) {
-            if !local.contains(&host) {
-                local.push(host);
+            // Local only if Gate's own list means it to be. Anything else the
+            // `.env` bypasses - a provider somebody added - is traffic Gate
+            // never sees, and is reported as the gap it is.
+            let list = if is_local_host(&host) {
+                &mut local
+            } else {
+                &mut coverage.unknown
+            };
+            if !list.contains(&host) {
+                list.push(host);
             }
             continue;
         }
@@ -967,21 +1091,27 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
 /// Read at connect, so a host added to `config.yaml` afterwards is not named
 /// until then; `status` reads that as drift and the reconcile reconnects it.
 fn no_proxy_for(urls: &[String]) -> String {
-    let mut entries: Vec<String> = ENV_NO_PROXY_VALUE.split(',').map(str::to_string).collect();
+    let mut value = ENV_NO_PROXY_VALUE.to_string();
     for url in urls {
         let host = url_host(url);
-        let Ok(addr) = host.parse::<std::net::IpAddr>() else {
-            continue;
-        };
-        // Loopback and 0.0.0.0 reach this machine; the rest are the ranges
-        // Gate's list means to keep off the engine.
-        let local =
-            addr.is_loopback() || addr.is_unspecified() || crate::proxy::no_proxy_exempts(&host);
-        if local && !entries.contains(&host) && !python_bypasses(&entries.join(","), &host) {
-            entries.push(host);
+        if host.parse::<std::net::IpAddr>().is_ok()
+            && is_local_host(&host)
+            && !python_bypasses(&value, &host)
+        {
+            value.push(',');
+            value.push_str(&host);
         }
     }
-    entries.join(",")
+    value
+}
+
+/// Whether Gate's own list means `host` to be reached directly: loopback and
+/// `0.0.0.0`, which reach this machine, and the ranges and suffixes in
+/// [`crate::proxy::no_proxy_exempts`].
+fn is_local_host(host: &str) -> bool {
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
+        || crate::proxy::no_proxy_exempts(host)
 }
 
 /// Whether Python's `urllib.request.proxy_bypass_environment` bypasses `host`
@@ -1592,19 +1722,57 @@ mod tests {
     #[test]
     fn a_stale_no_proxy_is_drift_only_while_it_is_gates() {
         let ours: BTreeMap<String, String> = [("NO_PROXY".to_string(), "a,b".to_string())].into();
+        let stale = |written: &BTreeMap<String, String>, added: &[String], key, disk, expected| {
+            no_proxy_is_stale(written, added, key, Some(disk), expected)
+        };
         // Gate's value, and not what a connect would write now: stale.
-        assert!(no_proxy_is_stale(&ours, Some("a,b"), "a,b,100.1.2.3"));
+        assert!(stale(&ours, &[], "NO_PROXY", "a,b", "a,b,100.1.2.3"));
         // Up to date.
-        assert!(!no_proxy_is_stale(&ours, Some("a,b"), "a,b"));
+        assert!(!stale(&ours, &[], "NO_PROXY", "a,b", "a,b"));
         // The user has changed it since: theirs.
-        assert!(!no_proxy_is_stale(&ours, Some("mine"), "a,b,100.1.2.3"));
+        assert!(!stale(&ours, &[], "NO_PROXY", "mine", "a,b,100.1.2.3"));
         // Gate never wrote it.
-        assert!(!no_proxy_is_stale(&BTreeMap::new(), Some("a,b"), "c"));
+        assert!(!stale(&BTreeMap::new(), &[], "NO_PROXY", "a,b", "c"));
+        // A sidecar from before values were recorded: Gate's by key alone.
+        let added = ["NO_PROXY".to_string()];
+        assert!(stale(&BTreeMap::new(), &added, "NO_PROXY", "old", "new"));
+        // But once values are recorded, a key Gate added that is missing from
+        // them is one the user took over.
+        let others: BTreeMap<String, String> =
+            [("HTTPS_PROXY".to_string(), "x".to_string())].into();
+        assert!(!stale(&others, &added, "NO_PROXY", "theirs", "new"));
+        // The lower-case line is checked the same way.
+        let lower: BTreeMap<String, String> = [("no_proxy".to_string(), "a".to_string())].into();
+        assert!(stale(&lower, &[], "no_proxy", "a", "a,100.1.2.3"));
         // The list older builds wrote, IPv6 CIDRs and all, is one more stale
         // value of Gate's - the case #441 matched by name.
         let legacy = crate::proxy::LEGACY_ENV_NO_PROXY_VALUE;
         let old: BTreeMap<String, String> = [("NO_PROXY".to_string(), legacy.to_string())].into();
-        assert!(no_proxy_is_stale(&old, Some(legacy), &no_proxy_for(&[])));
+        assert!(stale(&old, &[], "NO_PROXY", legacy, &no_proxy_for(&[])));
+    }
+
+    #[test]
+    fn a_hermes_on_gate_models_is_covered() {
+        // Gate models point `model.base_url` and the provider entry at Gate's
+        // relay, on loopback. That is Gate, not a local model.
+        let relay =
+            crate::proxy::gate_served::relay_base_url("http://127.0.0.1:4321", ToolId::Hermes);
+        let coverage = as_written(&catalog_with("anthropic"), &urls(&[&relay, &relay]));
+        assert!(coverage.is_covered(), "{coverage:?}");
+    }
+
+    #[test]
+    fn a_provider_the_env_bypasses_is_a_gap_not_a_local_model() {
+        // Somebody added api.anthropic.com to Hermes' NO_PROXY: Gate never sees
+        // those calls, and beside an inspected OpenRouter the row would have
+        // read Protected over them.
+        let coverage = coverage_of(
+            &catalog_with("openrouter"),
+            &urls(&["https://openrouter.ai/api/v1", "https://api.anthropic.com"]),
+            &format!("{ENV_NO_PROXY_VALUE},api.anthropic.com"),
+        );
+        assert_eq!(coverage.unknown, vec!["api.anthropic.com"]);
+        assert!(!coverage.is_covered());
     }
 
     #[test]

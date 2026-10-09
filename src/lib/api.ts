@@ -561,8 +561,9 @@ export type UpstreamCoverage = {
   defaulted: boolean;
   switched_off: HermesCoverageEntry[];
   unknown: string[];
-  /** Local hosts reached directly, listed only when Gate inspects none of the
-   *  tool's traffic: switched on, and protecting nothing. */
+  /** Local hosts reached directly, listed only when they are every host the
+   *  tool calls: switched on, and protecting nothing. Beside an inspected
+   *  provider, or beside a gap in the other two lists, it is empty. */
   local: string[];
 };
 

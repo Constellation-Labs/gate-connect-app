@@ -84,6 +84,20 @@ fn assigns(line: &str, key: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('='))
 }
 
+/// True if `line` assigns `key` the way python-dotenv reads one: any `export`
+/// prefix and whitespace on either side of the key. Reads only. The writers
+/// keep [`assigns`], so a line spelled loosely is never taken for one of ours
+/// - but a reader that missed it would report a value Hermes is not using.
+fn assigns_loosely(line: &str, key: &str) -> bool {
+    let l = line.trim_start();
+    let l = l
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map_or(l, str::trim_start);
+    l.strip_prefix(key)
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
 /// A line split into its content and its own terminator, so a line we rewrite
 /// keeps the ending it had. Returns an empty terminator for a final line with
 /// no newline at all.
@@ -285,21 +299,19 @@ pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> R
 
 /// The value assigned to `key`, if the file defines it. Surrounding quotes are
 /// stripped so a value we wrote bare compares equal to one the user quoted.
+///
+/// Read as python-dotenv reads it, because the reader that matters is Hermes:
+/// the LAST assignment wins, and `KEY =value` counts. Taking the first, or
+/// only the tight spelling, let a line added after Gate's change what Hermes
+/// used while status kept reading Gate's own.
 pub(crate) fn read_var(path: &Path, key: &str) -> Result<Option<String>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let body = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(body
-        .lines()
-        .find(|l| assigns(l, key))
-        .and_then(assigned_value))
+    read_last_of(path, &[key])
 }
 
-/// The value of whichever of `keys` is assigned LAST in the file: what a
-/// dotenv loader leaves in a case-insensitive environment, where differently
-/// cased keys are one variable and each later line overwrites the earlier.
-#[cfg(any(windows, test))]
+/// The value of whichever of `keys` is assigned LAST in the file. With one key
+/// that is [`read_var`]; with two it is what a dotenv loader leaves in a
+/// case-insensitive environment, where differently cased keys are one
+/// variable and each later line overwrites the earlier.
 pub(crate) fn read_last_of(path: &Path, keys: &[&str]) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
@@ -308,7 +320,7 @@ pub(crate) fn read_last_of(path: &Path, keys: &[&str]) -> Result<Option<String>>
     Ok(body
         .lines()
         .rev()
-        .find(|l| keys.iter().any(|key| assigns(l, key)))
+        .find(|l| keys.iter().any(|key| assigns_loosely(l, key)))
         .and_then(assigned_value))
 }
 
@@ -339,6 +351,27 @@ mod tests {
                 .as_deref(),
             Some("second")
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_var_reads_as_python_dotenv_does() {
+        // Hermes loads .env with python-dotenv: the last assignment wins and
+        // whitespace around the key is allowed. A reader that took Gate's own
+        // first line here reported a value Hermes was not using.
+        let dir = std::env::temp_dir().join(format!("gate-dotenv-loose-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "no_proxy=gate\nno_proxy =*\n").unwrap();
+        assert_eq!(read_var(&path, "no_proxy").unwrap().as_deref(), Some("*"));
+        std::fs::write(&path, "no_proxy=gate\nexport  no_proxy=mine\n").unwrap();
+        assert_eq!(
+            read_var(&path, "no_proxy").unwrap().as_deref(),
+            Some("mine")
+        );
+        // Still a key, not a prefix of one.
+        std::fs::write(&path, "no_proxy_extra=x\n").unwrap();
+        assert_eq!(read_var(&path, "no_proxy").unwrap(), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 

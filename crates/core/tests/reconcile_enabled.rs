@@ -419,6 +419,54 @@ fn a_hand_edited_no_proxy_is_not_drift() {
 }
 
 #[test]
+fn hermes_with_a_stale_no_proxy_is_repaired_back_to_connected() {
+    // Hermes writes NO_PROXY only on connect and Linux has no quit sweep, so
+    // reading Gate's out-of-date list as drift is what gets it rewritten. Here
+    // the list Gate wrote no longer names the LAN model config.yaml points at.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env_dir = TestEnv::set();
+    // Hermes' status reads the login environment's exported proxy, which on
+    // Linux is a drop-in under `dirs::config_dir()` - outside the test HOME,
+    // so a developer machine running Gate would read as Overridden here.
+    struct XdgConfig(Option<String>);
+    impl Drop for XdgConfig {
+        fn drop(&mut self) {
+            restore("XDG_CONFIG_HOME", &self.0);
+        }
+    }
+    let _xdg = XdgConfig(std::env::var("XDG_CONFIG_HOME").ok());
+    std::env::set_var("XDG_CONFIG_HOME", env_dir.dir.join("xdg-config"));
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+    let cfg = env::hermes_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(&cfg, "model:\n  base_url: https://openrouter.ai/api/v1\n").unwrap();
+    let hermes = find(ToolId::Hermes).unwrap();
+    hermes
+        .connect(&gate_connect_core::registry::ConnectInput {
+            gateway_base_url: "https://gw.example.com".into(),
+            billing_mode: account::BillingMode::Payg,
+            relay_base_url: gate_connect_core::proxy::relay_base_url(),
+            engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
+        })
+        .unwrap();
+    assert_eq!(hermes.status().unwrap(), Status::Connected);
+
+    fs::write(&cfg, "model:\n  base_url: http://192.168.1.20:1234/v1\n").unwrap();
+    assert!(matches!(hermes.status().unwrap(), Status::Drifted(_)));
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(hermes.status().unwrap(), Status::Connected);
+    let envfile = env::hermes_config_dir().unwrap().join(".env");
+    let body = fs::read_to_string(envfile).unwrap();
+    assert!(body.contains("192.168.1.20"), "{body}");
+}
+
+#[test]
 fn stale_managed_config_is_reapplied() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
