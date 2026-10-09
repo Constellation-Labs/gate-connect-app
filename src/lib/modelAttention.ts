@@ -125,7 +125,7 @@ export function modelAttention({
       cause: "requests-failing",
       models: choice.modelIds,
       message:
-        "The last few requests from this app have failed while it has been on Gate models. The model may not work with this app. Switch back to App default to use the app's own model again, or choose a different Gate model.",
+        "Recent requests on Gate models failed. Try another Gate model, or switch back to App default.",
     };
   }
 
@@ -142,8 +142,8 @@ export function modelAttention({
         models: gone,
         message:
           gone.length === 1
-            ? `${gone[0]} is no longer available from Gate. Requests will fail until you choose another model or return to App default - Gate will not pick a replacement for you.`
-            : `None of the ${gone.length} models chosen here are available from Gate any more. Requests will fail until you choose another or return to App default - Gate will not pick a replacement for you.`,
+            ? `${gone[0]} left Gate, so requests will fail. Choose another model or return to App default. Gate will not pick a replacement.`
+            : `All ${gone.length} chosen models left Gate, so requests will fail. Choose another or return to App default. Gate will not pick a replacement.`,
       };
     }
   }
@@ -154,7 +154,7 @@ export function modelAttention({
         cause: "payg-disabled",
         models: [],
         message:
-          "Pay-as-you-go is off for this organization, so Gate cannot serve a model for it. Requests will fail until it is enabled or this app returns to App default.",
+          "Pay-as-you-go is off, so Gate models will fail. Enable it or return to App default.",
       };
     }
     if (credits.balanceCents !== null && credits.balanceCents <= 0) {
@@ -162,7 +162,7 @@ export function modelAttention({
         cause: "no-credits",
         models: [],
         message:
-          "There are no Gate credits left, so requests using a Gate model will fail. Add credits, or return this app to App default to use its own model again.",
+          "No Gate credits left, so Gate models will fail. Add credits or return to App default.",
       };
     }
   }

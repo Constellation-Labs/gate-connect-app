@@ -153,7 +153,7 @@ describe("an app pane reads its whole section", () => {
     await openClaude();
 
     expect(
-      await screen.findByText(/The last few requests from this app have failed/),
+      await screen.findByText(/Recent requests on Gate models failed/),
     ).toBeTruthy();
   });
 
@@ -174,7 +174,7 @@ describe("an app pane reads its whole section", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(screen.queryByText(/The last few requests from this app have failed/)).toBeNull();
+    expect(screen.queryByText(/Recent requests on Gate models failed/)).toBeNull();
   });
 
   it("reads the config tool alone for the Gate model warning", async () => {

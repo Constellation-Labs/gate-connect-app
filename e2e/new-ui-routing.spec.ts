@@ -385,7 +385,7 @@ test.describe("new UI drift repair", () => {
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
     // A refusal the window has copy for says what to do, not "Try again".
     await expect(
-      app.page.getByText("Codex isn’t signed in yet. Run codex login, then turn it on again."),
+      app.page.getByText("Codex isn’t signed in. Run codex login, then try again."),
     ).toBeVisible();
     await app.page.getByRole("button", { name: "Dismiss alert" }).click();
     await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);

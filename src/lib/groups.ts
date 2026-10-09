@@ -235,7 +235,7 @@ export function browserTrustRestartAdvice(
   if (nss === "tools_missing") {
     return {
       title: "Your browsers can’t see the certificate",
-      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one, and Gate needs certutil to write it. Install it (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools), then turn routing off and on again. Command-line tools are unaffected.`,
+      body: `${family} need certutil to get the certificate. Install libnss3-tools (Debian/Ubuntu) or nss-tools (Fedora/RHEL), then turn routing off and on again. Command-line tools are unaffected.`,
     };
   }
   if (nss === "write_failed") {
@@ -244,7 +244,7 @@ export function browserTrustRestartAdvice(
       // prints a line per entry, so the title must not undercount what the
       // body and the report both say.
       title: "A browser certificate store refused the certificate",
-      body: `Gate added its certificate to your ${store}, but at least one of the separate stores ${family} keep would not take it. The diagnostics report names which one and why; a Firefox profile with a Primary Password needs the certificate imported in Firefox’s own settings. Once it is fixed, turn routing off and on again to retry. ${BROWSER_RESTART}`,
+      body: `The certificate was refused by at least one browser store; the diagnostics report says which. Firefox with a Primary Password needs it imported by hand. Then turn routing off and on again. ${BROWSER_RESTART}`,
     };
   }
   if (nss === "not_written") {
@@ -254,7 +254,7 @@ export function browserTrustRestartAdvice(
     // about in the report, and no package to install.
     return {
       title: "Your browsers don’t have the certificate yet",
-      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one and Gate has not written those, so turn routing off and on again to add it. Command-line tools are unaffected.`,
+      body: `${family} don’t have the certificate yet, so turn routing off and on again to add it. Command-line tools are unaffected.`,
     };
   }
   // `trusted` is a write that landed in the browser stores; no reading at all
@@ -263,8 +263,8 @@ export function browserTrustRestartAdvice(
     title: "Browsers already open need reopening",
     body:
       nss === "trusted"
-        ? `Gate has added its certificate to your ${store} and your browsers. A browser reads its certificates when it starts. ${BROWSER_RESTART}`
-        : `Gate has added its certificate to your ${store}. A browser reads its certificates when it starts. ${BROWSER_RESTART}`,
+        ? `Certificate added to your ${store} and your browsers. ${BROWSER_RESTART}`
+        : `Certificate added to your ${store}. ${BROWSER_RESTART}`,
   };
 }
 
@@ -279,7 +279,7 @@ export const BROWSER_RESTART = "Quit and reopen any open browser so it trusts th
 
 /** The removal's counterpart of {@link BROWSER_RESTART}, mirrored the same way. */
 export const BROWSER_REMOVED_RESTART =
-  "Quit and reopen any open browser so it stops trusting the certificate.";
+  "Quit and reopen any open browser to finish.";
 
 /**
  * The note raised when the user removes the certificate, from what the removal
@@ -304,13 +304,13 @@ export function browserTrustRemovedAdvice(
   if (nss === "tools_missing") {
     return {
       title: "A browser may still trust Gate’s certificate",
-      body: "Gate removed its certificate from your certificate store, but needs certutil to remove it from the browsers’ own stores and it is not installed. Remove the Gate Connect certificate in each browser’s certificate settings.",
+      body: "Removing it from browsers needs certutil. Remove the Gate Connect certificate in each browser’s certificate settings.",
     };
   }
   if (nss === "write_failed" || nss === "not_written") {
     return {
       title: "A browser still trusts Gate’s certificate",
-      body: "Gate removed its certificate from your certificate store, but at least one browser’s own store would not let go of it. Remove the Gate Connect certificate in that browser’s certificate settings.",
+      body: "A browser kept its copy. Remove the Gate Connect certificate in that browser’s certificate settings.",
     };
   }
   return {
@@ -641,7 +641,7 @@ function memberFromDomain(
  * string; the file wins there.
  */
 export const SHELL_CHANNEL_COVERAGE =
-  "Routes every program you start from now on, not only AI tools, and tells Node to trust Gate's certificate.";
+  "Routes all programs you start from now on and makes Node trust Gate's certificate.";
 
 /**
  * **Order matters, and not for looks.** `NewUiApp` and `TrayApp` both emit a
@@ -744,7 +744,7 @@ export const SECTIONS: readonly {
     // Widening `no_proxy` to private, link-local and Tailscale addresses is
     // AG-911's scope, not this ticket's. When it lands, the stronger sentence
     // becomes true and can come back.
-    blurb: `${SHELL_CHANNEL_COVERAGE} Gate inspects traffic to the AI providers it knows and passes everything else through untouched.`,
+    blurb: `${SHELL_CHANNEL_COVERAGE} Only AI provider traffic is inspected.`,
   },
 ];
 

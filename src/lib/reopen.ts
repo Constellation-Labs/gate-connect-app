@@ -71,21 +71,21 @@ export type ReopenStage =
 export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   applying: "Writing this tool's configuration.",
   reopen_required: "Running now. It will keep its current route until closed.",
-  closing: "Asking this tool to close so it can pick up its new configuration.",
+  closing: "Closing it so it picks up the new config.",
   awaiting_reopen:
     "Closed. Open it again and Gate will check its route.",
   reopening: "Gate is starting this tool again.",
   verifying: "It is running again. Gate is checking where its traffic goes.",
   reopened:
-    "Open again, on the new route. Gate routes this one through the system proxy, so there is no per-tool check to run.",
+    "Open again. It routes through the system proxy, so there’s nothing to check.",
   routing: "Open, and its traffic is going through Gate.",
   not_routed: "Open, and its traffic is going to its own upstream.",
   close_failed:
-    "Gate could not close it, so it is still using the settings it started with.",
+    "Gate couldn’t close it, so it’s still using its old settings.",
   config_failed:
-    "Gate could not write this tool's configuration, so nothing changed for it.",
+    "Couldn’t write its config. Nothing changed.",
   verify_failed:
-    "Gate could not confirm where its traffic goes, so it is not claiming either answer.",
+    "Couldn’t confirm where its traffic goes.",
 };
 
 /**

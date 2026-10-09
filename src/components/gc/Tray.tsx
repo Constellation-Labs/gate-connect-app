@@ -508,8 +508,8 @@ function AccountUnreadNote({ onExpand }: { onExpand: () => void }) {
         Your account couldn&apos;t be read
       </h1>
       <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
-        Gate Connect could not reach your stored credential, so it cannot tell
-        what is routed. Open the app window to try again.
+        Couldn&apos;t reach your stored credential. Open the app window to try
+        again.
       </p>
       <button
         type="button"
@@ -529,8 +529,7 @@ function SignedOutNote({ onExpand }: { onExpand: () => void }) {
         Sign in to get started
       </h1>
       <p className="text-base-xs leading-4 text-base-muted-foreground">
-        Gate Connect needs a Gate account or API key before it can route your
-        tools. Sign in from the app window.
+        Sign in from the app window to start routing your tools.
       </p>
       <button
         type="button"

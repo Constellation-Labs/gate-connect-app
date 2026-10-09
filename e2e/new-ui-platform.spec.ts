@@ -30,9 +30,9 @@ test.describe("new UI: the secret store, per platform", () => {
   };
 
   const stores = [
-    { platform: "macos", says: "keeps your session in the keychain", never: /keyring|Credential Manager/i },
-    { platform: "windows", says: "keeps your session in Credential Manager", never: /keychain|keyring/i },
-    { platform: "linux", says: "keeps your session in the keyring", never: /keychain|Credential Manager/i },
+    { platform: "macos", says: "session lives in the keychain", never: /keyring|Credential Manager/i },
+    { platform: "windows", says: "session lives in Credential Manager", never: /keychain|keyring/i },
+    { platform: "linux", says: "session lives in the keyring", never: /keychain|Credential Manager/i },
   ] as const;
 
   for (const { platform, says, never } of stores) {

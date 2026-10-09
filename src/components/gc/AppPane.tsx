@@ -529,8 +529,7 @@ function ModelSelection({
           </div>
           {choice === null && (
             <EmptyNote className="mt-4" icon="cube">
-              Gate could not read this app's model setting, so it is not shown.
-              The setting itself is unchanged.
+              Couldn&apos;t read this app&apos;s model setting. Nothing was changed.
             </EmptyNote>
           )}
         </>
@@ -638,7 +637,7 @@ function ModelSelection({
           <div className="mt-2">
             {gateModel === null ? (
               <EmptyNote icon="cube">
-                No Gate model chosen yet. Choose one to write it into {appName}&apos;s config.
+                No Gate model chosen. Choose one to add it to {appName}&apos;s config.
               </EmptyNote>
             ) : (
               // `1410:31957`: the set as a two-column grid, each cell a

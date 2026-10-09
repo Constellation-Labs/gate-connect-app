@@ -386,7 +386,7 @@ describe("a connect an integration refused for a reason the user can fix", () =>
       "expected value at line 1 column 1",
       "error sending request for url (https://gw.example/v1)",
     ]) {
-      expect(classifyError(raw, "connect").hint).toMatch(/^Try again\./);
+      expect(classifyError(raw, "connect").hint).toMatch(/^Try again\b/);
     }
   });
 
@@ -394,6 +394,6 @@ describe("a connect an integration refused for a reason the user can fix", () =>
     expect(
       classifyError("No supported OpenCode providers found to route through Gate.", "sign_out")
         .hint,
-    ).toMatch(/^Try again\./);
+    ).toMatch(/^Try again\b/);
   });
 });

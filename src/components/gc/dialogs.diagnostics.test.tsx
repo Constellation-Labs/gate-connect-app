@@ -45,7 +45,7 @@ describe("SendDiagnosticsDialog", () => {
     // pressing this turn it back on.
     renderSend({ kind: "confirm" });
     expect(
-      screen.getByText(/does not change your Share diagnostic data setting/i),
+      screen.getByText(/Your sharing setting doesn’t change/i),
     ).toBeTruthy();
   });
 
@@ -85,7 +85,7 @@ describe("SendDiagnosticsDialog", () => {
 
   it("says routing was not interrupted", () => {
     renderSend({ kind: "sent", reference: "GC-7Q2M-4KX9" });
-    expect(screen.getByText(/routing and event delivery were not interrupted/i)).toBeTruthy();
+    expect(screen.getByText(/Routing was not interrupted/i)).toBeTruthy();
   });
 
   it("shows the error and offers Retry on a failure", () => {
@@ -126,6 +126,6 @@ describe("the collected-data disclosure", () => {
     // disclosure, not only on the one where the extra data is about to leave.
     render(<CollectedDataDialog onClose={noop} />);
     expect(screen.getByText("Only in a report you send yourself")).toBeTruthy();
-    expect(screen.getByText(/your email, organization name and organization id/i)).toBeTruthy();
+    expect(screen.getByText(/your email and organization name and id/i)).toBeTruthy();
   });
 });
