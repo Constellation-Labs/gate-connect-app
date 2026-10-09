@@ -3504,9 +3504,10 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
         .unwrap_or_else(|| "Constellation Gate".to_string());
 
     let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
-    // One hold for the process, so both shells' sweeps count toward the same
-    // run of checks. A poisoned lock only loses the history, which reads as
-    // nothing held.
+    // One hold for the process, so both shells draw the same answer. It holds
+    // by time rather than by count of checks, because both shells sweep, so
+    // how many checks arrive depends on how many are open. A poisoned lock
+    // only loses the history, which reads as nothing held.
     let mut hold = VERDICT_HOLD.lock().unwrap_or_else(|e| e.into_inner());
     let now = std::time::Instant::now();
     let verdicts: Vec<VerdictDto> = registry::registry()

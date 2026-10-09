@@ -287,6 +287,15 @@ pub fn verdict_for(ev: &Evidence) -> RoutingVerdict {
 /// and a sweep that comes minutes later, on focus or after an action, is not.
 pub const HOLD_ON_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long a run of inconclusive checks may be held, from the first of them.
+///
+/// One sweep interval: `REOPEN_IDLE_WATCH_MS` in `src/lib/reopen.ts`, and the
+/// two move together. Time rather than a count, because the window and the
+/// tray each run that sweep, unsynchronised, so two checks "in a row" can be
+/// one from each shell a few seconds apart. Counting them let the second
+/// shell draw the failure the first was holding, which is the flicker again.
+pub const HOLD_UNSURE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Keeps one inconclusive check from flipping a working tool to Not protected.
 ///
 /// `VerificationFailed` means a probe could not answer: the identity provider
@@ -295,10 +304,12 @@ pub const HOLD_ON_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 /// one made a row switch to "Verification failed" and back on every blip of a
 /// sweep that repeats every 10s (AG-1056).
 ///
-/// So a tool that read `On` within [`HOLD_ON_FOR`] keeps reading `On` for one
-/// such check. A second one in a row is drawn as it is, and so is every other
-/// verdict, at once: an unreachable relay, a refused session or a drifted
-/// config are measurements, and holding those would hide a real outage.
+/// So a tool that read `On` within [`HOLD_ON_FOR`] keeps reading `On` through
+/// such checks for [`HOLD_UNSURE_FOR`] after the first of them, however many
+/// shells are polling. One still inconclusive a sweep later is drawn as it
+/// is, and so is every other verdict, at once: an unreachable relay, a refused
+/// session or a drifted config are measurements, and holding those would hide
+/// a real outage.
 #[derive(Debug, Default)]
 pub struct VerdictHold {
     tools: std::collections::HashMap<String, Held>,
@@ -308,8 +319,8 @@ pub struct VerdictHold {
 struct Held {
     /// When this tool last read `On`.
     on_at: std::time::Instant,
-    /// Whether the previous check was already held.
-    held_once: bool,
+    /// When the current run of inconclusive checks began, if one has.
+    unsure_since: Option<std::time::Instant>,
 }
 
 impl VerdictHold {
@@ -326,24 +337,22 @@ impl VerdictHold {
                     slug.to_string(),
                     Held {
                         on_at: now,
-                        held_once: false,
+                        unsure_since: None,
                     },
                 );
                 RoutingVerdict::On
             }
             RoutingVerdict::NeedsAttention(Reason::VerificationFailed) => {
-                match self.tools.get_mut(slug) {
-                    Some(held)
-                        if !held.held_once
-                            && now.saturating_duration_since(held.on_at) <= HOLD_ON_FOR =>
-                    {
-                        held.held_once = true;
-                        RoutingVerdict::On
-                    }
-                    _ => {
-                        self.tools.remove(slug);
-                        verdict
-                    }
+                let held = self.tools.get_mut(slug).is_some_and(|held| {
+                    let since = *held.unsure_since.get_or_insert(now);
+                    now.saturating_duration_since(held.on_at) <= HOLD_ON_FOR
+                        && now.saturating_duration_since(since) < HOLD_UNSURE_FOR
+                });
+                if held {
+                    RoutingVerdict::On
+                } else {
+                    self.tools.remove(slug);
+                    verdict
                 }
             }
             _ => {
@@ -622,6 +631,55 @@ mod tests {
                 hold.apply("hermes", UNSURE, t + Duration::from_secs(30)),
                 UNSURE,
                 "and stays shown until a check reads On again"
+            );
+        }
+
+        #[test]
+        fn two_shells_sweeping_apart_do_not_exhaust_the_hold() {
+            // The window and the tray each sweep every 10s, unsynchronised, so
+            // their checks interleave a few seconds apart. Both must draw the
+            // same answer: a run of inconclusive checks is held for one sweep
+            // interval, not for one check.
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            hold.apply("hermes", RoutingVerdict::On, t);
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(10)),
+                RoutingVerdict::On,
+                "window"
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(13)),
+                RoutingVerdict::On,
+                "tray, 3s later"
+            );
+            assert_eq!(
+                hold.apply("hermes", RoutingVerdict::On, t + Duration::from_secs(20)),
+                RoutingVerdict::On
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(23)),
+                RoutingVerdict::On,
+                "a fresh On starts a fresh hold"
+            );
+        }
+
+        #[test]
+        fn a_run_still_inconclusive_a_sweep_later_is_shown_to_both_shells() {
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            hold.apply("hermes", RoutingVerdict::On, t);
+            hold.apply("hermes", UNSURE, t + Duration::from_secs(10));
+            hold.apply("hermes", UNSURE, t + Duration::from_secs(13));
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(20)),
+                UNSURE,
+                "window, a full sweep after the run began"
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(23)),
+                UNSURE,
+                "tray"
             );
         }
 
