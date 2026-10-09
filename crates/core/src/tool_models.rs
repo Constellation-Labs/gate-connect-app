@@ -177,7 +177,7 @@ pub fn states() -> BTreeMap<&'static str, ToolModelView> {
                     view.problem = Some(format!(
                         "{name} was moved off its Gate models, and Gate Connect could not put \
                          it back on its own model, so its requests are refused. Choose a model \
-                         for {name} again here.",
+                         for {name} again under Model selection below.",
                         name = integ.display_name()
                     ));
                 }

@@ -44,13 +44,29 @@ async function openClaude() {
   fireEvent.click(railRow);
 }
 
-/** The note under `title`, checked to sit above the Model selection card. */
-async function noteTitled(title: string) {
+const follows = (a: Node, b: Node) =>
+  (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+/**
+ * The note under `title`, checked to sit above the Model selection card and
+ * below the "isn't protected" note, and to be the only place `body` is drawn:
+ * a card that still drew its own copy would show the sentence twice.
+ *
+ * The default fixture leaves Claude Desktop unrouted, so the partly protected
+ * note is always there to order against.
+ */
+async function noteTitled(title: string, body: string) {
   const heading = await screen.findByText(title);
   const note = heading.closest("[role=status]")!;
   expect(note.className).toContain("bg-amber-50");
   const card = await screen.findByText("Model selection");
-  expect(note.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(follows(note, card)).toBe(true);
+  const statusNote = screen.getByText("Claude isn’t fully protected").closest("[role=status]")!;
+  expect(follows(statusNote, note)).toBe(true);
+  const drawn = [...document.querySelectorAll("[role=status]")].filter((n) =>
+    n.textContent?.includes(body),
+  );
+  expect(drawn).toEqual([note]);
   return note;
 }
 
@@ -61,8 +77,7 @@ describe("the model warning", () => {
     installFakeTauri(state);
     await openClaude();
 
-    const note = await noteTitled("Pay-as-you-go is off");
-    expect(note.textContent).toContain("Pay-as-you-go is off for this organization");
+    await noteTitled("Pay-as-you-go is off", "Pay-as-you-go is off for this organization");
   });
 
   it("titles a config that could not be read", async () => {
@@ -76,8 +91,10 @@ describe("the model warning", () => {
     installFakeTauri(state);
     await openClaude();
 
-    const note = await noteTitled("Gate Connect can’t read Claude Code’s config");
-    expect(note.textContent).toContain("Gate Connect could not read Claude Code's config.");
+    await noteTitled(
+      "Gate Connect can’t read Claude Code’s config",
+      "Gate Connect could not read Claude Code's config.",
+    );
   });
 
   it("titles a tool that could not be put back on its own model", async () => {
@@ -91,8 +108,7 @@ describe("the model warning", () => {
     installFakeTauri(state);
     await openClaude();
 
-    const note = await noteTitled("Claude Code’s requests are being refused");
-    expect(note.textContent).toContain("its requests are refused");
+    await noteTitled("Claude Code’s requests are being refused", "its requests are refused");
   });
 
   it("draws nothing while the model is healthy", async () => {
@@ -102,5 +118,18 @@ describe("the model warning", () => {
     await screen.findByText("Model selection");
     expect(screen.queryByText("Pay-as-you-go is off")).toBeNull();
     expect(screen.queryByText(/requests are/)).toBeNull();
+  });
+
+  it("names the product in the back-on-App-default notice, as the titles do", async () => {
+    const state = onGateModels();
+    state.toolModels.left = { "claude-code": "claude-sonnet-5" };
+    installFakeTauri(state);
+    await openClaude();
+
+    expect(
+      await screen.findByText(
+        "You switched Claude Code to claude-sonnet-5 in Claude Code, so it is back on App default.",
+      ),
+    ).toBeTruthy();
   });
 });

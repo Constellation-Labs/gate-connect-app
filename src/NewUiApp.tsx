@@ -3560,7 +3560,7 @@ export function NewUiApp() {
                 // next save for this tool (`useToolModels`).
                 modelNotice: toolModels.leftGateModels.has(openTool)
                   ? leftGateModelsNotice(
-                      appFor(apps, openTool)?.name ?? "This app",
+                      toolNames.get(openTool) ?? "This app",
                       toolModels.leftGateModels.get(openTool) ?? null,
                     )
                   : null,
