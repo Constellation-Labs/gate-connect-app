@@ -87,9 +87,8 @@ export function verdictStatus(
       // Only this arm. Every other state is already amber and already more
       // urgent than this: a drifted or unrouted tool has a bigger problem
       // than an uninspected provider, and stacking the two would bury it.
-      const uninspected = uninspectedHosts(opts.coverage);
-      if (uninspected)
-        return { kind: "not-protected", detail: `Routed, not inspected: ${uninspected}` };
+      const uninspected = uninspectedDetail(opts.coverage);
+      if (uninspected) return { kind: "not-protected", detail: uninspected };
       return { kind: "protected" };
     }
     case "off":
@@ -107,7 +106,7 @@ export function verdictStatus(
 }
 
 /**
- * The hosts Gate is not looking at, all of them, or `undefined` when it is
+ * Why Gate is not looking at some of the hosts, or `undefined` when it is
  * looking at every one.
  *
  * Both halves of the coverage count. `unknown` is the irremediable one - no
@@ -121,7 +120,7 @@ export function verdictStatus(
  * Every host, not one plus a count: the rail prints no reason at all now, and
  * the pane card that does has the room.
  */
-function uninspectedHosts(
+function uninspectedDetail(
   coverage: UpstreamCoverage | null | undefined,
 ): string | undefined {
   if (!coverage) return undefined;
@@ -130,12 +129,49 @@ function uninspectedHosts(
   // a caller cannot name the same row twice or flip the same switch twice.
   // Naming hosts is right here: the pane already says the app, and the host
   // is the part the person recognises from their own config.
-  const hosts = [
-    ...coverage.switched_off.flatMap((entry) => entry.hosts),
-    ...coverage.unknown,
-  ];
-  if (hosts.length === 0) return undefined;
-  return hosts.join(", ");
+  //
+  // Two sentences, not one list, because the two halves have different
+  // remedies: a switched-off provider is one click away (`upstreamFix`), an
+  // unknown one is not fixable from here at all. "Routed, not inspected" said
+  // both the same way, in plumbing words.
+  const off = coverage.switched_off.flatMap((entry) => entry.hosts);
+  const sentences: string[] = [];
+  if (off.length > 0) {
+    const whose =
+      coverage.switched_off.length === 1 ? "its provider is" : "their providers are";
+    sentences.push(`Gate can’t see requests to ${off.join(", ")} while ${whose} turned off.`);
+  }
+  if (coverage.unknown.length > 0) {
+    sentences.push(`Gate can’t inspect requests to ${coverage.unknown.join(", ")}.`);
+  }
+  return sentences.length > 0 ? sentences.join(" ") : undefined;
+}
+
+/**
+ * The card's button for an uninspected app: the provider domains to turn on,
+ * or `undefined` when none is switched off and there is nothing to click.
+ *
+ * `also` discloses the wider reach. A provider domain is not Hermes' own:
+ * turning `anthropic` on inspects Claude Code's traffic too, and
+ * `provider::reconcile_enabled` reads it as licence to connect Claude Code at
+ * the next launch. The connect-time gate refuses to do that silently for
+ * exactly this reason (`hermesProviderDomains`), so a button that does it has
+ * to say so before the click.
+ */
+export function upstreamFix(
+  coverage: UpstreamCoverage | null | undefined,
+): { slugs: string[]; label: string; also?: string } | undefined {
+  if (!coverage || coverage.switched_off.length === 0) return undefined;
+  const one = coverage.switched_off.length === 1;
+  const tools = [...new Set(coverage.switched_off.flatMap((entry) => entry.tools))];
+  return {
+    slugs: coverage.switched_off.map((entry) => entry.slug),
+    label: one ? "Turn it on" : "Turn them on",
+    also:
+      tools.length > 0
+        ? `Turning ${one ? "it" : "them"} on also routes ${tools.join(", ")}.`
+        : undefined,
+  };
 }
 
 /** Index a sweep by slug, so a row can look itself up. */

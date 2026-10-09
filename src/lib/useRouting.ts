@@ -512,6 +512,49 @@ export function useRouting({
   );
 
   /**
+   * The pane card's fix for an app whose provider Gate has switched off: turn
+   * those domains on, at the person's click.
+   *
+   * The connect-time gate (`hermesProviderDomains`) leaves a provider with its
+   * own row alone, because doing it silently would route other clients. The
+   * card names that reach before the click (`upstreamFix`), which is the
+   * objection answered, so this turns on all of them. Only the ones with no row
+   * are recorded as Hermes', as the connect does: recording `anthropic` would
+   * have Hermes' own off switch end Claude's interception later.
+   */
+  const enableUpstreamDomains = useCallback(
+    async (slugs: string[]) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        await ensureCaTrusted();
+        await ensureEngineRunning();
+        await enableProviderDomains(slugs.filter((slug) => TOOL_MANAGED_DOMAINS.includes(slug)));
+        await setProviderDomains(
+          slugs.filter((slug) => !TOOL_MANAGED_DOMAINS.includes(slug)),
+          true,
+        );
+      } catch (e) {
+        if (!(e instanceof Declined)) {
+          trackError(e, "provider_toggle", { domains: slugs.join(","), routed: true });
+          onError?.(e, "domain");
+        }
+      } finally {
+        await settle();
+      }
+    },
+    [
+      busy,
+      ensureCaTrusted,
+      ensureEngineRunning,
+      enableProviderDomains,
+      setProviderDomains,
+      settle,
+      onError,
+    ],
+  );
+
+  /**
    * Route or unroute one config-file tool. `force` skips the drift gate, which
    * is how the review dialog's "Replace config and protect" comes back in.
    *
@@ -851,6 +894,7 @@ export function useRouting({
     setAppRouted,
     setFamilyRouted,
     setDomainRouted,
+    enableUpstreamDomains,
     setEnvExport,
     untrustCa,
     writeFailures,

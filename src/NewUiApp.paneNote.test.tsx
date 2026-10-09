@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { defaultState } from "../e2e/backend";
 import { installFakeTauri } from "../e2e/install";
 import { NewUiApp } from "./NewUiApp";
-import { partlyProtectedCopy } from "./lib/verdict";
+import { partlyProtectedCopy, upstreamFix } from "./lib/verdict";
 
 /**
  * The app pane's card for a section that is only partly routing: it names the
@@ -128,6 +128,91 @@ describe("the partly protected card", () => {
     await routeAndSettle("Claude isn’t fully protected");
 
     expect(screen.queryByText(/permission denied/)).toBeNull();
+  });
+});
+
+/**
+ * The card for an app routed through Gate to a provider whose domain is off:
+ * its button turns that domain on. Hermes is the app that reports this.
+ */
+describe("the uninspected provider card", () => {
+  function hermesState(switchedOff: { slug: string; hosts: string[]; tools: string[] }[]) {
+    const state = routingState();
+    state.tools.push({
+      slug: "hermes",
+      name: "CLI",
+      displayName: "Hermes",
+      upstream_provider_name: "your existing providers",
+      default_upstream_url: "https://openrouter.ai/api/v1",
+      status: { kind: "connected" },
+      coverage: { defaulted: false, switched_off: switchedOff, unknown: [] },
+    });
+    return state;
+  }
+
+  it("turns on OpenRouter and records it as Hermes'", async () => {
+    const state = hermesState([{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }]);
+    installFakeTauri(state);
+    await openApp(/^Hermes/);
+
+    const card = await screen.findByText("Hermes isn’t protected");
+    expect(card.closest("[role=status]")!.textContent).toContain(
+      "Gate can’t see requests to openrouter.ai while its provider is turned off.",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn it on" }));
+    await waitFor(() =>
+      expect(callsTo("proxy_set_domain")).toEqual([{ slug: "openrouter", enabled: true }]),
+    );
+    // Recorded, so turning Hermes off gives it back: it has no row of its own.
+    await waitFor(() =>
+      expect(state.preferences.auto_enabled_domains.hermes).toEqual(["openrouter"]),
+    );
+  });
+
+  it("says what else a provider with its own row reaches, and does not record it", async () => {
+    const state = hermesState([
+      { slug: "anthropic", hosts: ["api.anthropic.com"], tools: ["Claude Code"] },
+    ]);
+    installFakeTauri(state);
+    await openApp(/^Hermes/);
+
+    const card = await screen.findByText("Hermes isn’t protected");
+    expect(card.closest("[role=status]")!.textContent).toContain(
+      "Turning it on also routes Claude Code.",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn it on" }));
+    await waitFor(() =>
+      expect(callsTo("proxy_set_domain")).toEqual([{ slug: "anthropic", enabled: true }]),
+    );
+    // Hermes' off switch must not end Claude's interception.
+    expect(state.preferences.auto_enabled_domains.hermes).toBeUndefined();
+  });
+});
+
+describe("upstreamFix", () => {
+  it("has nothing to offer for an unknown provider alone", () => {
+    expect(upstreamFix({ defaulted: false, switched_off: [], unknown: ["api.groq.com"] })).toBe(
+      undefined,
+    );
+  });
+
+  it("speaks of several providers in the plural", () => {
+    expect(
+      upstreamFix({
+        defaulted: false,
+        switched_off: [
+          { slug: "openrouter", hosts: ["openrouter.ai"], tools: [] },
+          { slug: "anthropic", hosts: ["api.anthropic.com"], tools: ["Claude Code"] },
+        ],
+        unknown: [],
+      }),
+    ).toEqual({
+      slugs: ["openrouter", "anthropic"],
+      label: "Turn them on",
+      also: "Turning them on also routes Claude Code.",
+    });
   });
 });
 

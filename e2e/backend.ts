@@ -67,6 +67,14 @@ export interface ToolFixture {
       it; `list_tools` fills the default so nothing else has to. */
   config_location?: string | null;
   status: ToolStatus;
+  /** `UpstreamCoverage`, which `list_tools` sends for Hermes and OpenClaw.
+      Absent is full coverage, as the backend sends nothing then either. Not
+      recomputed when a domain flips: a spec that cares re-sets it. */
+  coverage?: {
+    defaulted: boolean;
+    switched_off: { slug: string; hosts: string[]; tools: string[] }[];
+    unknown: string[];
+  } | null;
   /** Which client this row is aimed at - the ledger's grouping key. Optional
       so a fixture that does not care about grouping keeps reading cleanly;
       `list_tools` fills `claude-code`'s value the way the real backend fills

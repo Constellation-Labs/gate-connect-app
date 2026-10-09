@@ -80,6 +80,7 @@ import {
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
   sectionStatus,
+  upstreamFix,
   verdictStatus,
   verdictsBySlug,
 } from "./lib/verdict";
@@ -2823,8 +2824,37 @@ export function NewUiApp() {
         );
       }
     }
+    // A provider Gate has switched off is the other reason with a fix here:
+    // turning its domain on. Read off the open tool's coverage rather than off
+    // `detail`, which is copy.
+    const fix = upstreamFix(tools.find((t) => t.slug === openTool)?.coverage);
+    if (fix) {
+      return (
+        <PaneNote
+          title={`${app.name} isn’t protected`}
+          body={fix.also ? `${detail} ${fix.also}` : detail}
+          action={{
+            label: fix.label,
+            busy: routingBusy,
+            onClick: () => void routing.enableUpstreamDomains(fix.slugs),
+          }}
+        />
+      );
+    }
     return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
-  }, [view, reopenAlert, paneNotice, paneWriteError, railApps, groups, routingBusy, routeMembers]);
+  }, [
+    view,
+    reopenAlert,
+    paneNotice,
+    paneWriteError,
+    railApps,
+    groups,
+    routingBusy,
+    routeMembers,
+    tools,
+    openTool,
+    routing.enableUpstreamDomains,
+  ]);
 
   const onMenuSelect = useCallback(
     (action: MenuAction) => {
