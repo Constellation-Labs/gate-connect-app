@@ -650,7 +650,9 @@
         "names": []
       },
       "exceptions": [],
-      "checked": ["With the `openai` domain turned on in Gate Connect, calls to OpenAI's inference paths on api.openai.com /v1/ go through Gate."],
+      "checked": [
+        "With the `openai` domain turned on in Gate Connect, calls to OpenAI's inference paths on api.openai.com /v1/ go through Gate."
+      ],
       "not_checked": [
         "Which app sent the request: the domain covers any client that honours your machine's proxy setting, so traffic is recorded under the SDK it speaks rather than under an app.",
         "Codex is explicitly not covered: Gate Connect sets it up directly instead, and its embedded agent ignores your machine's proxy setting.",
@@ -699,7 +701,9 @@
         "names": []
       },
       "exceptions": [],
-      "checked": ["With the `openrouter` domain turned on in Gate Connect, calls to openrouter.ai/api/v1/* go through Gate."],
+      "checked": [
+        "With the `openrouter` domain turned on in Gate Connect, calls to openrouter.ai/api/v1/* go through Gate."
+      ],
       "not_checked": [
         "Which app sent the request: the domain covers any OpenRouter client that honours your machine's proxy setting.",
         "No automated run on every release: there is no command line for us to drive."

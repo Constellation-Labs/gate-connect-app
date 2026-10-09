@@ -2298,10 +2298,13 @@ fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str
         return Some(slug);
     }
     let ua = raw_ua.map(|v| v.to_ascii_lowercase());
+    if ua
+        .as_deref()
+        .is_some_and(|ua| CODEX_APP_AGENTS.iter().any(|prefix| ua.starts_with(prefix)))
+    {
+        return None;
+    }
     if let Some(slug) = ua.as_deref().and_then(|ua| {
-        if CODEX_APP_AGENTS.iter().any(|prefix| ua.starts_with(prefix)) {
-            return None;
-        }
         CLIENT_TOOL_NEEDLES
             .iter()
             .find_map(|(needle, client)| ua.contains(needle).then_some(client.slug()))
@@ -2347,9 +2350,11 @@ pub(crate) const CLIENT_TOOL_NEEDLES: [(&str, crate::taxonomy::Client); 5] = [
 /// The Codex desktop app's own agents, lower-cased prefixes. Both contain the
 /// `codex` needle, and stamping them `codex` filed the desktop app's traffic
 /// under the CLI: the gateway prefers `x-gate-client` over its own detector,
-/// which names these `codex-desktop`. Left unstamped, they fall through to the
-/// ChatGPT app check and then to the gateway's detector, which is the honest
-/// blank this function prefers to a wrong slug. `codex-mcp-client` is the
+/// which names these `codex-desktop`. They are left unstamped outright, before
+/// the OpenAI checks: the app sends `originator` on chatgpt.com, so falling
+/// through would stamp it `chatgpt` and file it under the ChatGPT desktop app
+/// instead. The blank hands it to the gateway's detector, which is the honest
+/// answer this function prefers to a wrong slug. `codex-mcp-client` is the
 /// desktop app's MCP client, captured beside its `Codex Desktop/` builds; the
 /// CLI sends `codex_cli_rs/`, which still matches.
 const CODEX_APP_AGENTS: [&str; 2] = ["codex desktop/", "codex-mcp-client/"];
@@ -5885,6 +5890,21 @@ mod tests {
         // Both entries on that host carry app traffic under different URL
         // splits, so both must answer.
         assert_eq!(client_tool(&h, Some("chatgpt")), Some("chatgpt"));
+
+        // The Codex desktop app sends `originator` too, and is not the ChatGPT
+        // app: it stays unstamped on these entries, for the gateway to name.
+        for ua in [
+            "Codex Desktop/26.825.32147 (Windows NT 10.0; x64)",
+            "codex-mcp-client/0.148.0-alpha.9",
+        ] {
+            let mut codex_app = h.clone();
+            codex_app.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            assert_eq!(client_tool(&codex_app, Some("chatgpt-apps")), None, "{ua}");
+            assert_eq!(client_tool(&codex_app, Some("chatgpt")), None, "{ua}");
+        }
     }
 
     /// The same header on another vendor's entry is not believed.

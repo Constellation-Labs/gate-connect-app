@@ -9,7 +9,8 @@ Change it in the gateway repo, then re-vendor:
 ci/vendor-manifest.sh <path to a gate checkout>
 ```
 
-That copies the file and rewrites `harnesses.json.sha256`. A hand edit without
+That copies the file as committed at the checkout's HEAD (not the working tree,
+so the copy is always a real commit) and rewrites `harnesses.json.sha256`. A hand edit without
 the checksum fails `cargo test`, which is what makes the copy trustworthy.
 
 `crates/core/src/manifest.rs` reads it with `include_str!`, so nothing loads it

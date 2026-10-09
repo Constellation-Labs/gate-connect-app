@@ -14,9 +14,13 @@
 //! - [`check_routing`]: each integration's [`Mechanism`] and Gate models
 //!   support against the entry's `routing`.
 //! - [`check_domain_slugs`]: the proxy catalog's domain slugs against the
-//!   `routing.proxy_domain` of the manifest's Works entries.
-//! - [`check_stamping_names`]: the slugs the request-stamping table emits
-//!   against every entry's `surfaces.client_tool_slug`.
+//!   `routing.proxy_domain` of the manifest's Works and Certified entries.
+//! - [`check_stamping_names`]: the slugs the `User-Agent` stamping table emits
+//!   against every entry's `surfaces.client_tool_slug`. That table only: the
+//!   slugs `client_tool` stamps from vendor headers (`claude-desktop`,
+//!   `claude-web`, `chatgpt`, `chatgpt-web`) are `na` in the manifest today, and
+//!   `chatgpt` is not even the manifest's id for that app (`chatgpt-desktop`),
+//!   so holding them to it needs a manifest change on the gateway side first.
 //!
 //! Each returns every [`Drift`] it finds, naming the harness and the missing
 //! piece, rather than stopping at the first. The checks are pure functions over
@@ -126,8 +130,8 @@ pub enum Drift {
     IntegrationNotInManifest { tool: String },
     /// The manifest names a Gate Connect integration this app does not ship.
     ManifestIntegrationMissing { harness: String },
-    /// The proxy catalog has a domain no Works entry names: either no entry
-    /// names it, or the one that does promises less than Works.
+    /// The proxy catalog has a domain no Works or Certified entry names:
+    /// either no entry names it, or the one that does promises less than Works.
     DomainNotInManifest { slug: String },
     /// A manifest entry names a domain the proxy catalog does not have.
     DomainNotInCatalog { harness: String, slug: String },
@@ -235,18 +239,19 @@ pub fn check_routing(manifest: &Manifest, tools: &[ToolRouting]) -> Vec<Drift> {
 
 /// The proxy catalog's domain slugs against the manifest's domains.
 ///
-/// A catalog domain has to be named by a **Works** entry, not merely by some
-/// entry: a domain the app routes is a support claim, and an entry that names it
-/// at Unsupported would be the app routing something the gateway promises
-/// nothing for. The other direction holds for every entry, whatever its tier: a
-/// manifest domain the catalog does not have is a claim the app cannot honour.
+/// A catalog domain has to be named by an entry at **Works or above**, not
+/// merely by some entry: a domain the app routes is a support claim, and an
+/// entry that names it at Unsupported would be the app routing something the
+/// gateway promises nothing for. The other direction holds for every entry,
+/// whatever its tier: a manifest domain the catalog does not have is a claim the
+/// app cannot honour.
 pub fn check_domain_slugs(manifest: &Manifest, catalog: &[&str]) -> Vec<Drift> {
     let mut drift = Vec::new();
     for &slug in catalog {
-        let named = manifest
-            .harnesses
-            .iter()
-            .any(|h| h.tier == "works" && h.routing.proxy_domain.as_deref() == Some(slug));
+        let named = manifest.harnesses.iter().any(|h| {
+            matches!(h.tier.as_str(), "works" | "certified")
+                && h.routing.proxy_domain.as_deref() == Some(slug)
+        });
         if !named {
             drift.push(Drift::DomainNotInManifest {
                 slug: slug.to_string(),
@@ -266,8 +271,9 @@ pub fn check_domain_slugs(manifest: &Manifest, catalog: &[&str]) -> Vec<Drift> {
     drift
 }
 
-/// The slugs the stamping table emits against every applicable
-/// `surfaces.client_tool_slug`.
+/// The slugs the `User-Agent` stamping table emits against every applicable
+/// `surfaces.client_tool_slug`. The header-stamped slugs are outside it; see the
+/// module doc.
 pub fn check_stamping_names(manifest: &Manifest, stamped: &[&str]) -> Vec<Drift> {
     let named: Vec<(&str, &str)> = manifest
         .harnesses
@@ -350,7 +356,9 @@ mod tests {
         assert_eq!(drift, vec![], "proxy domain drift against the manifest");
     }
 
-    /// AC2: renaming a slug in the stamping table without the manifest fails here.
+    /// AC2, for the `User-Agent` table: renaming a slug in it without the
+    /// manifest fails here. The header-stamped slugs are not covered; see the
+    /// module doc.
     #[test]
     fn every_stamped_name_is_in_the_manifest() {
         let drift = check_stamping_names(&load().unwrap(), &stamped_slugs());
@@ -526,6 +534,13 @@ mod tests {
                 slug: "example".into()
             }]
         );
+    }
+
+    #[test]
+    fn a_domain_named_by_a_certified_entry_is_in_the_manifest() {
+        let mut m = fixture();
+        m.harnesses[2].tier = "certified".into();
+        assert_eq!(check_domain_slugs(&m, &["example"]), vec![]);
     }
 
     #[test]
