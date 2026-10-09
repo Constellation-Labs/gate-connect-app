@@ -136,7 +136,10 @@ describe("the partly protected card", () => {
  * its button turns that domain on. Hermes is the app that reports this.
  */
 describe("the uninspected provider card", () => {
-  function hermesState(switchedOff: { slug: string; hosts: string[]; tools: string[] }[]) {
+  function hermesState(
+    switchedOff: { slug: string; hosts: string[]; tools: string[] }[],
+    local: string[] = [],
+  ) {
     const state = routingState();
     state.tools.push({
       slug: "hermes",
@@ -145,7 +148,7 @@ describe("the uninspected provider card", () => {
       upstream_provider_name: "your existing providers",
       default_upstream_url: "https://openrouter.ai/api/v1",
       status: { kind: "connected" },
-      coverage: { defaulted: false, switched_off: switchedOff, unknown: [] },
+      coverage: { defaulted: false, switched_off: switchedOff, unknown: [], local },
     });
     return state;
   }
@@ -186,6 +189,19 @@ describe("the uninspected provider card", () => {
     expect(screen.queryByRole("button", { name: /^Turn (it|them) on$/ })).toBeNull();
   });
 
+  it("is amber with no button when Hermes only reaches local models", async () => {
+    // Switched on, protecting nothing: every request goes straight to the VM.
+    const state = hermesState([], ["100.101.102.103"]);
+    installFakeTauri(state);
+    await openApp(/^Hermes/);
+
+    const card = await screen.findByText("Hermes isn’t protected");
+    expect(card.closest("[role=status]")!.textContent).toContain(
+      "Requests to 100.101.102.103 go straight there, not through Gate.",
+    );
+    expect(screen.queryByRole("button", { name: /^Turn (it|them) on$/ })).toBeNull();
+  });
+
   it("offers no button when coverage is not why Hermes is amber", async () => {
     // Coverage arrives whatever the verdict; an overridden Hermes has a
     // different problem, and a button turning on OpenRouter would not fix it.
@@ -202,7 +218,7 @@ describe("the uninspected provider card", () => {
 
 describe("upstreamFix", () => {
   it("has nothing to offer for an unknown provider alone", () => {
-    expect(upstreamFix({ defaulted: false, switched_off: [], unknown: ["api.groq.com"] })).toBe(
+    expect(upstreamFix({ defaulted: false, switched_off: [], unknown: ["api.groq.com"], local: [] })).toBe(
       undefined,
     );
   });
@@ -216,6 +232,7 @@ describe("upstreamFix", () => {
           { slug: "openai", hosts: ["api.openai.com"], tools: [] },
         ],
         unknown: [],
+        local: [],
       }),
     ).toEqual({ slugs: ["openrouter"], label: "Turn it on" });
     expect(
@@ -223,6 +240,7 @@ describe("upstreamFix", () => {
         defaulted: false,
         switched_off: [{ slug: "chatgpt", hosts: ["chatgpt.com"], tools: [] }],
         unknown: [],
+        local: [],
       }),
     ).toBe(undefined);
   });

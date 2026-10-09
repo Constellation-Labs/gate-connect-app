@@ -770,6 +770,13 @@ impl Coverage {
                 self.unknown.join(", ")
             ));
         }
+        if !self.local.is_empty() {
+            out.push(format!(
+                "note: Hermes only calls {} directly, not through Gate -- it keeps working, \
+                 and Gate sees none of its traffic.",
+                self.local.join(", ")
+            ));
+        }
         out
     }
 }
@@ -828,7 +835,7 @@ fn coverage_from(
 /// Hosts Hermes bypasses the proxy for are absent from both lists: a model on
 /// the LAN or a Tailscale VM is reached directly and never passes the engine,
 /// so it is not a gap in what Gate sees but something Gate chose not to look
-/// at. Decided by `no_proxy` as Hermes reads it ([`python_bypasses`]), not by
+/// at. They go in `local` instead when they are all there is to see. Decided by `no_proxy` as Hermes reads it ([`python_bypasses`]), not by
 /// what Gate's list means: a `100.x` address the list covers by CIDR still
 /// rides the engine unless `no_proxy` names it, and saying Protected over that
 /// would be claiming a bypass that is not happening.
@@ -837,13 +844,18 @@ fn coverage_from(
 /// caller that named the row per host would ask about it twice.
 fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy: &str) -> Coverage {
     let mut coverage = Coverage::default();
+    let mut inspected = false;
+    let mut local = Vec::new();
     for url in urls {
         let host = url_host(url);
         if python_bypasses(no_proxy, &host) {
+            if !local.contains(&host) {
+                local.push(host);
+            }
             continue;
         }
         match crate::proxy::domain_claiming_host(catalog, &host) {
-            Some(d) if d.enabled => {}
+            Some(d) if d.enabled => inspected = true,
             Some(d) => {
                 if let Some(entry) = coverage.switched_off.iter_mut().find(|s| s.slug == d.slug) {
                     if !entry.hosts.contains(&host) {
@@ -863,6 +875,10 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
                 }
             }
         }
+    }
+    // Only when Gate inspects none of it: see `UpstreamCoverage::local`.
+    if !inspected {
+        coverage.local = local;
     }
     coverage
 }
@@ -1471,10 +1487,12 @@ mod tests {
     #[test]
     fn a_model_on_the_tailnet_or_lan_is_not_a_gap() {
         // Reported on a Hermes pointed at a model in a VM over Tailscale. Once
-        // connect has named the addresses, Hermes bypasses all of them.
+        // connect has named the addresses, Hermes bypasses all of them - so
+        // none is a gap, and beside a provider Gate inspects none is listed.
         let coverage = as_written(
-            &catalog_with("anthropic"),
+            &catalog_with("openrouter"),
             &urls(&[
+                "https://openrouter.ai/api/v1",
                 "http://100.101.102.103:8000/v1",
                 "http://gpu-box.tail1234.ts.net:11434/v1",
                 "http://192.168.1.20:1234/v1",
@@ -1483,6 +1501,23 @@ mod tests {
             ]),
         );
         assert!(coverage.is_covered(), "{coverage:?}");
+    }
+
+    #[test]
+    fn a_hermes_on_local_models_alone_is_not_covered() {
+        // Switched on, and Gate sees none of its traffic: the row must not say
+        // Protected over that.
+        let coverage = as_written(
+            &catalog_with("anthropic"),
+            &urls(&[
+                "http://100.101.102.103:8000/v1",
+                "http://llm.local:8080/v1",
+                "http://100.101.102.103:9000/v1",
+            ]),
+        );
+        assert!(!coverage.is_covered(), "{coverage:?}");
+        assert_eq!(coverage.local, vec!["100.101.102.103", "llm.local"]);
+        assert!(coverage.notes()[0].contains("Gate sees none of its traffic"));
     }
 
     #[test]

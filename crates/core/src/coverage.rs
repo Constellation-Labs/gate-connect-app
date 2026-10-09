@@ -29,6 +29,12 @@ pub struct UpstreamCoverage {
     pub switched_off: Vec<SwitchedOff>,
     /// Hosts no catalog entry claims, which Gate cannot route at all.
     pub unknown: Vec<String>,
+    /// Local hosts the tool reaches directly, listed only when NOTHING it
+    /// calls is inspected. A Hermes on a local model alone sends Gate nothing
+    /// to look at, so its switch being on protects nothing and the row must
+    /// not say Protected. Beside an inspected provider they are just a model
+    /// Gate leaves alone, and stay unlisted.
+    pub local: Vec<String>,
 }
 
 /// One provider row Hermes points at that Gate is not inspecting.
@@ -53,6 +59,6 @@ pub struct SwitchedOff {
 impl UpstreamCoverage {
     /// Is there anything to report at all?
     pub fn is_covered(&self) -> bool {
-        self.switched_off.is_empty() && self.unknown.is_empty()
+        self.switched_off.is_empty() && self.unknown.is_empty() && self.local.is_empty()
     }
 }

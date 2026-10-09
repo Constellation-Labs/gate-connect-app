@@ -129,6 +129,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     defaulted: false,
     switched_off: [],
     unknown: [],
+    local: [],
     ...over,
   });
   const covered = coverage();
@@ -178,6 +179,18 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
       detail:
         "Gate can’t see requests to openrouter.ai while its provider is turned off. " +
         "Gate can’t inspect requests to api.groq.com, api.together.xyz.",
+      uninspected: true,
+    });
+  });
+
+  it("is not Protected when the tool only reaches local hosts, which bypass Gate", () => {
+    // Switched on, and none of its traffic reaches Gate: a Hermes on a model
+    // in a VM over Tailscale, and nothing else.
+    expect(
+      verdictStatus(on(), { coverage: coverage({ local: ["100.101.102.103", "llm.local"] }) }),
+    ).toEqual({
+      kind: "not-protected",
+      detail: "Requests to 100.101.102.103, llm.local go straight there, not through Gate.",
       uninspected: true,
     });
   });

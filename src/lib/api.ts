@@ -561,6 +561,9 @@ export type UpstreamCoverage = {
   defaulted: boolean;
   switched_off: HermesCoverageEntry[];
   unknown: string[];
+  /** Local hosts reached directly, listed only when Gate inspects none of the
+   *  tool's traffic: switched on, and protecting nothing. */
+  local: string[];
 };
 
 /** The name this had when only the Hermes dialog read it. Kept so the AG-930

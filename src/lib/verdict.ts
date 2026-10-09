@@ -145,6 +145,11 @@ function uninspectedDetail(
   if (coverage.unknown.length > 0) {
     sentences.push(`Gate can’t inspect requests to ${coverage.unknown.join(", ")}.`);
   }
+  // Only sent when nothing else is inspected: the switch is on and none of the
+  // tool's traffic reaches Gate, so the row may not say Protected.
+  if (coverage.local.length > 0) {
+    sentences.push(`Requests to ${coverage.local.join(", ")} go straight there, not through Gate.`);
+  }
   return sentences.length > 0 ? sentences.join(" ") : undefined;
 }
 
