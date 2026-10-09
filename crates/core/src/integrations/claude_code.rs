@@ -104,15 +104,15 @@ const MANAGED_KEYS: [&str; 5] = [
     KEY_NODE_EXTRA_CA_CERTS,
 ];
 
-/// Keep loopback off the proxy, the same pairing every other proxy-routed
-/// integration writes (`hermes`, `env_proxy`, `dotenv`). It matters more here
+/// Keep local hosts off the proxy, the same list every other proxy-routed
+/// writer uses (`hermes`, the shell export). It matters more here
 /// than there: this variable is injected into `claude`'s own process and
 /// inherited by everything it spawns - the Bash tool, stdio MCP servers - so
 /// without the bypass a local `https://127.0.0.1` MCP server or dev service
 /// would be dialled through the engine, and an engine that is down would take
 /// every HTTPS request from `claude` and its children with it rather than just
 /// the Anthropic ones.
-use crate::proxy::NO_PROXY_VALUE;
+use crate::proxy::{ENV_NO_PROXY_VALUE, LEGACY_ENV_NO_PROXY_VALUE};
 
 const MARKER_KEY: &str = "_gateConnect";
 
@@ -354,6 +354,21 @@ impl Integration for ClaudeCode {
             }
         }
 
+        // The list Gate wrote before it left out the IPv6 ranges httpx cannot
+        // parse, which crashes every Python client this env reaches - the Bash
+        // tool's and stdio MCP servers'. Only that exact value, and only while
+        // the key is ours: anything else in `NO_PROXY` is the user's.
+        let no_proxy_is_ours = managed.iter().any(|v| v.as_str() == Some(KEY_NO_PROXY));
+        if no_proxy_is_ours
+            && env_block.get(KEY_NO_PROXY).and_then(|v| v.as_str())
+                == Some(LEGACY_ENV_NO_PROXY_VALUE)
+        {
+            return Ok(Status::Drifted(format!(
+                "{KEY_NO_PROXY} in settings.json is the list Gate wrote before httpx-safe \
+                 ranges, which Python tools Claude Code runs cannot parse"
+            )));
+        }
+
         // Everything we write is on disk and correct. Whether Claude Code uses
         // it is a different question, and the last one asked (AG-674).
         Ok(match managed_settings_override(expected_proxy)? {
@@ -443,7 +458,7 @@ impl Integration for ClaudeCode {
             && env_value(KEY_BASE_URL).is_none()
             && env_value(KEY_CUSTOM_HEADERS).is_none()
             && env_str(KEY_HTTPS_PROXY) == Some(claude_proxy_url.as_str())
-            && env_str(KEY_NO_PROXY) == Some(NO_PROXY_VALUE)
+            && env_str(KEY_NO_PROXY) == Some(ENV_NO_PROXY_VALUE)
             && env_str(KEY_NODE_EXTRA_CA_CERTS) == Some(ca_cert_value.as_str());
         // Gate models add keys of their own, so "already applied" also needs
         // there to be none wanted and none left to take out.
@@ -477,7 +492,10 @@ impl Integration for ClaudeCode {
         env_block.remove(KEY_BASE_URL);
         env_block.remove(KEY_CUSTOM_HEADERS);
         env_block.insert(KEY_HTTPS_PROXY.into(), Value::String(claude_proxy_url));
-        env_block.insert(KEY_NO_PROXY.into(), Value::String(NO_PROXY_VALUE.into()));
+        env_block.insert(
+            KEY_NO_PROXY.into(),
+            Value::String(ENV_NO_PROXY_VALUE.into()),
+        );
         env_block.insert(
             KEY_NODE_EXTRA_CA_CERTS.into(),
             Value::String(ca_cert_path.display().to_string()),

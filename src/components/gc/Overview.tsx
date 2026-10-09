@@ -276,12 +276,14 @@ function PolicyTable({
             {policies.map((policy) => (
               <tr key={policy.id} className="h-14 border-t border-base-border">
                 <td className="pl-4">
-                  {/* `label/16` (`1402:18180`: Geist Medium 16/24 at -2%, which
-                    * `text-base` carries) beside a 24px glyph, 12px apart. */}
-                  <span className="flex items-center gap-3 text-base font-medium leading-6 text-base-foreground">
+                  {/* `label/14` (`1402:18180`: 20px tall, Geist Medium 14/20)
+                    * beside a 20px glyph (`1408:19470`), 12px apart. Back from
+                    * `label/16` on a 24px glyph: the file reverted the pair
+                    * (AG-1055), which read oversized in the app. */}
+                  <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-label-14 text-base-foreground">
                     <Icon
                       name={policy.icon}
-                      size={24}
+                      size={20}
                       // In colour, one per guardrail (`1402:18151` and its two
                       // siblings); the savings rows below stay muted.
                       className={GUARDRAIL_INK[policy.icon] ?? "text-base-muted-foreground"}
@@ -363,12 +365,12 @@ function SavingsTable({
             {savings.map((saving) => (
               <tr key={saving.id} className="h-14 border-t border-base-border">
                 <td className="pl-4">
-                  {/* `label/16` beside a 24px glyph, as on the policies table -
+                  {/* `label/14` beside a 20px glyph, as on the policies table -
                     * but these glyphs stay `base/muted-foreground`
                     * (`1402:18323`, `1402:18333`): only the guardrail rows took
                     * a colour in the redraw. */}
-                  <span className="flex items-center gap-3 text-base font-medium leading-6 text-base-foreground">
-                    <Icon name={saving.icon} size={24} className="text-base-muted-foreground" />
+                  <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-label-14 text-base-foreground">
+                    <Icon name={saving.icon} size={20} className="text-base-muted-foreground" />
                     {saving.name}
                   </span>
                 </td>

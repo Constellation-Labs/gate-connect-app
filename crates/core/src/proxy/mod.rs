@@ -77,7 +77,9 @@ mod proxy_env;
 /// Re-exported so the per-tool integrations that write their own `NO_PROXY`
 /// use the same list as the machine-wide export. They carried three copies of
 /// it, which is three places to forget when the list grows - and it just did.
-pub(crate) use proxy_env::{no_proxy_exempts, NO_PROXY_VALUE};
+/// The environment form, because each of them writes one; see the constant.
+/// `no_proxy_exempts` reads what the full list means, for Hermes' local hosts.
+pub(crate) use proxy_env::{no_proxy_exempts, ENV_NO_PROXY_VALUE, LEGACY_ENV_NO_PROXY_VALUE};
 
 #[cfg(target_os = "macos")]
 pub mod ca;

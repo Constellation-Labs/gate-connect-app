@@ -119,8 +119,8 @@ const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
 
-/// Keep loopback off the proxy so a self-hosted provider is reached directly.
-use crate::proxy::NO_PROXY_VALUE;
+/// Keep local hosts off the proxy so a self-hosted provider is reached directly.
+use crate::proxy::ENV_NO_PROXY_VALUE;
 
 /// The variable status compares against; the others move with it.
 const PRIMARY_VAR: &str = "HTTPS_PROXY";
@@ -948,16 +948,15 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
     coverage
 }
 
-/// The `NO_PROXY` Hermes gets: Gate's list, made readable by Hermes' clients,
-/// plus every local host its config names spelled out.
+/// The `NO_PROXY` Hermes gets: [`ENV_NO_PROXY_VALUE`], plus every local host
+/// its config names spelled out.
 ///
 /// Both changes come from Hermes being Python. `urllib`, which decides the
 /// bypass, ignores CIDR entries, so a model at `100.101.102.103` rode the
 /// engine although `100.64.0.0/10` is in the list - the address has to be
 /// named. And `httpx`, which builds the client on the bypass path, refuses to
-/// start at all over an IPv6 CIDR (`fc00::/7` fails with "Invalid port: ':'",
-/// httpx 0.28.1), so those two entries are left out: they did nothing for
-/// `urllib` either.
+/// start at all over an IPv6 CIDR, which is why the base is the environment
+/// list rather than the full one.
 ///
 /// Only IP addresses are added, and only ones that parse. A name is already
 /// bypassed by its suffix or it is not local, and parsing is what keeps a host
@@ -968,11 +967,7 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
 /// Read at connect, so a host added to `config.yaml` afterwards is not named
 /// until then; `status` reads that as drift and the reconcile reconnects it.
 fn no_proxy_for(urls: &[String]) -> String {
-    let mut entries: Vec<String> = NO_PROXY_VALUE
-        .split(',')
-        .filter(|entry| !(entry.contains(':') && entry.contains('/')))
-        .map(str::to_string)
-        .collect();
+    let mut entries: Vec<String> = ENV_NO_PROXY_VALUE.split(',').map(str::to_string).collect();
     for url in urls {
         let host = url_host(url);
         let Ok(addr) = host.parse::<std::net::IpAddr>() else {
@@ -1605,6 +1600,11 @@ mod tests {
         assert!(!no_proxy_is_stale(&ours, Some("mine"), "a,b,100.1.2.3"));
         // Gate never wrote it.
         assert!(!no_proxy_is_stale(&BTreeMap::new(), Some("a,b"), "c"));
+        // The list older builds wrote, IPv6 CIDRs and all, is one more stale
+        // value of Gate's - the case #441 matched by name.
+        let legacy = crate::proxy::LEGACY_ENV_NO_PROXY_VALUE;
+        let old: BTreeMap<String, String> = [("NO_PROXY".to_string(), legacy.to_string())].into();
+        assert!(no_proxy_is_stale(&old, Some(legacy), &no_proxy_for(&[])));
     }
 
     #[test]
@@ -1652,7 +1652,7 @@ mod tests {
         let coverage = coverage_of(
             &catalog_with("anthropic"),
             &urls(&["http://100.101.102.103:8000/v1", "http://llm.local:8080/v1"]),
-            NO_PROXY_VALUE,
+            ENV_NO_PROXY_VALUE,
         );
         assert_eq!(coverage.unknown, vec!["100.101.102.103".to_string()]);
     }
@@ -1684,13 +1684,13 @@ mod tests {
     fn python_bypass_matches_urllib() {
         // `urllib.request.proxy_bypass_environment`, checked against Python
         // 3.12 with Gate's list: names and suffixes, never CIDR.
-        assert!(python_bypasses(NO_PROXY_VALUE, "gpu.tail1.ts.net"));
-        assert!(python_bypasses(NO_PROXY_VALUE, "ts.net"));
-        assert!(python_bypasses(NO_PROXY_VALUE, "LLM.local"));
-        assert!(python_bypasses(NO_PROXY_VALUE, "127.0.0.1"));
-        assert!(!python_bypasses(NO_PROXY_VALUE, "100.101.102.103"));
-        assert!(!python_bypasses(NO_PROXY_VALUE, "192.168.1.20"));
-        assert!(!python_bypasses(NO_PROXY_VALUE, "notlocal"));
+        assert!(python_bypasses(ENV_NO_PROXY_VALUE, "gpu.tail1.ts.net"));
+        assert!(python_bypasses(ENV_NO_PROXY_VALUE, "ts.net"));
+        assert!(python_bypasses(ENV_NO_PROXY_VALUE, "LLM.local"));
+        assert!(python_bypasses(ENV_NO_PROXY_VALUE, "127.0.0.1"));
+        assert!(!python_bypasses(ENV_NO_PROXY_VALUE, "100.101.102.103"));
+        assert!(!python_bypasses(ENV_NO_PROXY_VALUE, "192.168.1.20"));
+        assert!(!python_bypasses(ENV_NO_PROXY_VALUE, "notlocal"));
         assert!(python_bypasses("*", "anything.example"));
         // `urllib` honours `*` only as the whole value.
         assert!(!python_bypasses("localhost,*", "anything.example"));

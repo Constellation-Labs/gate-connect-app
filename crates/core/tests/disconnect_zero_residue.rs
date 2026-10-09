@@ -899,6 +899,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
             .any(|l| l.starts_with("no_proxy=localhost")),
         "the lower-case no_proxy must be written: {env_body}"
     );
+    // Hermes is httpx, which cannot build a client over an IPv6 CIDR.
+    for unparseable in ["fc00::/7", "fe80::/10"] {
+        assert!(
+            !env_body.contains(unparseable),
+            "{unparseable} breaks every httpx client Hermes builds: {env_body}"
+        );
+    }
     assert!(
         env_body.contains("HERMES_CA_BUNDLE="),
         "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"

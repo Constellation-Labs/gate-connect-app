@@ -734,16 +734,17 @@ export const SECTIONS: readonly {
     // restated across two surfaces.
     //
     // "Anything else, including a local model, keeps going where it always did"
-    // was not true and is gone. `NO_PROXY_VALUE` is `localhost,127.0.0.1,::1` -
-    // loopback only - so a model served from another machine on the LAN or over
+    // was not true and is gone. The exported NO_PROXY names loopback and the
+    // `.local`, `.ts.net` and `.internal` suffixes, but the LAN and Tailscale
+    // ADDRESSES only by CIDR, which several Node and Python clients ignore - so
+    // for them a model reached by IP on another machine on the LAN or over
     // Tailscale DOES traverse the engine, which is exactly the case AG-899
     // reports breaking when routing is switched off. What is true is that Gate
     // inspects only the provider hosts it knows and blind-tunnels the rest
     // (`proxy/mod.rs`: "A CONNECT to any other host is blind-tunnelled").
     //
-    // Widening `no_proxy` to private, link-local and Tailscale addresses is
-    // AG-911's scope, not this ticket's. When it lands, the stronger sentence
-    // becomes true and can come back.
+    // AG-911 widened `no_proxy` to those ranges, and the stronger sentence is
+    // still not true for the clients that ignore them, so it stays out.
     blurb: `${SHELL_CHANNEL_COVERAGE} Only AI provider traffic is inspected.`,
   },
 ];

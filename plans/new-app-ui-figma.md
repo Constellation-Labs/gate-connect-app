@@ -3541,9 +3541,9 @@ Applied, because both sections draw it the same way or only one draws it:
   Manage button right, full rule); `ManageLink` is gone.
 - Table rows 56px with full-width dividers and 16px cells; header cells
   `label/14` on the Overview tables and `label/12` on the App table, which is
-  what each frame draws. Policies and savings labels `label/16` beside 24px
-  glyphs; the Policies glyphs in colour. Action and status pills at 100 fills
-  over 900 text.
+  what each frame draws. Policies and savings labels `label/14` beside 20px
+  glyphs (back from `label/16` on 24, AG-1055); the Policies glyphs in
+  colour. Action and status pills at 100 fills over 900 text.
 - Feed: sans 14px time, Category as glyph + label (PII / PHI / Injection /
   Credential / Other), `xs` View buttons on both feeds.
 - App: model options 8px apart with `Box` / `Boxes` glyphs, "Current Gate

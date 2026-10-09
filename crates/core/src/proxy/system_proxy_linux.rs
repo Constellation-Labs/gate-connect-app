@@ -455,9 +455,11 @@ fn gsettings_capture() -> Option<Vec<GsettingsEntry>> {
     Some(entries)
 }
 
-/// Render `no_proxy`'s host list as the GVariant string array `ignore-hosts`
-/// wants, so both channels exempt exactly the same hosts. The hosts are our own
-/// literals, so there are no quotes to escape.
+/// Render a `no_proxy` host list as the GVariant string array `ignore-hosts`
+/// wants. GNOME gets the full list, so it exempts everything the environment
+/// does and the IPv6 ranges `httpx` cannot parse besides (see
+/// `ENV_NO_PROXY_VALUE`). The hosts are our own literals, so there are no
+/// quotes to escape.
 fn gvariant_string_array(hosts: &str) -> String {
     let quoted: Vec<String> = hosts
         .split(',')
@@ -777,11 +779,13 @@ mod tests {
 
     #[test]
     fn ignore_hosts_covers_every_no_proxy_host() {
-        // The two channels have to exempt the same hosts: a host the variables
+        // GNOME has to exempt every host the variables do: a host the variables
         // keep off the proxy but GNOME sends through it is a loop (OpenCode's
         // TUI talking to its own local server) that only GUI-launched tools hit.
+        // It may exempt more - it carries the full list, while the environment
+        // carries the form `httpx` can parse - but never less.
         let rendered = gvariant_string_array(super::super::proxy_env::NO_PROXY_VALUE);
-        for host in super::super::proxy_env::NO_PROXY_VALUE.split(',') {
+        for host in super::super::proxy_env::ENV_NO_PROXY_VALUE.split(',') {
             assert!(
                 rendered.contains(&format!("'{host}'")),
                 "{rendered} is missing {host}"
