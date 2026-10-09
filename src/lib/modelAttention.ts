@@ -38,6 +38,9 @@ export interface ModelAttention {
   /** The models this concerns. Empty for causes that are about the account
    *  rather than a model. */
   models: string[];
+  /** The card's heading, naming the cause rather than a generic "needs
+   *  attention". */
+  title: string;
   /** One sentence, already written for the person reading it. */
   message: string;
 }
@@ -82,11 +85,14 @@ function unavailable(modelIds: string[], catalogue: GateModel[]): string[] {
 }
 
 export function modelAttention({
+  appName = "This app",
   choice,
   catalogue,
   credits,
   recent,
 }: {
+  /** The app's display name, for the titles that name it. */
+  appName?: string;
   /** The tool's stored preference, or undefined when it has none. */
   choice: ToolModelChoice | undefined;
   /** The models Gate offers, or null when the catalogue has not been read. */
@@ -124,6 +130,7 @@ export function modelAttention({
     return {
       cause: "requests-failing",
       models: choice.modelIds,
+      title: `${appName}’s requests are failing on Gate models`,
       message:
         "The last few requests from this app have failed while it has been on Gate models. The model may not work with this app. Switch back to App default to use the app's own model again, or choose a different Gate model.",
     };
@@ -140,6 +147,10 @@ export function modelAttention({
       return {
         cause: "model-unavailable",
         models: gone,
+        title:
+          gone.length === 1
+            ? `${gone[0]} is no longer available`
+            : "Your Gate models are no longer available",
         message:
           gone.length === 1
             ? `${gone[0]} is no longer available from Gate. Requests will fail until you choose another model or return to App default - Gate will not pick a replacement for you.`
@@ -153,6 +164,7 @@ export function modelAttention({
       return {
         cause: "payg-disabled",
         models: [],
+        title: "Pay-as-you-go is off",
         message:
           "Pay-as-you-go is off for this organization, so Gate cannot serve a model for it. Requests will fail until it is enabled or this app returns to App default.",
       };
@@ -161,6 +173,7 @@ export function modelAttention({
       return {
         cause: "no-credits",
         models: [],
+        title: "You’re out of Gate credits",
         message:
           "There are no Gate credits left, so requests using a Gate model will fail. Add credits, or return this app to App default to use its own model again.",
       };
