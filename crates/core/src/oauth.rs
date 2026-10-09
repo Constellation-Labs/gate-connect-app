@@ -757,18 +757,30 @@ fn refresh_stored(
     cfg: &OAuthConfig,
     force: bool,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
-    let Some(tokens) = current().map_err(classify_read_error)? else {
+    // Read before the bundle, so a refresh that lands between the two is seen.
+    let seen = session_generation();
+    let Some(mut tokens) = stored_for(cfg)? else {
         return Ok(None);
     };
-    if tokens.client_id != cfg.client_id {
-        return Err(RefreshError::Refused(anyhow::anyhow!(
-            "stored tokens were minted by app client {:?}, but this build uses {:?}; sign in again",
-            tokens.client_id,
-            cfg.client_id
-        )));
-    }
     if !force && !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
         return Ok(Some(tokens));
+    }
+    // One refresh at a time. Every reader finds an expired bundle at once after
+    // a sleep or a reboot - startup, the security feed, the window's reads, the
+    // 30s tick - and each used to mint its own token and store it, which is
+    // what deadlocked the keychain (see `keychain::STORE_LOCK`). A caller that
+    // waited here while another refresh was stored takes that one instead:
+    // fresh, it is the answer to `force` too, which only asks for a token newer
+    // than the one the gateway refused. A sign-out meanwhile reads as `None`.
+    let _one = REFRESH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if session_generation() != seen {
+        let Some(latest) = stored_for(cfg)? else {
+            return Ok(None);
+        };
+        if !latest.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
+            return Ok(Some(latest));
+        }
+        tokens = latest;
     }
     let refreshed = post_token(
         cfg,
@@ -793,6 +805,24 @@ fn refresh_stored(
     // hand is good, it just will not survive a restart.
     store(&refreshed).map_err(RefreshError::Unavailable)?;
     Ok(Some(refreshed))
+}
+
+/// Held across a refresh and the store of its result; see [`refresh_stored`].
+static REFRESH_LOCK: Mutex<()> = Mutex::new(());
+
+/// The stored bundle, refused when this build's Cognito client did not mint it.
+fn stored_for(cfg: &OAuthConfig) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    let Some(tokens) = current().map_err(classify_read_error)? else {
+        return Ok(None);
+    };
+    if tokens.client_id != cfg.client_id {
+        return Err(RefreshError::Refused(anyhow::anyhow!(
+            "stored tokens were minted by app client {:?}, but this build uses {:?}; sign in again",
+            tokens.client_id,
+            cfg.client_id
+        )));
+    }
+    Ok(Some(tokens))
 }
 
 /// Classify a failure to read the stored bundle.
