@@ -1030,7 +1030,7 @@ export function TrayApp() {
               onDismiss={() => routing.resolvePrompt(false)}
             >
               <p className="text-sm leading-5 text-neutral-600">
-                It stays on this machine. Remove it in Settings anytime.
+                The certificate stays on this machine. Remove it in Settings anytime.
               </p>
               <p className="text-sm font-medium leading-5 text-base-foreground">
                 {trustPromptHint(platform)}

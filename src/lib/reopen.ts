@@ -81,7 +81,7 @@ export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   routing: "Open, and its traffic is going through Gate.",
   not_routed: "Open, and its traffic is going to its own upstream.",
   close_failed:
-    "Gate couldn’t close it, so still using its old settings.",
+    "Gate couldn’t close it, so it’s still using its old settings.",
   config_failed:
     "Couldn’t write its config. Nothing changed.",
   verify_failed:

@@ -778,7 +778,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await expect(app.page.getByText(/no longer available/)).toHaveCount(0);
+    await expect(app.page.getByText(/left Gate, so requests will fail/)).toHaveCount(0);
   });
 
   test("highlights an empty balance", async ({ boot }) => {

@@ -271,7 +271,7 @@ test.describe("new UI: the two ways back to first run", () => {
     // Not "Couldn't save your account": nothing was being saved.
     await expect(alert).toContainText(/complete sign-in/);
 
-    // The hint says the details below help when reporting it, so they have to
+    // The hint points to the details below, so they have to
     // actually be below it. The banner used to render none.
     await alert.getByText("Details", { exact: true }).click();
     await expect(alert).toContainText("the sign-in window closed before it finished");

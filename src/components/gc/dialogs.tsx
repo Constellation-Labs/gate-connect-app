@@ -335,7 +335,8 @@ export function OAuthOfferDialog({
       onDismiss={onDismissOffer ?? onKeepKey}
     >
       <p className="text-sm leading-5 text-neutral-600">
-        Nothing changes now. Switch anytime under Connection in Settings.
+        Keeping your key changes nothing. Switch anytime under Connection in
+        Settings.
       </p>
       {error}
     </Modal>
@@ -1545,15 +1546,18 @@ export function OpenCodeEnvDialog({
     >
       {/* Why OpenCode asks, then what saying yes reaches. The first sentence
           used to claim the variables are how Gate routes OpenCode, which the
-          component doc above explains is false; the breadth sentence and the
-          certificate sentence are unchanged. An earlier drawn ending, "...that
+          component doc above explains is false. Shortened on 2026-10-09,
+          keeping all three qualifiers: existing providers stay on OpenCode's
+          settings, only tools that read the variables, only Node programs
+          started afterwards. An earlier drawn ending, "...that
           reads them, not OpenCode", was cut on 2026-09-04 as contradicting the
           clause before it; with the clause corrected the cut still stands,
           since naming git, curl and npm carries the breadth on its own. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Providers you add to OpenCode later route through your proxy variables.
-        These apply to every command-line tool, git, curl and npm included, and
-        make every Node program trust Gate&apos;s certificate.
+        Providers you already set up keep OpenCode&apos;s own settings. Ones you
+        add later route through your proxy variables, which apply to any
+        command-line tool that reads them, git, curl and npm included, and make
+        Node programs you start afterwards trust Gate&apos;s certificate.
       </p>
       {/* AG-895. The ticket reads "toggling OpenCode asks me to close Codex",
           and the literal claim does not survive the code - every caller of
@@ -1816,7 +1820,7 @@ export function CollectedDataLists({
               the sentence true after a second opt-out, which sends nothing. */}
           <li>
             The first time you say no, or turn sharing off later, one final note
-            says so, tied to your organization and account.
+            says so, tied to your organization and account when known.
           </li>
           <li>App version and operating system.</li>
           <li>
@@ -2033,8 +2037,8 @@ export function SendDiagnosticsDialog({
             <DialogError>
               <p className="font-medium">{state.title}</p>
               <p className="mt-1">{state.hint}</p>
-              {/* The hint is `classifyError`'s fallback, which ends "the
-                * details below help when reporting it" - and there were no
+              {/* The hint is `classifyError`'s fallback, which points to
+                * "the details below" - and there were no
                 * details below. The classifier had the raw message all along;
                 * this dialog was the one surface that dropped it on the way in.
                 * Same disclosure `ErrorBanner` and the setup screen use, so the

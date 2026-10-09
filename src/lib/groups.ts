@@ -641,7 +641,7 @@ function memberFromDomain(
  * string; the file wins there.
  */
 export const SHELL_CHANNEL_COVERAGE =
-  "Routes all programs you start next and makes Node trust Gate's certificate.";
+  "Routes all programs you start from now on and makes Node trust Gate's certificate.";
 
 /**
  * **Order matters, and not for looks.** `NewUiApp` and `TrayApp` both emit a

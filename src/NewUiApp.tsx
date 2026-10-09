@@ -3195,7 +3195,7 @@ export function NewUiApp() {
             onDismiss={() => routing.resolvePrompt(false)}
           >
             <p className="text-sm leading-5 text-neutral-600">
-              It stays on this machine. Remove it in Settings anytime.
+              The certificate stays on this machine. Remove it in Settings anytime.
             </p>
             {/* Naming the system dialog is the whole of AG-534, and "your
                 operating system will ask for permission" is not that: on Windows

@@ -49,7 +49,7 @@ describe("OpenCodeEnvDialog", () => {
     expect(
       screen.queryByText(/no gateway setting of its own/i),
     ).toBeNull();
-    expect(screen.getByText(/Providers you add to OpenCode later/i)).toBeTruthy();
+    expect(screen.getByText(/Providers you already set up keep OpenCode/i)).toBeTruthy();
   });
 
   it("says a certificate is involved, which is the larger fact", () => {
@@ -57,7 +57,7 @@ describe("OpenCodeEnvDialog", () => {
     // roots of every Node process started afterwards. Harder to discover than
     // "git and curl go through Gate" and a bigger claim on the machine.
     render(<OpenCodeEnvDialog onCancel={noop} onConfirm={noop} />);
-    expect(screen.getByText(/make every Node program trust Gate/i)).toBeTruthy();
+    expect(screen.getByText(/Node programs you start afterwards trust Gate/i)).toBeTruthy();
   });
 
   it("is informational, so the primary turns both on and cancel is the way out", () => {
