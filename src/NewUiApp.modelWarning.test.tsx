@@ -77,7 +77,7 @@ describe("the model warning", () => {
     installFakeTauri(state);
     await openClaude();
 
-    await noteTitled("Pay-as-you-go is off", "Pay-as-you-go is off for this organization");
+    await noteTitled("Pay-as-you-go is off", "Gate models will fail until it’s enabled");
   });
 
   it("titles a config that could not be read", async () => {
@@ -128,7 +128,7 @@ describe("the model warning", () => {
 
     expect(
       await screen.findByText(
-        "You switched Claude Code to claude-sonnet-5 in Claude Code, so it is back on App default.",
+        "You picked claude-sonnet-5 in Claude Code, so it’s back on App default.",
       ),
     ).toBeTruthy();
   });
