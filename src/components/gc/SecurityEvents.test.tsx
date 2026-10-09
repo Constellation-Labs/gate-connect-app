@@ -309,7 +309,7 @@ describe("the tool cell", () => {
   });
 
   it("draws the other clients' marks in the row's ink, as no frame colours them", () => {
-    for (const tool of ["codex", "chatgpt", "opencode", "openclaw"]) {
+    for (const tool of ["codex", "chatgpt", "opencode", "openclaw", "hermes"]) {
       cleanup();
       render(section({ events: [{ ...blocked, tool }] }));
       const slot = screen.getByTitle(tool).previousElementSibling as HTMLElement;
@@ -319,9 +319,10 @@ describe("the tool cell", () => {
   });
 
   it("keeps the slot empty for a client with no mark", () => {
-    // Hermes has none in the rail either.
-    render(section({ events: [{ ...blocked, tool: "hermes" }] }));
-    const cell = screen.getByTitle("hermes").parentElement!;
+    // `any-app` has none in the rail either. Hermes used to be this case, until
+    // AG-1055 gave it a mark.
+    render(section({ events: [{ ...blocked, tool: "any-app" }] }));
+    const cell = screen.getByTitle("any-app").parentElement!;
     expect(cell.querySelector("svg")).toBeNull();
     expect(cell.querySelector('[aria-hidden="true"]')).toBeTruthy();
   });
