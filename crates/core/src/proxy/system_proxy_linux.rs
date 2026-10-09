@@ -782,8 +782,8 @@ mod tests {
         // GNOME has to exempt every host the variables do: a host the variables
         // keep off the proxy but GNOME sends through it is a loop (OpenCode's
         // TUI talking to its own local server) that only GUI-launched tools hit.
-        // It may exempt more - it carries the full list, the environment the
-        // form `httpx` can parse - but never less.
+        // It may exempt more - it carries the full list, while the environment
+        // carries the form `httpx` can parse - but never less.
         let rendered = gvariant_string_array(super::super::proxy_env::NO_PROXY_VALUE);
         for host in super::super::proxy_env::ENV_NO_PROXY_VALUE.split(',') {
             assert!(

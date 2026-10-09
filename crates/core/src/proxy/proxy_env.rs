@@ -69,8 +69,8 @@ use std::collections::BTreeMap;
 ///
 /// **Ignored is not the same as unparseable**, though, and an environment gets
 /// [`ENV_NO_PROXY_VALUE`] instead: `httpx` cannot read the IPv6 CIDRs at all.
-// Read only by GNOME's ignore list outside tests, so it is Linux code on the
-// other two platforms - kept there as the list `ENV_NO_PROXY_VALUE` is pinned to.
+// Unused outside tests on macOS and Windows, where only GNOME's ignore list
+// (Linux) reads it - kept as the list `ENV_NO_PROXY_VALUE` is pinned to.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
@@ -95,6 +95,19 @@ fc00::/7,fe80::/10,.local,.ts.net,.internal";
 pub(crate) const ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 .local,.ts.net,.internal";
+
+/// The `NO_PROXY` Claude Code's settings and Hermes' `.env` were given before
+/// [`ENV_NO_PROXY_VALUE`]: the full list, IPv6 CIDRs and all.
+///
+/// Frozen on purpose rather than derived from [`NO_PROXY_VALUE`]: it is what
+/// is on disk, and that does not change when the list next grows. Each
+/// integration's `status` reads exactly this value as its own stale write, so
+/// the startup reconcile rewrites it - which is the only thing that would on
+/// Linux, where no quit sweep reconnects anything. Exactly this value and no
+/// other, so a `NO_PROXY` the user edited is never mistaken for Gate's.
+pub(crate) const LEGACY_ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
+10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
+fc00::/7,fe80::/10,.local,.ts.net,.internal";
 
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set

@@ -172,6 +172,14 @@ fn tool_installed_after_enable_is_configured() {
             "NO_PROXY must bypass {expected}, got {no_proxy}"
         );
     }
+    // Inherited by the Python the Bash tool and MCP servers run, and httpx
+    // cannot build a client over an IPv6 CIDR.
+    for unparseable in ["fc00::/7", "fe80::/10"] {
+        assert!(
+            !no_proxy.contains(unparseable),
+            "NO_PROXY must leave out {unparseable}, got {no_proxy}"
+        );
+    }
     assert!(
         !env_block.contains_key("ANTHROPIC_BASE_URL"),
         "the canonical Anthropic base URL must remain implicit"
@@ -349,6 +357,65 @@ fn install_claude_with_stale_managed_config() {
         serde_json::to_string_pretty(&stale).unwrap(),
     )
     .unwrap();
+}
+
+/// The full list, IPv6 CIDRs and all: what Gate wrote before the httpx fix.
+const LEGACY_NO_PROXY: &str = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,\
+192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,fc00::/7,fe80::/10,.local,.ts.net,.internal";
+
+/// Connect Claude Code, then put `value` in its managed `NO_PROXY`.
+fn set_claude_no_proxy(value: &str) {
+    let path = env::claude_code_settings_path().unwrap();
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["env"]["NO_PROXY"] = serde_json::Value::String(value.into());
+    fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+}
+
+fn claude_no_proxy() -> String {
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap(),
+    )
+    .unwrap();
+    settings["env"]["NO_PROXY"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn legacy_no_proxy_is_rewritten_by_the_startup_reconcile() {
+    // An install upgraded on Linux, where no quit sweep reconnects anything:
+    // only reading the old list as drift gets it rewritten.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+    provider::reconcile_enabled().unwrap();
+    set_claude_no_proxy(LEGACY_NO_PROXY);
+    assert!(matches!(claude_status(), Status::Drifted(_)));
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(claude_status(), Status::Connected);
+    let no_proxy = claude_no_proxy();
+    assert!(!no_proxy.contains("fc00::/7"), "{no_proxy}");
+    assert!(no_proxy.contains(".ts.net"), "{no_proxy}");
+}
+
+#[test]
+fn a_hand_edited_no_proxy_is_not_drift() {
+    // Only Gate's own old value is stale; anything else is the user's.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+    provider::reconcile_enabled().unwrap();
+    let mine = format!("{LEGACY_NO_PROXY},corp.example");
+    set_claude_no_proxy(&mine);
+
+    assert_eq!(claude_status(), Status::Connected);
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(claude_no_proxy(), mine);
 }
 
 #[test]

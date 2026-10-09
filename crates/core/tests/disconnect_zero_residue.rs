@@ -892,6 +892,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         env_body.contains("NO_PROXY=localhost,127.0.0.1,::1"),
         "loopback must stay off the proxy so local providers keep working: {env_body}"
     );
+    // Hermes is httpx, which cannot build a client over an IPv6 CIDR.
+    for unparseable in ["fc00::/7", "fe80::/10"] {
+        assert!(
+            !env_body.contains(unparseable),
+            "{unparseable} breaks every httpx client Hermes builds: {env_body}"
+        );
+    }
     assert!(
         env_body.contains("HERMES_CA_BUNDLE="),
         "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"

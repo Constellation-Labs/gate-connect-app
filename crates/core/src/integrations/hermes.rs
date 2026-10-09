@@ -6,7 +6,7 @@
 //! ```text
 //! HTTPS_PROXY=http://127.0.0.1:<engine-port>
 //! HTTP_PROXY=http://127.0.0.1:<engine-port>
-//! NO_PROXY=<ENV_NO_PROXY_VALUE: loopback, the private ranges, .local, .ts.net>
+//! NO_PROXY=<ENV_NO_PROXY_VALUE: loopback, private ranges, .local, .ts.net, .internal>
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
 //!
@@ -27,10 +27,11 @@
 //! is no longer a special case: nothing below refuses for want of a model block.
 //! See `docs/harness-integration-validation.md`.
 //!
-//! `NO_PROXY` is set for loopback so a locally-hosted provider keeps talking to
-//! itself directly instead of being tunnelled through the engine - the same
-//! protection the old `is_local_url` guard gave, expressed where Hermes can
-//! actually act on it.
+//! `NO_PROXY` keeps loopback, the private ranges and `.local`/`.ts.net`/
+//! `.internal` names off the proxy, so a locally-hosted provider is reached
+//! directly instead of being tunnelled through the engine - the protection the
+//! old `is_local_url` guard gave, expressed where Hermes can act on it. Hermes
+//! reads it with Python, which honours the names and ignores the ranges.
 //!
 //! **`config.yaml` is read to say what Gate will see, and written only to name
 //! Hermes on the wire.** The distinction is the one the paragraph above draws.
@@ -117,8 +118,8 @@ const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
 
-/// Keep loopback off the proxy so a self-hosted provider is reached directly.
-use crate::proxy::ENV_NO_PROXY_VALUE;
+/// Keep local hosts off the proxy so a self-hosted provider is reached directly.
+use crate::proxy::{ENV_NO_PROXY_VALUE, LEGACY_ENV_NO_PROXY_VALUE};
 
 /// The variable status compares against; the others move with it.
 const PRIMARY_VAR: &str = "HTTPS_PROXY";
@@ -336,12 +337,27 @@ impl Integration for Hermes {
             _ => {}
         }
         let configured = configured_proxy()?.unwrap_or_default();
-        Ok(compute_status(
+        let status = compute_status(
             &configured,
             &crate::proxy::tool_proxy_identity_urls(),
             crate::proxy::address_health(&configured),
             crate::proxy::exported_proxy_url().as_deref(),
-        ))
+        );
+        // Drift, so the startup reconcile rewrites it - on Linux nothing else
+        // would. See `LEGACY_ENV_NO_PROXY_VALUE`.
+        if matches!(status, Status::Connected)
+            && writes_legacy_no_proxy(
+                &state.written_vars,
+                dotenv::read_var(&env_file_path()?, "NO_PROXY")?.as_deref(),
+            )
+        {
+            return Ok(Status::Drifted(
+                "NO_PROXY in ~/.hermes/.env is the list Gate wrote before httpx-safe ranges, \
+                 which Hermes' own httpx clients cannot parse"
+                    .into(),
+            ));
+        }
+        Ok(status)
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {
@@ -654,6 +670,14 @@ fn environment_override(configured: &str, exported: Option<&str>) -> Option<Over
 /// The proxy Hermes is currently pointed at, per its own `.env`.
 fn configured_proxy() -> Result<Option<String>> {
     dotenv::read_var(&env_file_path()?, PRIMARY_VAR)
+}
+
+/// Whether `.env` still holds the `NO_PROXY` Gate wrote before
+/// [`ENV_NO_PROXY_VALUE`], as Gate's own: the sidecar recorded that value and
+/// the file still holds it. A value the user changed is theirs, and stays.
+fn writes_legacy_no_proxy(written: &BTreeMap<String, String>, on_disk: Option<&str>) -> bool {
+    written.get("NO_PROXY").map(String::as_str) == Some(LEGACY_ENV_NO_PROXY_VALUE)
+        && on_disk == Some(LEGACY_ENV_NO_PROXY_VALUE)
 }
 
 /// Whether a proxy URL points at loopback - i.e. is one of ours rather than a
@@ -1277,6 +1301,33 @@ fn clear_state() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_gates_own_legacy_no_proxy_is_stale() {
+        let ours: BTreeMap<String, String> = [(
+            "NO_PROXY".to_string(),
+            LEGACY_ENV_NO_PROXY_VALUE.to_string(),
+        )]
+        .into();
+        assert!(writes_legacy_no_proxy(
+            &ours,
+            Some(LEGACY_ENV_NO_PROXY_VALUE)
+        ));
+        // The user changed it since: theirs.
+        assert!(!writes_legacy_no_proxy(
+            &ours,
+            Some("localhost,corp.example")
+        ));
+        // Already the current list.
+        let current: BTreeMap<String, String> =
+            [("NO_PROXY".to_string(), ENV_NO_PROXY_VALUE.to_string())].into();
+        assert!(!writes_legacy_no_proxy(&current, Some(ENV_NO_PROXY_VALUE)));
+        // Gate never wrote it.
+        assert!(!writes_legacy_no_proxy(
+            &BTreeMap::new(),
+            Some(LEGACY_ENV_NO_PROXY_VALUE)
+        ));
+    }
 
     /// The catalog with one domain forced on, since only `anthropic` ships
     /// enabled and the interesting case is a switch the user has already flipped.

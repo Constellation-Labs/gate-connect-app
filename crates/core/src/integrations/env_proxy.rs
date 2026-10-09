@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! HTTPS_PROXY / HTTP_PROXY (+ lower-case)  -> http://127.0.0.1:<engine-port>
-//! NO_PROXY (+ lower-case)                 -> loopback, private ranges, .local, .ts.net
+//! NO_PROXY (+ lower-case)                  -> loopback, private ranges, .local, .ts.net, .internal
 //! NODE_EXTRA_CA_CERTS                      -> <app-support>/proxy/ca-cert.pem
 //! ```
 //!
