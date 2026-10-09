@@ -65,6 +65,23 @@ pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 fc00::/7,fe80::/10,.local,.ts.net,.internal";
 
+/// [`NO_PROXY_VALUE`] as the environment export carries it: the same list
+/// without its IPv6 CIDRs.
+///
+/// Those two entries do not merely go unread by `httpx`, they stop it working.
+/// It parses every `NO_PROXY` entry as a URL while building a client and fails
+/// on `fc00::/7` with "Invalid port: ':'" (httpx 0.28.1), before any request is
+/// made and whatever the request's host. With the export on, that was every
+/// `openai.OpenAI()` and `anthropic.Anthropic()` started from a terminal. Go
+/// and curl did honour them, so a local IPv6 host now rides the engine from
+/// there: blind-tunnelled, uninspected, working while Gate runs.
+///
+/// Only the export. The GNOME ignore list and Claude Code's settings keep the
+/// full list: neither is read by `httpx`.
+pub(crate) const EXPORTED_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
+10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
+.local,.ts.net,.internal";
+
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set
 /// because tools disagree about which they read - curl wants lower-case, most
@@ -103,8 +120,8 @@ pub(crate) fn case_sensitive(port: u16) -> Result<Vec<(&'static str, String)>> {
         endpoint.clone(),
         endpoint.clone(),
         endpoint,
-        NO_PROXY_VALUE.to_string(),
-        NO_PROXY_VALUE.to_string(),
+        EXPORTED_NO_PROXY_VALUE.to_string(),
+        EXPORTED_NO_PROXY_VALUE.to_string(),
         ca,
     ];
     Ok(VARS_CASE_SENSITIVE.into_iter().zip(values).collect())
@@ -116,7 +133,12 @@ pub(crate) fn case_sensitive(port: u16) -> Result<Vec<(&'static str, String)>> {
 pub(crate) fn case_insensitive(port: u16) -> Result<Vec<(&'static str, String)>> {
     let endpoint = format!("http://127.0.0.1:{port}");
     let ca = super::ca_cert_path()?.display().to_string();
-    let values = [endpoint.clone(), endpoint, NO_PROXY_VALUE.to_string(), ca];
+    let values = [
+        endpoint.clone(),
+        endpoint,
+        EXPORTED_NO_PROXY_VALUE.to_string(),
+        ca,
+    ];
     Ok(VARS_CASE_INSENSITIVE.into_iter().zip(values).collect())
 }
 
@@ -310,7 +332,7 @@ mod tests {
         );
         assert_eq!(
             sensitive.get("NO_PROXY").map(String::as_str),
-            Some(NO_PROXY_VALUE)
+            Some(EXPORTED_NO_PROXY_VALUE)
         );
         assert!(
             sensitive
@@ -371,6 +393,24 @@ mod tests {
         assert!(
             second.is_none(),
             "a re-enable must keep the original record, not overwrite it"
+        );
+    }
+
+    #[test]
+    fn the_export_is_the_full_list_without_ipv6_cidrs() {
+        // Derived rather than trusted: a range added to one list and not the
+        // other is the drift this pins.
+        let expected: Vec<&str> = NO_PROXY_VALUE
+            .split(',')
+            .filter(|entry| !(entry.contains(':') && entry.contains('/')))
+            .collect();
+        assert_eq!(
+            EXPORTED_NO_PROXY_VALUE.split(',').collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            expected.contains(&"::1"),
+            "a bare IPv6 address is not a CIDR"
         );
     }
 
