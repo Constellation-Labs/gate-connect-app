@@ -6,7 +6,7 @@
 //! ```text
 //! HTTPS_PROXY=http://127.0.0.1:<engine-port>
 //! HTTP_PROXY=http://127.0.0.1:<engine-port>
-//! NO_PROXY=localhost,127.0.0.1,::1
+//! NO_PROXY=<ENV_NO_PROXY_VALUE: loopback, the private ranges, .local, .ts.net>
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
 //!
@@ -118,7 +118,7 @@ const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
 
 /// Keep loopback off the proxy so a self-hosted provider is reached directly.
-use crate::proxy::NO_PROXY_VALUE;
+use crate::proxy::ENV_NO_PROXY_VALUE;
 
 /// The variable status compares against; the others move with it.
 const PRIMARY_VAR: &str = "HTTPS_PROXY";
@@ -416,7 +416,7 @@ impl Integration for Hermes {
             &[
                 ("HTTPS_PROXY", proxy_url.to_string()),
                 ("HTTP_PROXY", proxy_url.to_string()),
-                ("NO_PROXY", NO_PROXY_VALUE.to_string()),
+                ("NO_PROXY", ENV_NO_PROXY_VALUE.to_string()),
                 ("HERMES_CA_BUNDLE", bundle.display().to_string()),
             ],
             &ours,

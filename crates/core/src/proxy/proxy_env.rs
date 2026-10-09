@@ -27,6 +27,11 @@
 //! no PAC equivalent, so every request from a tool that honours them reaches the
 //! engine, which MITMs the intercepted domains and blind-tunnels the rest. That
 //! is exactly what Linux has always done.
+//!
+//! There are two lists, not one. [`NO_PROXY_VALUE`] is what Gate means to keep
+//! off the engine and is what GNOME's `ignore-hosts` carries;
+//! [`ENV_NO_PROXY_VALUE`] is that list in a shape every client can parse, and
+//! is the one written into any process environment.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -61,11 +66,17 @@ use std::collections::BTreeMap;
 /// engine blind-tunnels what it does not route either way - so this lists what
 /// the clients that *do* honour it need, rather than trimming to the lowest
 /// common denominator.
+///
+/// **Ignored is not the same as unparseable**, though, and an environment gets
+/// [`ENV_NO_PROXY_VALUE`] instead: `httpx` cannot read the IPv6 CIDRs at all.
+// Read only by GNOME's ignore list outside tests, so it is Linux code on the
+// other two platforms - kept there as the list `ENV_NO_PROXY_VALUE` is pinned to.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 fc00::/7,fe80::/10,.local,.ts.net,.internal";
 
-/// [`NO_PROXY_VALUE`] as the environment export carries it: the same list
+/// [`NO_PROXY_VALUE`] as a process environment carries it: the same list
 /// without its IPv6 CIDRs.
 ///
 /// Those two entries do not merely go unread by `httpx`, they stop it working.
@@ -74,11 +85,14 @@ fc00::/7,fe80::/10,.local,.ts.net,.internal";
 /// made and whatever the request's host. With the export on, that was every
 /// `openai.OpenAI()` and `anthropic.Anthropic()` started from a terminal. Go
 /// and curl did honour them, so a local IPv6 host now rides the engine from
-/// there: blind-tunnelled, uninspected, working while Gate runs.
+/// there: blind-tunnelled, uninspected, working while Gate runs. A bracketed
+/// address (`[fd00::1]`) fails the same way; a bare one (`::1`) is fine.
 ///
-/// Only the export. The GNOME ignore list and Claude Code's settings keep the
-/// full list: neither is read by `httpx`.
-pub(crate) const EXPORTED_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
+/// Every environment Gate writes takes this: the shell export, Claude Code's
+/// settings (inherited by its Bash tool and stdio MCP servers, which is where
+/// the Python is) and Hermes' `.env`. Only GNOME's ignore list keeps the full
+/// list, and `httpx` never reads it.
+pub(crate) const ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 .local,.ts.net,.internal";
 
@@ -120,8 +134,8 @@ pub(crate) fn case_sensitive(port: u16) -> Result<Vec<(&'static str, String)>> {
         endpoint.clone(),
         endpoint.clone(),
         endpoint,
-        EXPORTED_NO_PROXY_VALUE.to_string(),
-        EXPORTED_NO_PROXY_VALUE.to_string(),
+        ENV_NO_PROXY_VALUE.to_string(),
+        ENV_NO_PROXY_VALUE.to_string(),
         ca,
     ];
     Ok(VARS_CASE_SENSITIVE.into_iter().zip(values).collect())
@@ -136,7 +150,7 @@ pub(crate) fn case_insensitive(port: u16) -> Result<Vec<(&'static str, String)>>
     let values = [
         endpoint.clone(),
         endpoint,
-        EXPORTED_NO_PROXY_VALUE.to_string(),
+        ENV_NO_PROXY_VALUE.to_string(),
         ca,
     ];
     Ok(VARS_CASE_INSENSITIVE.into_iter().zip(values).collect())
@@ -332,7 +346,7 @@ mod tests {
         );
         assert_eq!(
             sensitive.get("NO_PROXY").map(String::as_str),
-            Some(EXPORTED_NO_PROXY_VALUE)
+            Some(ENV_NO_PROXY_VALUE)
         );
         assert!(
             sensitive
@@ -397,31 +411,34 @@ mod tests {
     }
 
     #[test]
-    fn the_export_is_the_full_list_without_ipv6_cidrs() {
+    fn the_env_list_is_the_full_list_without_ipv6_cidrs() {
         // Derived rather than trusted: a range added to one list and not the
         // other is the drift this pins.
         let expected: Vec<&str> = NO_PROXY_VALUE
             .split(',')
             .filter(|entry| !(entry.contains(':') && entry.contains('/')))
             .collect();
-        assert_eq!(
-            EXPORTED_NO_PROXY_VALUE.split(',').collect::<Vec<_>>(),
-            expected
-        );
-        assert!(
-            expected.contains(&"::1"),
-            "a bare IPv6 address is not a CIDR"
-        );
+        assert_eq!(ENV_NO_PROXY_VALUE.split(',').collect::<Vec<_>>(), expected);
+        // The two shapes httpx 0.28.1 cannot parse, whatever the full list
+        // grows to hold: an IPv6 CIDR, and a bracketed IPv6 address.
+        for entry in ENV_NO_PROXY_VALUE.split(',') {
+            assert!(
+                !(entry.contains(':') && (entry.contains('/') || entry.contains('['))),
+                "{entry} breaks httpx"
+            );
+        }
     }
 
     #[test]
     fn loopback_is_always_bypassed() {
         // OpenCode's TUI reaches its own local server; proxying that loops.
-        for host in ["localhost", "127.0.0.1", "::1"] {
-            assert!(
-                NO_PROXY_VALUE.split(',').any(|h| h == host),
-                "{host} must be in NO_PROXY"
-            );
+        for list in [NO_PROXY_VALUE, ENV_NO_PROXY_VALUE] {
+            for host in ["localhost", "127.0.0.1", "::1"] {
+                assert!(
+                    list.split(',').any(|h| h == host),
+                    "{host} must be in {list}"
+                );
+            }
         }
     }
 }

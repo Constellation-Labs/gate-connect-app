@@ -385,7 +385,7 @@ stop_relay() {
 # refuses unless `proxy::engine_proxy_url()` is Some. Only `proxy enable`
 # makes it so - it writes the system-proxy snapshot and the engine port, and
 # `proxy relay` (the relay) writes neither. The other two tools keep using
-# the relay and are untouched by this: the exported NO_PROXY is
+# the relay and are untouched by this: the exported NO_PROXY starts
 # `localhost,127.0.0.1,::1`, which exempts both the relay and the mocks.
 #
 # Enable also trusts the CA and points the system proxy at the engine. What

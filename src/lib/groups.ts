@@ -734,10 +734,11 @@ export const SECTIONS: readonly {
     // restated across two surfaces.
     //
     // "Anything else, including a local model, keeps going where it always did"
-    // was not true and is gone. `NO_PROXY_VALUE` is `localhost,127.0.0.1,::1` -
-    // loopback only - so a model served from another machine on the LAN or over
-    // Tailscale DOES traverse the engine, which is exactly the case AG-899
-    // reports breaking when routing is switched off. What is true is that Gate
+    // was not true and is gone. The exported NO_PROXY names loopback by address
+    // but the LAN and Tailscale ranges only by CIDR, which most Node and Python
+    // clients ignore - so for them a model served from another machine on the
+    // LAN or over Tailscale DOES traverse the engine, which is exactly the case
+    // AG-899 reports breaking when routing is switched off. What is true is that Gate
     // inspects only the provider hosts it knows and blind-tunnels the rest
     // (`proxy/mod.rs`: "A CONNECT to any other host is blind-tunnelled").
     //
