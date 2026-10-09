@@ -206,9 +206,9 @@ impl Integration for Hermes {
         crate::taxonomy::Client::Hermes
     }
 
-    /// AG-932: the rail asks this on every poll, so a row can say it is routed
-    /// and not inspected rather than claiming Protected over traffic Gate
-    /// never sees. Same reading `connect` has printed to stderr since this
+    /// AG-932: the rail asks this on every poll, so a row can say what Gate
+    /// does not see rather than claiming Protected over traffic it never
+    /// inspects. Same reading `connect` has printed to stderr since this
     /// integration was written; the window simply never had it.
     fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
         let coverage = upstream_coverage();
@@ -338,12 +338,29 @@ impl Integration for Hermes {
             _ => {}
         }
         let configured = configured_proxy()?.unwrap_or_default();
-        Ok(compute_status(
+        let status = compute_status(
             &configured,
             &crate::proxy::tool_proxy_identity_urls(),
             crate::proxy::address_health(&configured),
             crate::proxy::exported_proxy_url().as_deref(),
-        ))
+        );
+        // Drift, so the reconcile reconnects it: the `NO_PROXY` Gate wrote no
+        // longer matches what a connect would write now - a local model added
+        // to `config.yaml` since, or a value from an older build (IPv6 CIDRs
+        // that stop httpx). Nothing else would rewrite it on Linux.
+        if matches!(status, Status::Connected)
+            && no_proxy_is_stale(
+                &state.written_vars,
+                dotenv::read_var(&env_file_path()?, "NO_PROXY")?.as_deref(),
+                &no_proxy_for(&config_base_urls().unwrap_or_default()),
+            )
+        {
+            return Ok(Status::Drifted(
+                "NO_PROXY in ~/.hermes/.env is not the list Gate would write for this config"
+                    .into(),
+            ));
+        }
+        Ok(status)
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {
@@ -447,32 +464,6 @@ impl Integration for Hermes {
             );
         }
 
-        // Lower-case `no_proxy` too, and not as a courtesy: `urllib` lets it
-        // win over `NO_PROXY`, and Gate's own shell export sets one, so without
-        // this a Hermes started from that shell reads Gate's list rather than
-        // the one above. Written after the refusal, never with it: a `.env`
-        // holding the user's own proxy has no `no_proxy` either, and adding
-        // one there would be a write that defeats the refusal's test.
-        let lower = dotenv::add_vars(&env_file_path()?, &[("no_proxy", no_proxy)], &ours)?;
-        applied.added.extend(lower.added);
-        applied.refreshed.extend(lower.refreshed);
-        applied.owned_values.extend(lower.owned_values);
-
-        // Name Hermes on its own requests. This is the one signal the engine
-        // can have for it: Hermes has no base URL for us to write, so there is
-        // no path marker, and its User-Agent is `python-httpx/...` because it
-        // is a Python program - `client_tool`'s needle for it has never once
-        // fired. A header Gate writes into a file only Hermes reads is evidence
-        // of our own making, which is the same standard the relay marker meets.
-        //
-        // `extra_headers` rather than `default_headers`: the two are merged and
-        // aliases of each other, so writing the one the user is less likely to
-        // be keeping means never having to edit a block that is theirs.
-        //
-        // Best-effort on purpose. A config shape `yaml_block` will not edit, or
-        // no write permission, costs the attribution and nothing else - the
-        // routing above is what makes Hermes work, and refusing to connect over
-        // a label would be the wrong trade. `status` reports it.
         // Recorded at once: from here on `.env` holds variables of ours, and a
         // failure below must not leave them without a sidecar that owns them.
         if state.added_vars.is_empty() {
@@ -491,6 +482,48 @@ impl Integration for Hermes {
         }
         state.written_vars = applied.owned_values.clone().into_iter().collect();
         save_state(&state)?;
+
+        // Lower-case `no_proxy` too, and not as a courtesy: `urllib` lets it
+        // win over `NO_PROXY`, and Gate's own shell export sets one, so without
+        // this a Hermes started from that shell reads Gate's list rather than
+        // the one above.
+        //
+        // Only while `NO_PROXY` is Gate's. A user's own `NO_PROXY` would be
+        // silently overridden by it - lower-case wins in `urllib`, and the last
+        // line wins on Windows - so theirs is left to stand alone. And only
+        // after the record above is saved: the second write can fail too, and
+        // its lines must never exist without a sidecar that owns them.
+        if applied
+            .owned_values
+            .iter()
+            .any(|(key, _)| key == "NO_PROXY")
+        {
+            let lower = dotenv::add_vars(&env_file_path()?, &[("no_proxy", no_proxy)], &ours)?;
+            for key in &lower.added {
+                if !state.added_vars.contains(key) {
+                    state.added_vars.push(key.clone());
+                }
+            }
+            state.written_vars.extend(lower.owned_values);
+            save_state(&state)?;
+            applied.refreshed.extend(lower.refreshed);
+        }
+
+        // Name Hermes on its own requests. This is the one signal the engine
+        // can have for it: Hermes has no base URL for us to write, so there is
+        // no path marker, and its User-Agent is `python-httpx/...` because it
+        // is a Python program - `client_tool`'s needle for it has never once
+        // fired. A header Gate writes into a file only Hermes reads is evidence
+        // of our own making, which is the same standard the relay marker meets.
+        //
+        // `extra_headers` rather than `default_headers`: the two are merged and
+        // aliases of each other, so writing the one the user is less likely to
+        // be keeping means never having to edit a block that is theirs.
+        //
+        // Best-effort on purpose. A config shape `yaml_block` will not edit, or
+        // no write permission, costs the attribution and nothing else - the
+        // routing above is what makes Hermes work, and refusing to connect over
+        // a label would be the wrong trade. `status` reports it.
 
         let header_created = write_tool_header()
             .map_err(|e| {
@@ -679,6 +712,20 @@ fn configured_proxy() -> Result<Option<String>> {
     dotenv::read_var(&env_file_path()?, PRIMARY_VAR)
 }
 
+/// Whether Gate's own `NO_PROXY` in `.env` is out of date: the sidecar recorded
+/// the value on disk (so it is still Gate's, not the user's) and it differs from
+/// `expected`. A value the user changed is theirs and never stale.
+fn no_proxy_is_stale(
+    written: &BTreeMap<String, String>,
+    on_disk: Option<&str>,
+    expected: &str,
+) -> bool {
+    match (written.get("NO_PROXY"), on_disk) {
+        (Some(ours), Some(disk)) => ours == disk && disk != expected,
+        _ => false,
+    }
+}
+
 /// Whether a proxy URL points at loopback - i.e. is one of ours rather than a
 /// corporate egress proxy the user configured themselves.
 fn is_loopback_url(url: &str) -> bool {
@@ -696,18 +743,22 @@ fn url_host(url: &str) -> String {
     let rest = lowered
         .split_once("://")
         .map_or(lowered.as_str(), |(_, r)| r);
-    let authority = rest.split('/').next().unwrap_or("");
+    // A query or fragment straight after the host (`http://h?api_key=...`) is
+    // not the host, and must not travel with it: this value is written into
+    // `.env` and shown in the window.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     // Userinfo goes first. A hand-written `https://user:token@host/` is a shape
     // this reads, and the host is the only part that may travel any further:
     // this value crosses IPC into the window and lands in the log.
     let authority = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host);
-    authority
+    let host = authority
         .strip_prefix('[')
         .and_then(|a| a.split(']').next())
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""))
-        .to_string()
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""));
+    // `llm.local.` is `llm.local`, as Hermes' own hostname parse reads it.
+    host.strip_suffix('.').unwrap_or(host).to_string()
 }
 
 /// What Gate will and won't see of this Hermes install, for the notes `connect`
@@ -795,14 +846,25 @@ pub fn upstream_coverage() -> Coverage {
     // flags are guesses, which beats reporting every host as unroutable.
     let catalog =
         crate::proxy::config::load_domains().unwrap_or_else(|_| crate::proxy::default_domains());
-    // What Hermes will actually read: its `.env`, lower-case first, because
-    // that is the order `urllib` lets them win in.
-    let written = env_file_path().ok().and_then(|path| {
-        ["no_proxy", "NO_PROXY"]
-            .iter()
-            .find_map(|key| dotenv::read_var(&path, key).ok().flatten())
-    });
-    coverage_from(&catalog, config_base_urls(), written.as_deref())
+    coverage_from(&catalog, config_base_urls(), written_no_proxy().as_deref())
+}
+
+/// The `NO_PROXY` Hermes will actually read from its `.env`.
+///
+/// Lower-case first elsewhere, because `urllib` lets it win. On Windows the
+/// environment is case-insensitive, so the two keys are one variable and the
+/// line python-dotenv loads last is the one left standing.
+fn written_no_proxy() -> Option<String> {
+    let path = env_file_path().ok()?;
+    #[cfg(windows)]
+    let value = dotenv::read_last_of(&path, &["no_proxy", "NO_PROXY"])
+        .ok()
+        .flatten();
+    #[cfg(not(windows))]
+    let value = ["no_proxy", "NO_PROXY"]
+        .iter()
+        .find_map(|key| dotenv::read_var(&path, key).ok().flatten());
+    value
 }
 
 /// [`upstream_coverage`] over explicit inputs, so the default and the flag that
@@ -835,7 +897,8 @@ fn coverage_from(
 /// Hosts Hermes bypasses the proxy for are absent from both lists: a model on
 /// the LAN or a Tailscale VM is reached directly and never passes the engine,
 /// so it is not a gap in what Gate sees but something Gate chose not to look
-/// at. They go in `local` instead when they are all there is to see. Decided by `no_proxy` as Hermes reads it ([`python_bypasses`]), not by
+/// at. They go in `local` instead when they are every host Hermes calls.
+/// Decided by `no_proxy` as Hermes reads it ([`python_bypasses`]), not by
 /// what Gate's list means: a `100.x` address the list covers by CIDR still
 /// rides the engine unless `no_proxy` names it, and saying Protected over that
 /// would be claiming a bypass that is not happening.
@@ -876,8 +939,10 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
             }
         }
     }
-    // Only when Gate inspects none of it: see `UpstreamCoverage::local`.
-    if !inspected {
+    // Only when local models are all there is: see `UpstreamCoverage::local`.
+    // Beside a gap the gap is the reason, and beside an inspected provider
+    // there is nothing wrong.
+    if !inspected && coverage.switched_off.is_empty() && coverage.unknown.is_empty() {
         coverage.local = local;
     }
     coverage
@@ -894,8 +959,14 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
 /// httpx 0.28.1), so those two entries are left out: they did nothing for
 /// `urllib` either.
 ///
+/// Only IP addresses are added, and only ones that parse. A name is already
+/// bypassed by its suffix or it is not local, and parsing is what keeps a host
+/// string from `config.yaml` - which can hold a comma, a newline or a `*` -
+/// from writing anything into `.env` but an address: `127.attacker.example`
+/// or `127.x,*` is not one.
+///
 /// Read at connect, so a host added to `config.yaml` afterwards is not named
-/// until the next connect; coverage reads the written value and says so.
+/// until then; `status` reads that as drift and the reconcile reconnects it.
 fn no_proxy_for(urls: &[String]) -> String {
     let mut entries: Vec<String> = NO_PROXY_VALUE
         .split(',')
@@ -904,8 +975,14 @@ fn no_proxy_for(urls: &[String]) -> String {
         .collect();
     for url in urls {
         let host = url_host(url);
-        let local = crate::proxy::no_proxy_exempts(&host) || host.starts_with("127.");
-        if local && !python_bypasses(&entries.join(","), &host) {
+        let Ok(addr) = host.parse::<std::net::IpAddr>() else {
+            continue;
+        };
+        // Loopback and 0.0.0.0 reach this machine; the rest are the ranges
+        // Gate's list means to keep off the engine.
+        let local =
+            addr.is_loopback() || addr.is_unspecified() || crate::proxy::no_proxy_exempts(&host);
+        if local && !entries.contains(&host) && !python_bypasses(&entries.join(","), &host) {
             entries.push(host);
         }
     }
@@ -913,21 +990,24 @@ fn no_proxy_for(urls: &[String]) -> String {
 }
 
 /// Whether Python's `urllib.request.proxy_bypass_environment` bypasses `host`
-/// under `no_proxy`: `*`, a name exactly, or a name as a suffix with or without
-/// its leading dot. No CIDR, which is the point of asking this rather than
-/// [`crate::proxy::no_proxy_exempts`].
+/// under `no_proxy`: a value of exactly `*`, a name exactly, or a name as a
+/// suffix with or without its leading dot. A `*` among other entries matches
+/// nothing, as in `urllib`. No CIDR, which is the point of asking this rather
+/// than [`crate::proxy::no_proxy_exempts`].
 fn python_bypasses(no_proxy: &str, host: &str) -> bool {
+    if no_proxy.trim() == "*" {
+        return true;
+    }
     let host = host.to_ascii_lowercase();
     no_proxy
         .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .any(|entry| {
-            if entry == "*" {
-                return true;
-            }
-            let name = entry.trim_start_matches('.').to_ascii_lowercase();
-            host == name || host.ends_with(&format!(".{name}"))
+        .map(|entry| entry.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .any(|name| {
+            host == name
+                || host
+                    .strip_suffix(name.as_str())
+                    .is_some_and(|rest| rest.ends_with('.'))
         })
 }
 
@@ -1482,6 +1562,49 @@ mod tests {
         );
         assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
         assert_eq!(coverage.unknown.len(), 1, "{coverage:?}");
+        // Beside a gap the gap is the reason; the local models are not listed.
+        assert!(coverage.local.is_empty(), "{coverage:?}");
+    }
+
+    #[test]
+    fn only_a_parsed_address_reaches_no_proxy() {
+        // Host strings come from a user-editable YAML file and end up in .env.
+        let value = no_proxy_for(&urls(&[
+            "http://127.a,b\nno_proxy =*\n# x.b/v1",
+            "http://127.x,api.anthropic.com/v1",
+            "http://127.attacker.example/v1",
+            "http://127.0.0.1?api_key=sk-secret",
+            "http://0.0.0.0:8080/v1",
+            "http://100.101.102.103:8000/v1",
+        ]));
+        assert!(!value.contains('\n'), "{value}");
+        assert!(!value.contains('*'), "{value}");
+        assert!(!value.contains("anthropic"), "{value}");
+        assert!(!value.contains("attacker"), "{value}");
+        assert!(!value.contains("sk-secret"), "{value}");
+        let entries: Vec<&str> = value.split(',').collect();
+        assert!(entries.contains(&"0.0.0.0"), "{value}");
+        assert!(entries.contains(&"100.101.102.103"), "{value}");
+    }
+
+    #[test]
+    fn url_host_drops_query_fragment_and_trailing_dot() {
+        assert_eq!(url_host("http://127.0.0.1?api_key=sk-1"), "127.0.0.1");
+        assert_eq!(url_host("http://llm.local#x"), "llm.local");
+        assert_eq!(url_host("http://llm.local.:8080/v1"), "llm.local");
+    }
+
+    #[test]
+    fn a_stale_no_proxy_is_drift_only_while_it_is_gates() {
+        let ours: BTreeMap<String, String> = [("NO_PROXY".to_string(), "a,b".to_string())].into();
+        // Gate's value, and not what a connect would write now: stale.
+        assert!(no_proxy_is_stale(&ours, Some("a,b"), "a,b,100.1.2.3"));
+        // Up to date.
+        assert!(!no_proxy_is_stale(&ours, Some("a,b"), "a,b"));
+        // The user has changed it since: theirs.
+        assert!(!no_proxy_is_stale(&ours, Some("mine"), "a,b,100.1.2.3"));
+        // Gate never wrote it.
+        assert!(!no_proxy_is_stale(&BTreeMap::new(), Some("a,b"), "c"));
     }
 
     #[test]
@@ -1569,6 +1692,10 @@ mod tests {
         assert!(!python_bypasses(NO_PROXY_VALUE, "192.168.1.20"));
         assert!(!python_bypasses(NO_PROXY_VALUE, "notlocal"));
         assert!(python_bypasses("*", "anything.example"));
+        // `urllib` honours `*` only as the whole value.
+        assert!(!python_bypasses("localhost,*", "anything.example"));
+        // A suffix match needs the dot.
+        assert!(!python_bypasses("ts.net", "evilts.net"));
     }
 
     #[test]

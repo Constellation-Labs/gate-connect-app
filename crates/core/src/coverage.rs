@@ -29,11 +29,12 @@ pub struct UpstreamCoverage {
     pub switched_off: Vec<SwitchedOff>,
     /// Hosts no catalog entry claims, which Gate cannot route at all.
     pub unknown: Vec<String>,
-    /// Local hosts the tool reaches directly, listed only when NOTHING it
-    /// calls is inspected. A Hermes on a local model alone sends Gate nothing
-    /// to look at, so its switch being on protects nothing and the row must
-    /// not say Protected. Beside an inspected provider they are just a model
-    /// Gate leaves alone, and stay unlisted.
+    /// Local hosts the tool reaches directly, listed only when they are every
+    /// host it calls. A Hermes on local models alone sends Gate nothing to
+    /// look at, so its switch being on protects nothing and the row must not
+    /// say Protected. Beside an inspected provider they are just a model Gate
+    /// leaves alone, and beside a gap the gap is the reason: unlisted both
+    /// times.
     pub local: Vec<String>,
 }
 

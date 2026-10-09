@@ -154,6 +154,12 @@ fn dominant_newline(body: &str) -> &'static str {
 /// in the returned record. Reports what was added separately from what was
 /// refreshed: disconnect removes the former, and only the former.
 pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> Result<Applied> {
+    // A line break in a value is a second line, and a second line is any
+    // assignment at all - `no_proxy=*` among them. Values here can carry text
+    // from a user-editable file, so this refuses rather than trusting callers.
+    if let Some((key, _)) = vars.iter().find(|(_, v)| v.contains(['\r', '\n'])) {
+        anyhow::bail!("refusing to write {key}: its value spans more than one line");
+    }
     let file_created = !path.exists();
     let body = if file_created {
         String::new()
@@ -290,9 +296,51 @@ pub(crate) fn read_var(path: &Path, key: &str) -> Result<Option<String>> {
         .and_then(assigned_value))
 }
 
+/// The value of whichever of `keys` is assigned LAST in the file: what a
+/// dotenv loader leaves in a case-insensitive environment, where differently
+/// cased keys are one variable and each later line overwrites the earlier.
+#[cfg(any(windows, test))]
+pub(crate) fn read_last_of(path: &Path, keys: &[&str]) -> Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let body = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(body
+        .lines()
+        .rev()
+        .find(|l| keys.iter().any(|key| assigns(l, key)))
+        .and_then(assigned_value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_value_with_a_line_break_is_refused() {
+        let dir = std::env::temp_dir().join(format!("gate-dotenv-nl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        let err = add_vars(&path, &[("NO_PROXY", "a\nno_proxy=*".into())], &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("more than one line"), "{err:#}");
+        assert!(!path.exists(), "nothing may be written");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_last_of_takes_the_later_line() {
+        let dir = std::env::temp_dir().join(format!("gate-dotenv-last-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "no_proxy=first\nOTHER=x\nNO_PROXY=second\n").unwrap();
+        assert_eq!(
+            read_last_of(&path, &["no_proxy", "NO_PROXY"])
+                .unwrap()
+                .as_deref(),
+            Some("second")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// Holds the app-support redirect for one test, and clears it on drop.
     ///

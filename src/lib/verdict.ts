@@ -109,7 +109,9 @@ export function verdictStatus(
  * Why Gate is not looking at some of the hosts, or `undefined` when it is
  * looking at every one.
  *
- * Both halves of the coverage count. `unknown` is the irremediable one - no
+ * All three lists count. `local` is a tool on local models alone, switched on
+ * and sending Gate nothing; the backend lists them only then. `unknown` is the
+ * irremediable one - no
  * catalog entry claims that host - and `switched_off` is a domain whose switch
  * is off, which AG-930's dialog offers to fix at the moment a tool is
  * connected. The row still has to say it, because the dialog fires once and
@@ -130,11 +132,11 @@ function uninspectedDetail(
   // Naming hosts is right here: the pane already says the app, and the host
   // is the part the person recognises from their own config.
   //
-  // Two sentences, not one list, because the two halves have different
+  // One sentence per list, not one list of hosts, because they have different
   // remedies: a switched-off provider can be turned on (`upstreamFix`, or its
-  // own row), an
-  // unknown one is not fixable from here at all. "Routed, not inspected" said
-  // both the same way, in plumbing words.
+  // own row), an unknown one is not fixable from here at all, and a local one
+  // needs nothing fixed. "Routed, not inspected" said all of them the same
+  // way, in plumbing words.
   const off = coverage.switched_off.flatMap((entry) => entry.hosts);
   const sentences: string[] = [];
   if (off.length > 0) {
@@ -145,8 +147,8 @@ function uninspectedDetail(
   if (coverage.unknown.length > 0) {
     sentences.push(`Gate can’t inspect requests to ${coverage.unknown.join(", ")}.`);
   }
-  // Only sent when nothing else is inspected: the switch is on and none of the
-  // tool's traffic reaches Gate, so the row may not say Protected.
+  // Only sent when local hosts are all the tool calls: the switch is on and
+  // none of its traffic reaches Gate, so the row may not say Protected.
   if (coverage.local.length > 0) {
     sentences.push(`Requests to ${coverage.local.join(", ")} go straight there, not through Gate.`);
   }
@@ -171,7 +173,9 @@ export function upstreamFix(
     .map((entry) => entry.slug)
     .filter((slug) => TOOL_MANAGED_DOMAINS.includes(slug));
   if (slugs.length === 0) return undefined;
-  return { slugs, label: slugs.length === 1 ? "Turn it on" : "Turn them on" };
+  // Singular: `TOOL_MANAGED_DOMAINS` is OpenRouter alone. A second entry is
+  // the moment to give this a plural.
+  return { slugs, label: "Turn it on" };
 }
 
 /** Index a sweep by slug, so a row can look itself up. */

@@ -797,11 +797,12 @@ describe("useRouting: remembering a failed write", () => {
  * enabled themselves.
  */
 describe("useRouting: Hermes and the provider it talks to", () => {
-  const covered = { defaulted: false, switched_off: [], unknown: [] };
+  const covered = { defaulted: false, switched_off: [], unknown: [], local: [] };
   const off = {
     defaulted: false,
     switched_off: [{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }],
     unknown: [],
+    local: [],
   };
 
   beforeEach(() => {
@@ -991,8 +992,10 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     // Bedrock, or a self-hosted endpoint. No switch fixes it, so there is
     // nothing to turn on. `Coverage` keeps these in `unknown`.
     (hermesUpstreamCoverage as Mock).mockResolvedValue({
+      defaulted: false,
       switched_off: [],
       unknown: ["bedrock-runtime.us-east-1.amazonaws.com"],
+      local: [],
     });
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
 

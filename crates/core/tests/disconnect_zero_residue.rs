@@ -892,6 +892,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         env_body.contains("NO_PROXY=localhost,127.0.0.1,::1"),
         "loopback must stay off the proxy so local providers keep working: {env_body}"
     );
+    // Lower-case too, because `urllib` lets it win over a shell's export.
+    assert!(
+        env_body
+            .lines()
+            .any(|l| l.starts_with("no_proxy=localhost")),
+        "the lower-case no_proxy must be written: {env_body}"
+    );
     assert!(
         env_body.contains("HERMES_CA_BUNDLE="),
         "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"
@@ -945,6 +952,10 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         "the CA bundle line must be reverted: {after}"
     );
     assert!(
+        !after.to_ascii_lowercase().contains("no_proxy"),
+        "both NO_PROXY lines must be reverted: {after}"
+    );
+    assert!(
         after.contains("OPENROUTER_API_KEY=sk-user"),
         "the user's own key must survive: {after}"
     );
@@ -962,6 +973,37 @@ fn hermes_disconnect_leaves_no_gate_residue() {
             .join("hermes-state.json")
             .exists(),
         "sidecar must be removed"
+    );
+}
+
+#[test]
+fn hermes_does_not_override_a_user_owned_no_proxy() {
+    // A lower-case `no_proxy` wins over `NO_PROXY` in urllib, so writing one
+    // beside the user's own would silently replace their list.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    seed_engine_port(9977);
+    seed_ca_cert();
+
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+
+    let envfile = env::hermes_config_dir().unwrap().join(".env");
+    fs::create_dir_all(envfile.parent().unwrap()).unwrap();
+    fs::write(&envfile, "NO_PROXY=corp.example\n").unwrap();
+
+    find(ToolId::Hermes)
+        .unwrap()
+        .connect(&connect_input(9977))
+        .unwrap();
+
+    let body = fs::read_to_string(&envfile).unwrap();
+    assert!(body.contains("NO_PROXY=corp.example"), "{body}");
+    assert!(
+        !body.lines().any(|l| l.starts_with("no_proxy=")),
+        "a user's NO_PROXY must not be overridden: {body}"
     );
 }
 

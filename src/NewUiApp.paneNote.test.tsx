@@ -189,6 +189,37 @@ describe("the uninspected provider card", () => {
     expect(screen.queryByRole("button", { name: /^Turn (it|them) on$/ })).toBeNull();
   });
 
+  it("names both reasons on a mixed config, and turns on only OpenRouter", async () => {
+    const state = hermesState([{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }]);
+    state.tools.find((t) => t.slug === "hermes")!.coverage!.unknown = ["api.together.xyz"];
+    installFakeTauri(state);
+    await openApp(/^Hermes/);
+
+    const card = await screen.findByText("Hermes isn’t protected");
+    expect(card.closest("[role=status]")!.textContent).toContain(
+      "Gate can’t see requests to openrouter.ai while its provider is turned off. " +
+        "Gate can’t inspect requests to api.together.xyz.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Turn it on" }));
+    await waitFor(() =>
+      expect(callsTo("proxy_set_domain")).toEqual([{ slug: "openrouter", enabled: true }]),
+    );
+  });
+
+  it("reports a failed turn-on and records nothing", async () => {
+    const state = hermesState([{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }]);
+    state.failures.proxy_set_domain = "permission denied";
+    installFakeTauri(state);
+    await openApp(/^Hermes/);
+
+    await screen.findByText("Hermes isn’t protected");
+    fireEvent.click(screen.getByRole("button", { name: "Turn it on" }));
+    await screen.findByText(/permission denied/);
+    // Claiming a domain whose enable failed would have Hermes-off switch off
+    // a row Gate never switched on.
+    expect(state.preferences.auto_enabled_domains.hermes ?? []).toEqual([]);
+  });
+
   it("is amber with no button when Hermes only reaches local models", async () => {
     // Switched on, protecting nothing: every request goes straight to the VM.
     const state = hermesState([], ["100.101.102.103"]);
