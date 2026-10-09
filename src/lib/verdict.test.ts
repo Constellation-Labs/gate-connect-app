@@ -145,6 +145,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     ).toEqual({
       kind: "not-protected",
       detail: "Gate can’t inspect requests to bedrock-runtime.us-east-1.amazonaws.com.",
+      uninspected: true,
     });
   });
 
@@ -160,6 +161,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     ).toEqual({
       kind: "not-protected",
       detail: "Gate can’t see requests to openrouter.ai while its provider is turned off.",
+      uninspected: true,
     });
   });
 
@@ -176,6 +178,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
       detail:
         "Gate can’t see requests to openrouter.ai while its provider is turned off. " +
         "Gate can’t inspect requests to api.groq.com, api.together.xyz.",
+      uninspected: true,
     });
   });
 

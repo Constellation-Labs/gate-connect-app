@@ -170,7 +170,9 @@ describe("the uninspected provider card", () => {
     );
   });
 
-  it("says what else a provider with its own row reaches, and does not record it", async () => {
+  it("offers no button for a provider with its own row", async () => {
+    // Turning `anthropic` on intercepts it for every client on the machine;
+    // that is the Claude row's decision, not a card's on Hermes' pane.
     const state = hermesState([
       { slug: "anthropic", hosts: ["api.anthropic.com"], tools: ["Claude Code"] },
     ]);
@@ -179,15 +181,22 @@ describe("the uninspected provider card", () => {
 
     const card = await screen.findByText("Hermes isn’t protected");
     expect(card.closest("[role=status]")!.textContent).toContain(
-      "Turning it on also routes Claude Code.",
+      "Gate can’t see requests to api.anthropic.com while its provider is turned off.",
     );
+    expect(screen.queryByRole("button", { name: /^Turn (it|them) on$/ })).toBeNull();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Turn it on" }));
-    await waitFor(() =>
-      expect(callsTo("proxy_set_domain")).toEqual([{ slug: "anthropic", enabled: true }]),
-    );
-    // Hermes' off switch must not end Claude's interception.
-    expect(state.preferences.auto_enabled_domains.hermes).toBeUndefined();
+  it("offers no button when coverage is not why Hermes is amber", async () => {
+    // Coverage arrives whatever the verdict; an overridden Hermes has a
+    // different problem, and a button turning on OpenRouter would not fix it.
+    const state = hermesState([{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }]);
+    state.tools.find((t) => t.slug === "hermes")!.status = { kind: "overridden" } as never;
+    installFakeTauri(state);
+    await openApp(/^Hermes/);
+
+    const card = await screen.findByText("Hermes isn’t protected");
+    expect(card.closest("[role=status]")!.textContent).toContain("Configuration overridden");
+    expect(screen.queryByRole("button", { name: "Turn it on" })).toBeNull();
   });
 });
 
@@ -198,21 +207,24 @@ describe("upstreamFix", () => {
     );
   });
 
-  it("speaks of several providers in the plural", () => {
+  it("offers only the domains a tool owns", () => {
     expect(
       upstreamFix({
         defaulted: false,
         switched_off: [
           { slug: "openrouter", hosts: ["openrouter.ai"], tools: [] },
-          { slug: "anthropic", hosts: ["api.anthropic.com"], tools: ["Claude Code"] },
+          { slug: "openai", hosts: ["api.openai.com"], tools: [] },
         ],
         unknown: [],
       }),
-    ).toEqual({
-      slugs: ["openrouter", "anthropic"],
-      label: "Turn them on",
-      also: "Turning them on also routes Claude Code.",
-    });
+    ).toEqual({ slugs: ["openrouter"], label: "Turn it on" });
+    expect(
+      upstreamFix({
+        defaulted: false,
+        switched_off: [{ slug: "chatgpt", hosts: ["chatgpt.com"], tools: [] }],
+        unknown: [],
+      }),
+    ).toBe(undefined);
   });
 });
 

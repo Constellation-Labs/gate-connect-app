@@ -485,6 +485,7 @@ export function useRouting({
       await recordAutoEnabledDomains(HERMES_SLUG, next).catch((e: unknown) => {
         logWarn(`routing: recording hermes' auto-enabled domains failed: ${describe(e)}`);
       });
+      return enabled;
     },
     [setProviderDomains],
   );
@@ -512,46 +513,38 @@ export function useRouting({
   );
 
   /**
-   * The pane card's fix for an app whose provider Gate has switched off: turn
-   * those domains on, at the person's click.
+   * The Hermes pane card's fix: turn on the provider domains Hermes owns that
+   * are switched off, at the person's click.
    *
-   * The connect-time gate (`hermesProviderDomains`) leaves a provider with its
-   * own row alone, because doing it silently would route other clients. The
-   * card names that reach before the click (`upstreamFix`), which is the
-   * objection answered, so this turns on all of them. Only the ones with no row
-   * are recorded as Hermes', as the connect does: recording `anthropic` would
-   * have Hermes' own off switch end Claude's interception later.
+   * Only `TOOL_MANAGED_DOMAINS`, the same set a connect turns on without
+   * asking (`hermesProviderDomains`), recorded as Hermes' the same way so
+   * turning Hermes off gives them back. A provider with its own row reaches
+   * every client on the machine, so this never flips one; the card has no
+   * button for those (`upstreamFix`).
    */
-  const enableUpstreamDomains = useCallback(
+  const enableHermesProviders = useCallback(
     async (slugs: string[]) => {
       if (busy) return;
+      const mine = slugs.filter((slug) => TOOL_MANAGED_DOMAINS.includes(slug));
+      if (mine.length === 0) return;
       setBusy(true);
       try {
         await ensureCaTrusted();
         await ensureEngineRunning();
-        await enableProviderDomains(slugs.filter((slug) => TOOL_MANAGED_DOMAINS.includes(slug)));
-        await setProviderDomains(
-          slugs.filter((slug) => !TOOL_MANAGED_DOMAINS.includes(slug)),
-          true,
-        );
+        for (const domain of await enableProviderDomains(mine)) {
+          track("domain_toggled", { domain, routed: true });
+          noteToolConnected(domain, "domain");
+        }
       } catch (e) {
         if (!(e instanceof Declined)) {
-          trackError(e, "provider_toggle", { domains: slugs.join(","), routed: true });
+          trackError(e, "provider_toggle", { domain: mine.join(","), routed: true });
           onError?.(e, "domain");
         }
       } finally {
         await settle();
       }
     },
-    [
-      busy,
-      ensureCaTrusted,
-      ensureEngineRunning,
-      enableProviderDomains,
-      setProviderDomains,
-      settle,
-      onError,
-    ],
+    [busy, ensureCaTrusted, ensureEngineRunning, enableProviderDomains, settle, onError],
   );
 
   /**
@@ -894,7 +887,7 @@ export function useRouting({
     setAppRouted,
     setFamilyRouted,
     setDomainRouted,
-    enableUpstreamDomains,
+    enableHermesProviders,
     setEnvExport,
     untrustCa,
     writeFailures,

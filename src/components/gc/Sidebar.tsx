@@ -47,9 +47,10 @@ export type AppStatus =
   /** `detail` carries the reason ("Connection problem", "Config drifted",
    * "Reopen to finish"), which is what turns an amber phrase into something the
    * user can act on. See `lib/verdict.ts`. `partly` marks a section where some
-   * surfaces route and the rest are off, the one reason the app pane can fix
-   * itself; behaviour keys on it rather than on `detail`, which is copy. */
-  | { kind: "not-protected"; detail?: string; partly?: true }
+   * surfaces route and the rest are off, and `uninspected` a tool routed to a
+   * provider Gate does not look at: the reasons the app pane can fix itself.
+   * Behaviour keys on them rather than on `detail`, which is copy. */
+  | { kind: "not-protected"; detail?: string; partly?: true; uninspected?: true }
   /** No `detail`: the rail drew "Off" after the dash until 2026-09-28, and the
    *  label says it alone now. */
   | { kind: "not-routed" }

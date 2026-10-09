@@ -215,7 +215,7 @@ impl Integration for OpenClaw {
         // printed once at connect that is harmless. On a row polled forever it
         // is not: a user who signed in with a subscription, switched to an API
         // key and left the old profile behind would sit under a permanent
-        // "Routed, not inspected - chatgpt.com" that no switch clears, because
+        // "Gate can't see requests to chatgpt.com" that no switch clears, because
         // the traffic it describes is not happening.
         //
         // So when both kinds of OpenAI profile exist, Gate cannot tell which

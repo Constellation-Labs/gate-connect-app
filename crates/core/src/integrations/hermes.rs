@@ -6,7 +6,8 @@
 //! ```text
 //! HTTPS_PROXY=http://127.0.0.1:<engine-port>
 //! HTTP_PROXY=http://127.0.0.1:<engine-port>
-//! NO_PROXY=localhost,127.0.0.1,::1
+//! NO_PROXY=<Gate's list, plus the local hosts config.yaml names>
+//! no_proxy=<the same>
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
 //!
@@ -27,10 +28,11 @@
 //! is no longer a special case: nothing below refuses for want of a model block.
 //! See `docs/harness-integration-validation.md`.
 //!
-//! `NO_PROXY` is set for loopback so a locally-hosted provider keeps talking to
-//! itself directly instead of being tunnelled through the engine - the same
-//! protection the old `is_local_url` guard gave, expressed where Hermes can
-//! actually act on it.
+//! `NO_PROXY` keeps loopback and the local network off the proxy, so a
+//! self-hosted provider is reached directly instead of being tunnelled through
+//! the engine. It is Hermes-shaped rather than Gate's list verbatim, because
+//! Hermes reads it with Python's `urllib`, which ignores CIDR entries: see
+//! [`no_proxy_for`].
 //!
 //! **`config.yaml` is read to say what Gate will see, and written only to name
 //! Hermes on the wire.** The distinction is the one the paragraph above draws.
@@ -411,12 +413,13 @@ impl Integration for Hermes {
             None => None,
         };
 
-        let applied = dotenv::add_vars(
+        let no_proxy = no_proxy_for(&config_base_urls().unwrap_or_default());
+        let mut applied = dotenv::add_vars(
             &env_file_path()?,
             &[
                 ("HTTPS_PROXY", proxy_url.to_string()),
                 ("HTTP_PROXY", proxy_url.to_string()),
-                ("NO_PROXY", NO_PROXY_VALUE.to_string()),
+                ("NO_PROXY", no_proxy.clone()),
                 ("HERMES_CA_BUNDLE", bundle.display().to_string()),
             ],
             &ours,
@@ -444,6 +447,17 @@ impl Integration for Hermes {
             );
         }
 
+        // Lower-case `no_proxy` too, and not as a courtesy: `urllib` lets it
+        // win over `NO_PROXY`, and Gate's own shell export sets one, so without
+        // this a Hermes started from that shell reads Gate's list rather than
+        // the one above. Written after the refusal, never with it: a `.env`
+        // holding the user's own proxy has no `no_proxy` either, and adding
+        // one there would be a write that defeats the refusal's test.
+        let lower = dotenv::add_vars(&env_file_path()?, &[("no_proxy", no_proxy)], &ours)?;
+        applied.added.extend(lower.added);
+        applied.refreshed.extend(lower.refreshed);
+        applied.owned_values.extend(lower.owned_values);
+
         // Name Hermes on its own requests. This is the one signal the engine
         // can have for it: Hermes has no base URL for us to write, so there is
         // no path marker, and its User-Agent is `python-httpx/...` because it
@@ -465,6 +479,15 @@ impl Integration for Hermes {
             state.version = 2;
             state.added_vars = applied.added.clone();
             state.env_file_created = applied.file_created;
+        } else {
+            // A key this connect added that an earlier one did not - `no_proxy`
+            // on an install that predates it - is ours as much as the first
+            // set, and disconnect only removes what this list names.
+            for key in &applied.added {
+                if !state.added_vars.contains(key) {
+                    state.added_vars.push(key.clone());
+                }
+            }
         }
         state.written_vars = applied.owned_values.clone().into_iter().collect();
         save_state(&state)?;
@@ -765,7 +788,14 @@ pub fn upstream_coverage() -> Coverage {
     // flags are guesses, which beats reporting every host as unroutable.
     let catalog =
         crate::proxy::config::load_domains().unwrap_or_else(|_| crate::proxy::default_domains());
-    coverage_from(&catalog, config_base_urls())
+    // What Hermes will actually read: its `.env`, lower-case first, because
+    // that is the order `urllib` lets them win in.
+    let written = env_file_path().ok().and_then(|path| {
+        ["no_proxy", "NO_PROXY"]
+            .iter()
+            .find_map(|key| dotenv::read_var(&path, key).ok().flatten())
+    });
+    coverage_from(&catalog, config_base_urls(), written.as_deref())
 }
 
 /// [`upstream_coverage`] over explicit inputs, so the default and the flag that
@@ -775,32 +805,41 @@ pub fn upstream_coverage() -> Coverage {
 /// documented default *and marked as such* - the default is the best guess at
 /// what an unconfigured install will call, and the mark is what lets a caller
 /// say "Hermes' default" rather than "your config" about it.
+///
+/// `no_proxy` is the value in Hermes' `.env`; `None`, before Hermes is
+/// connected, reads as what a connect would write for this config.
 fn coverage_from(
     catalog: &[crate::proxy::ProxyDomain],
     configured: Option<Vec<String>>,
+    no_proxy: Option<&str>,
 ) -> Coverage {
     let (urls, defaulted) = configured
         .map(|urls| (urls, false))
         .unwrap_or_else(|| (vec![DEFAULT_UPSTREAM_URL.to_string()], true));
+    let no_proxy = no_proxy.map_or_else(|| no_proxy_for(&urls), str::to_string);
     Coverage {
         defaulted,
-        ..coverage_of(catalog, &urls)
+        ..coverage_of(catalog, &urls, &no_proxy)
     }
 }
 
 /// The lookup behind [`coverage_from`], over an explicit catalog and URL list.
 ///
-/// Hosts `NO_PROXY` exempts are absent from both lists - loopback, and since
-/// that list grew, the private, CGNAT and `.ts.net`/`.local` ranges too. A
-/// model on the LAN or a Tailscale VM is reached directly and never passes the
-/// engine, so it is not a gap in what Gate sees but something Gate chose not to
-/// look at. Keyed by slug, not host: two hosts one row claims are one switch,
-/// and a caller that named the row per host would ask about it twice.
-fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
+/// Hosts Hermes bypasses the proxy for are absent from both lists: a model on
+/// the LAN or a Tailscale VM is reached directly and never passes the engine,
+/// so it is not a gap in what Gate sees but something Gate chose not to look
+/// at. Decided by `no_proxy` as Hermes reads it ([`python_bypasses`]), not by
+/// what Gate's list means: a `100.x` address the list covers by CIDR still
+/// rides the engine unless `no_proxy` names it, and saying Protected over that
+/// would be claiming a bypass that is not happening.
+///
+/// Keyed by slug, not host: two hosts one row claims are one switch, and a
+/// caller that named the row per host would ask about it twice.
+fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy: &str) -> Coverage {
     let mut coverage = Coverage::default();
     for url in urls {
         let host = url_host(url);
-        if crate::proxy::no_proxy_exempts(&host) {
+        if python_bypasses(no_proxy, &host) {
             continue;
         }
         match crate::proxy::domain_claiming_host(catalog, &host) {
@@ -826,6 +865,54 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
         }
     }
     coverage
+}
+
+/// The `NO_PROXY` Hermes gets: Gate's list, made readable by Hermes' clients,
+/// plus every local host its config names spelled out.
+///
+/// Both changes come from Hermes being Python. `urllib`, which decides the
+/// bypass, ignores CIDR entries, so a model at `100.101.102.103` rode the
+/// engine although `100.64.0.0/10` is in the list - the address has to be
+/// named. And `httpx`, which builds the client on the bypass path, refuses to
+/// start at all over an IPv6 CIDR (`fc00::/7` fails with "Invalid port: ':'",
+/// httpx 0.28.1), so those two entries are left out: they did nothing for
+/// `urllib` either.
+///
+/// Read at connect, so a host added to `config.yaml` afterwards is not named
+/// until the next connect; coverage reads the written value and says so.
+fn no_proxy_for(urls: &[String]) -> String {
+    let mut entries: Vec<String> = NO_PROXY_VALUE
+        .split(',')
+        .filter(|entry| !(entry.contains(':') && entry.contains('/')))
+        .map(str::to_string)
+        .collect();
+    for url in urls {
+        let host = url_host(url);
+        let local = crate::proxy::no_proxy_exempts(&host) || host.starts_with("127.");
+        if local && !python_bypasses(&entries.join(","), &host) {
+            entries.push(host);
+        }
+    }
+    entries.join(",")
+}
+
+/// Whether Python's `urllib.request.proxy_bypass_environment` bypasses `host`
+/// under `no_proxy`: `*`, a name exactly, or a name as a suffix with or without
+/// its leading dot. No CIDR, which is the point of asking this rather than
+/// [`crate::proxy::no_proxy_exempts`].
+fn python_bypasses(no_proxy: &str, host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    no_proxy
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .any(|entry| {
+            if entry == "*" {
+                return true;
+            }
+            let name = entry.trim_start_matches('.').to_ascii_lowercase();
+            host == name || host.ends_with(&format!(".{name}"))
+        })
 }
 
 /// The tools an enabled `slug` licenses [`crate::provider::reconcile_enabled`]
@@ -1294,9 +1381,14 @@ mod tests {
         list.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Coverage over a `.env` holding exactly what a connect writes for `urls`.
+    fn as_written(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
+        coverage_of(catalog, urls, &no_proxy_for(urls))
+    }
+
     #[test]
     fn a_covered_upstream_prints_nothing() {
-        let coverage = coverage_of(
+        let coverage = as_written(
             &catalog_with("openrouter"),
             &urls(&["https://openrouter.ai/api/v1"]),
         );
@@ -1309,7 +1401,7 @@ mod tests {
 
     #[test]
     fn an_upstream_behind_a_switched_off_domain_names_the_switch() {
-        let coverage = coverage_of(
+        let coverage = as_written(
             &catalog_with("anthropic"),
             &urls(&["https://openrouter.ai/api/v1"]),
         );
@@ -1339,7 +1431,7 @@ mod tests {
 
     #[test]
     fn an_upstream_gate_cannot_route_says_so_instead() {
-        let coverage = coverage_of(
+        let coverage = as_written(
             &catalog_with("anthropic"),
             &urls(&["https://api.together.xyz/v1"]),
         );
@@ -1359,7 +1451,7 @@ mod tests {
 
     #[test]
     fn loopback_and_duplicate_hosts_are_left_out() {
-        let coverage = coverage_of(
+        let coverage = as_written(
             &catalog_with("anthropic"),
             &urls(&[
                 // Exempted by NO_PROXY - never reaches the engine.
@@ -1378,19 +1470,70 @@ mod tests {
 
     #[test]
     fn a_model_on_the_tailnet_or_lan_is_not_a_gap() {
-        // Reported on a Hermes pointed at a model in a VM over Tailscale: the
-        // row read "Routed, not inspected: 100.x" over traffic NO_PROXY sends
-        // straight to the VM.
-        let coverage = coverage_of(
+        // Reported on a Hermes pointed at a model in a VM over Tailscale. Once
+        // connect has named the addresses, Hermes bypasses all of them.
+        let coverage = as_written(
             &catalog_with("anthropic"),
             &urls(&[
                 "http://100.101.102.103:8000/v1",
                 "http://gpu-box.tail1234.ts.net:11434/v1",
                 "http://192.168.1.20:1234/v1",
                 "http://llm.local:8080/v1",
+                "http://127.0.0.2:8080/v1",
             ]),
         );
         assert!(coverage.is_covered(), "{coverage:?}");
+    }
+
+    #[test]
+    fn a_local_address_the_env_does_not_name_still_rides_the_engine() {
+        // Gate's list covers 100.x by CIDR, which `urllib` ignores: under the
+        // bare list the address is proxied, so it is a gap, not a bypass. This
+        // is a .env from before connect named hosts, or a config repointed
+        // since the last connect.
+        let coverage = coverage_of(
+            &catalog_with("anthropic"),
+            &urls(&["http://100.101.102.103:8000/v1", "http://llm.local:8080/v1"]),
+            NO_PROXY_VALUE,
+        );
+        assert_eq!(coverage.unknown, vec!["100.101.102.103".to_string()]);
+    }
+
+    #[test]
+    fn no_proxy_names_local_addresses_and_drops_what_httpx_cannot_parse() {
+        let value = no_proxy_for(&urls(&[
+            "http://100.101.102.103:8000/v1",
+            "http://[fd7a:115c:a1e0::1]:8000/v1",
+            "http://127.0.0.2:8080/v1",
+            // Already bypassed by name; public; and the same host twice.
+            "http://llm.local:8080/v1",
+            "https://openrouter.ai/api/v1",
+            "http://100.101.102.103:9000/v1",
+        ]));
+        let entries: Vec<&str> = value.split(',').collect();
+        for host in ["100.101.102.103", "fd7a:115c:a1e0::1", "127.0.0.2"] {
+            assert_eq!(entries.iter().filter(|e| **e == host).count(), 1, "{value}");
+        }
+        assert!(!entries.contains(&"llm.local"), "{value}");
+        assert!(!entries.contains(&"openrouter.ai"), "{value}");
+        // httpx 0.28.1 refuses to build a client over either.
+        assert!(!entries.contains(&"fc00::/7"), "{value}");
+        assert!(!entries.contains(&"fe80::/10"), "{value}");
+        assert!(entries.contains(&".ts.net"), "{value}");
+    }
+
+    #[test]
+    fn python_bypass_matches_urllib() {
+        // `urllib.request.proxy_bypass_environment`, checked against Python
+        // 3.12 with Gate's list: names and suffixes, never CIDR.
+        assert!(python_bypasses(NO_PROXY_VALUE, "gpu.tail1.ts.net"));
+        assert!(python_bypasses(NO_PROXY_VALUE, "ts.net"));
+        assert!(python_bypasses(NO_PROXY_VALUE, "LLM.local"));
+        assert!(python_bypasses(NO_PROXY_VALUE, "127.0.0.1"));
+        assert!(!python_bypasses(NO_PROXY_VALUE, "100.101.102.103"));
+        assert!(!python_bypasses(NO_PROXY_VALUE, "192.168.1.20"));
+        assert!(!python_bypasses(NO_PROXY_VALUE, "notlocal"));
+        assert!(python_bypasses("*", "anything.example"));
     }
 
     #[test]
@@ -1404,7 +1547,7 @@ mod tests {
             .find(|d| d.slug == "openrouter")
             .expect("openrouter is in the built-in catalog");
         row.hosts.push("api.openrouter.example".to_string());
-        let coverage = coverage_of(
+        let coverage = as_written(
             &catalog,
             &urls(&[
                 "https://openrouter.ai/api/v1",
@@ -1428,7 +1571,7 @@ mod tests {
         // `tool_ids` is Claude Code. Enabling it for Hermes' sake hands
         // `reconcile_enabled` licence to connect Claude Code at the next
         // launch, and the dialog has to say so - the switch does not.
-        let coverage = coverage_of(
+        let coverage = as_written(
             &catalog_with("openrouter"),
             &urls(&["https://api.anthropic.com/v1"]),
         );
@@ -1446,7 +1589,7 @@ mod tests {
         // call OpenRouter in every one of those cases, so the row is right;
         // what would be wrong is a sentence saying "your config uses" about a
         // file nobody read, and `defaulted` is what lets the caller avoid it.
-        let coverage = coverage_from(&catalog_with("anthropic"), None);
+        let coverage = coverage_from(&catalog_with("anthropic"), None, None);
         assert!(coverage.defaulted);
         assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
         assert_eq!(coverage.switched_off[0].slug, "openrouter");
@@ -1459,6 +1602,7 @@ mod tests {
         let configured = coverage_from(
             &catalog_with("anthropic"),
             Some(urls(&["https://openrouter.ai/api/v1"])),
+            None,
         );
         assert!(!configured.defaulted);
         assert!(configured.notes()[0].contains("routed through Gate"));

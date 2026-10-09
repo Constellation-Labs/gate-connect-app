@@ -1,5 +1,5 @@
 import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
-import { governingMembers } from "./groups";
+import { TOOL_MANAGED_DOMAINS, governingMembers } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
 
@@ -88,7 +88,7 @@ export function verdictStatus(
       // urgent than this: a drifted or unrouted tool has a bigger problem
       // than an uninspected provider, and stacking the two would bury it.
       const uninspected = uninspectedDetail(opts.coverage);
-      if (uninspected) return { kind: "not-protected", detail: uninspected };
+      if (uninspected) return { kind: "not-protected", detail: uninspected, uninspected: true };
       return { kind: "protected" };
     }
     case "off":
@@ -131,7 +131,8 @@ function uninspectedDetail(
   // is the part the person recognises from their own config.
   //
   // Two sentences, not one list, because the two halves have different
-  // remedies: a switched-off provider is one click away (`upstreamFix`), an
+  // remedies: a switched-off provider can be turned on (`upstreamFix`, or its
+  // own row), an
   // unknown one is not fixable from here at all. "Routed, not inspected" said
   // both the same way, in plumbing words.
   const off = coverage.switched_off.flatMap((entry) => entry.hosts);
@@ -149,29 +150,23 @@ function uninspectedDetail(
 
 /**
  * The card's button for an uninspected app: the provider domains to turn on,
- * or `undefined` when none is switched off and there is nothing to click.
+ * or `undefined` when there is nothing the card may turn on.
  *
- * `also` discloses the wider reach. A provider domain is not Hermes' own:
- * turning `anthropic` on inspects Claude Code's traffic too, and
- * `provider::reconcile_enabled` reads it as licence to connect Claude Code at
- * the next launch. The connect-time gate refuses to do that silently for
- * exactly this reason (`hermesProviderDomains`), so a button that does it has
- * to say so before the click.
+ * Only the domains a tool owns (`TOOL_MANAGED_DOMAINS`, OpenRouter): a connect
+ * already turns those on for Hermes without asking, and they have no row to do
+ * it from. A provider with its own row (OpenAI, Anthropic, ChatGPT) is not the
+ * card's to flip: enabling it intercepts and re-keys that provider's traffic
+ * for every client on the machine, which is a decision for that row. The
+ * detail line still names the host, so the person knows where to look.
  */
 export function upstreamFix(
   coverage: UpstreamCoverage | null | undefined,
-): { slugs: string[]; label: string; also?: string } | undefined {
-  if (!coverage || coverage.switched_off.length === 0) return undefined;
-  const one = coverage.switched_off.length === 1;
-  const tools = [...new Set(coverage.switched_off.flatMap((entry) => entry.tools))];
-  return {
-    slugs: coverage.switched_off.map((entry) => entry.slug),
-    label: one ? "Turn it on" : "Turn them on",
-    also:
-      tools.length > 0
-        ? `Turning ${one ? "it" : "them"} on also routes ${tools.join(", ")}.`
-        : undefined,
-  };
+): { slugs: string[]; label: string } | undefined {
+  const slugs = (coverage?.switched_off ?? [])
+    .map((entry) => entry.slug)
+    .filter((slug) => TOOL_MANAGED_DOMAINS.includes(slug));
+  if (slugs.length === 0) return undefined;
+  return { slugs, label: slugs.length === 1 ? "Turn it on" : "Turn them on" };
 }
 
 /** Index a sweep by slug, so a row can look itself up. */

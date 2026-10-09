@@ -2824,19 +2824,22 @@ export function NewUiApp() {
         );
       }
     }
-    // A provider Gate has switched off is the other reason with a fix here:
-    // turning its domain on. Read off the open tool's coverage rather than off
-    // `detail`, which is copy.
-    const fix = upstreamFix(tools.find((t) => t.slug === openTool)?.coverage);
+    // A provider Hermes owns being switched off is the other reason with a fix
+    // here: turning its domain on. Only when that IS the reason - the flag says
+    // the sweep found the tool routed and coverage is all that is wrong - and
+    // never for a drifted or failing Hermes, whose coverage can be short too.
+    const fix = app.status.uninspected
+      ? upstreamFix(tools.find((t) => t.slug === openTool)?.coverage)
+      : undefined;
     if (fix) {
       return (
         <PaneNote
           title={`${app.name} isn’t protected`}
-          body={fix.also ? `${detail} ${fix.also}` : detail}
+          body={detail}
           action={{
             label: fix.label,
             busy: routingBusy,
-            onClick: () => void routing.enableUpstreamDomains(fix.slugs),
+            onClick: () => void routing.enableHermesProviders(fix.slugs),
           }}
         />
       );
@@ -2853,7 +2856,7 @@ export function NewUiApp() {
     routeMembers,
     tools,
     openTool,
-    routing.enableUpstreamDomains,
+    routing.enableHermesProviders,
   ]);
 
   const onMenuSelect = useCallback(
