@@ -1805,6 +1805,41 @@ export function NewUiApp() {
     [sidebarGroups],
   );
 
+  // AG-592. Null while anything it depends on is unread - an unchecked model
+  // is not a healthy one, and saying nothing is the honest state.
+  // A config that could not be read, or a tool that could not be put back on
+  // its own model, outranks every other warning: the stored choice and what the
+  // tool runs disagree, and the second case refuses every request. The backend
+  // tells the two apart by state: a failed put-back leaves it `drifted`, an
+  // unreadable config reads `not_applied`.
+  // Only for a tool that gets the Model selection card (`GATE_MODEL_TOOLS`).
+  const openModelAttention: { title: string; body: string } | null = (() => {
+    if (openTool === null || !GATE_MODEL_TOOLS.has(openTool)) return null;
+    // The product's name, not the rail's row label: `apps` names Claude Code's
+    // row "CLI", which reads as "CLI’s requests are being refused".
+    const appName = toolNames.get(openTool) ?? "This app";
+    if (openConfigured?.problem) {
+      return {
+        title:
+          openConfigured.state === "drifted"
+            ? `${appName}’s requests are being refused`
+            : `Gate Connect can’t read ${appName}’s config`,
+        body: openConfigured.problem,
+      };
+    }
+    const attention = modelAttention({
+      appName,
+      choice: openPref,
+      catalogue: gateModels.models,
+      credits: credits.credits,
+      // The feed is the only thing that can see a Gate model the tool cannot
+      // actually be served with: the catalogue says it exists and the balance
+      // says it is affordable, and the requests fail anyway.
+      recent: modelRecent,
+    });
+    return attention ? { title: attention.title, body: attention.message } : null;
+  })();
+
   /**
    * A pane whose row is no longer listed goes back to Overview.
    *
@@ -3516,32 +3551,13 @@ export function NewUiApp() {
                 // unattributed machine has nothing to say about a setting.
                 modelPending:
                   toolModels.view === null && toolModels.failure === null,
-                // AG-592. Null while anything it depends on is unread - an
-                // unchecked model is not a healthy one, and saying nothing is
-                // the honest state.
-                // A config that could not be read, or a tool that could not be
-                // put back on its own model, outranks every other warning: the
-                // stored choice and what the tool runs disagree, and the second
-                // case refuses every request.
-                modelAttention:
-                  openConfigured?.problem ??
-                  modelAttention({
-                    choice: openPref,
-                    catalogue: gateModels.models,
-                    credits: credits.credits,
-                    // The feed is the only thing that can see a Gate model the
-                    // tool cannot actually be served with: the catalogue says it
-                    // exists and the balance says it is affordable, and the
-                    // requests fail anyway.
-                    recent: modelRecent,
-                  })?.message ?? null,
                 // R3: the user changed the model inside the app, so its config
                 // no longer holds a Gate model and the card moved to App
                 // default on its own. Said once, held until dismissed or the
                 // next save for this tool (`useToolModels`).
                 modelNotice: toolModels.leftGateModels.has(openTool)
                   ? leftGateModelsNotice(
-                      appFor(apps, openTool)?.name ?? "This app",
+                      toolNames.get(openTool) ?? "This app",
                       toolModels.leftGateModels.get(openTool) ?? null,
                     )
                   : null,
@@ -3705,6 +3721,15 @@ export function NewUiApp() {
                 />
               )}
               {statusNote}
+              {/* The Model selection card's warning, raised with the pane's
+                  other warnings: every alert the App frames draw sits here,
+                  above the stat tiles, and none sits in the card. */}
+              {openModelAttention && (
+                <PaneNote
+                  title={openModelAttention.title}
+                  body={openModelAttention.body}
+                />
+              )}
               {modelError && (
                 // The gateway's own sentence, not a code. A role refusal and a
                 // dead network want different things from the reader, and on a

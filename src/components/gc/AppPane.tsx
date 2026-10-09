@@ -74,7 +74,6 @@ export function AppPane({
   gateModel,
   onChangeModel,
   modelBusy,
-  modelAttention,
   modelNotice,
   onDismissModelNotice,
   modelPending,
@@ -153,17 +152,11 @@ export function AppPane({
   onChangeModel?: () => void;
   /** A model write is in flight, so the controls refuse a second click. */
   modelBusy?: boolean;
-  /** Why this app's Gate model needs attention, if it does (AG-592).
-   *
-   *  Highlighted in place rather than raised as a banner: the cause is about
-   *  this one control, and the recovery is the control itself. Null means
-   *  nothing to say - which is not the same as "all clear", since an unread
-   *  catalogue or balance also yields null. See `modelAttention`. */
-  modelAttention?: string | null;
   /** Something that already happened to this app's model setting, said once:
    *  today, that the user moved the app off its Gate models from inside the
-   *  app, so the card is back on App default. Unlike `modelAttention` it is not
-   *  re-derived on every render, so it carries its own dismiss. */
+   *  app, so the card is back on App default. Unlike the model warning in the
+   *  pane's `alert` slot it is not re-derived on every render, so it carries
+   *  its own dismiss. */
   modelNotice?: string | null;
   onDismissModelNotice?: () => void;
   /** The model *preference* read has not landed.
@@ -328,7 +321,6 @@ export function AppPane({
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
-          attention={modelAttention}
           notice={modelNotice}
           onDismissNotice={onDismissModelNotice}
           onChoose={onChooseModel}
@@ -416,7 +408,6 @@ function ModelSelection({
   choice,
   pending,
   busy,
-  attention,
   notice,
   onDismissNotice,
   onChoose,
@@ -449,7 +440,6 @@ function ModelSelection({
   choice: ModelChoice | null;
   pending?: boolean;
   busy?: boolean;
-  attention?: string | null;
   notice?: string | null;
   onDismissNotice?: () => void;
   onChoose: (choice: ModelChoice) => void;
@@ -533,20 +523,6 @@ function ModelSelection({
             </EmptyNote>
           )}
         </>
-      )}
-
-      {attention && (
-        // AG-592's Needs attention, as a highlight rather than a dialog: the
-        // cause concerns this one control and the recovery is the control
-        // itself, so interrupting the pane would put the explanation further
-        // from the fix.
-        <p
-          role="status"
-          className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-5 text-amber-900"
-        >
-          <Icon name="triangleAlert" size={16} className="mt-0.5 shrink-0" />
-          <span>{attention}</span>
-        </p>
       )}
 
       {notice && (

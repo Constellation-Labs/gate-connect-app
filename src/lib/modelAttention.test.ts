@@ -234,4 +234,64 @@ describe("modelAttention", () => {
       modelAttention({ choice: gate("openai/gpt-5"), catalogue: CATALOGUE, credits: FUNDED, recent: null }),
     ).toBeNull();
   });
+
+  describe("titles", () => {
+    // The pane card's heading names the cause, so each one is pinned.
+    it("names the app when its requests are failing", () => {
+      const a = modelAttention({
+        appName: "Codex",
+        choice: gate("openai/gpt-5"),
+        catalogue: CATALOGUE,
+        credits: FUNDED,
+        recent: [{ status: "error" }, { status: "error" }, { status: "error" }],
+      });
+      expect(a?.title).toBe("Codex’s requests are failing on Gate models");
+    });
+
+    it("falls back to This app without a name", () => {
+      const a = modelAttention({
+        choice: gate("openai/gpt-5"),
+        catalogue: CATALOGUE,
+        credits: FUNDED,
+        recent: [{ status: "error" }, { status: "error" }, { status: "error" }],
+      });
+      expect(a?.title).toBe("This app’s requests are failing on Gate models");
+    });
+
+    it("names the one model that has gone", () => {
+      const a = modelAttention({
+        choice: gate("anthropic/retired-model"),
+        catalogue: CATALOGUE,
+        credits: FUNDED,
+      });
+      expect(a?.title).toBe("anthropic/retired-model is no longer available");
+    });
+
+    it("speaks of the set when several models have gone", () => {
+      const a = modelAttention({
+        choice: gate("anthropic/retired-a", "anthropic/retired-b"),
+        catalogue: CATALOGUE,
+        credits: FUNDED,
+      });
+      expect(a?.title).toBe("Your Gate models are no longer available");
+    });
+
+    it("says pay-as-you-go is off", () => {
+      const a = modelAttention({
+        choice: gate("openai/gpt-5"),
+        catalogue: CATALOGUE,
+        credits: { ...FUNDED, paygEnabled: false },
+      });
+      expect(a?.title).toBe("Pay-as-you-go is off");
+    });
+
+    it("says the credits have run out", () => {
+      const a = modelAttention({
+        choice: gate("openai/gpt-5"),
+        catalogue: CATALOGUE,
+        credits: { ...FUNDED, balanceCents: 0 },
+      });
+      expect(a?.title).toBe("You’re out of Gate credits");
+    });
+  });
 });

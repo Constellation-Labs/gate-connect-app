@@ -315,6 +315,10 @@ export interface BackendState {
     /** The model a tool's config starts on, when not the first of its set - the
      *  user picked another model of the set in the tool's own picker. */
     configuredModel?: Record<string, string>;
+    /** A tool whose config read came back with a `problem`, and the state the
+     *  backend reports beside it: `drifted` when it could not put the tool back
+     *  on its own model, `not_applied` when the config could not be read. */
+    problem?: Record<string, { state: "drifted" | "not_applied"; message: string }>;
     /** What `/v1/models` offers. Empty by default: a gateway with no platform
      *  provider accounts has nothing of its own, and that is the state the
      *  picker's own empty copy is written for. */

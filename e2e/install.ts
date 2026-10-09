@@ -344,6 +344,14 @@ export function installFakeTauri(state: BackendState): void {
           left_gate_models: slug in left,
           left_to_model: slug in left ? left[slug] : null,
         };
+        const problem = state.toolModels.problem?.[slug];
+        if (problem) {
+          configured[slug] = {
+            ...(configured[slug] as object),
+            state: problem.state,
+            problem: problem.message,
+          };
+        }
       }
       return {
         tools: state.toolModels.choices,
