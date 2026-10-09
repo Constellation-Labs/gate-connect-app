@@ -760,6 +760,18 @@ impl Coverage {
 /// removing and re-trusting a certificate reset `openrouter` to off on the
 /// machine that prompted this, hours after Hermes was connected.
 pub fn upstream_coverage() -> Coverage {
+    // On Gate models the model Hermes calls is Gate's own provider, served by
+    // the relay on loopback, so there is nothing upstream for Gate to miss.
+    // Every other entry in `config.yaml` is a provider the person is not
+    // using, and reading them all flagged a Tailscale host nobody selected
+    // (AG-1056). Off Gate models the whole file still counts: Hermes can
+    // reach any provider it lists, and the row cannot know which it will.
+    if matches!(
+        Hermes.gate_model_state(),
+        Ok(GateModelState::Applied { .. })
+    ) {
+        return Coverage::default();
+    }
     // Fall back to the built-in catalog rather than an empty one: on an
     // unreadable domains file the slugs are still right and only the enabled
     // flags are guesses, which beats reporting every host as unroutable.
