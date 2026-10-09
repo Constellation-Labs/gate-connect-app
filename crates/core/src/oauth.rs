@@ -39,7 +39,8 @@ const KEYCHAIN_LABEL: &str = "oauth-tokens";
 /// so status drops to the sign-in prompt, injection falls back, and the tray's
 /// dead-session signal fires - the same plumbing a failed refresh drives.
 /// In-memory only (a restart re-probes); cleared when new tokens are stored
-/// (re-login) or the bundle is cleared (sign-out).
+/// (re-login, or a refresh kept as [`UNSTORED`]) or the bundle is cleared
+/// (sign-out).
 static SESSION_REJECTED_BY_GATEWAY: AtomicBool = AtomicBool::new(false);
 
 /// Record a gateway verdict that the stored session is dead. [`live_session`]
@@ -49,7 +50,8 @@ pub fn mark_session_rejected() {
 }
 
 /// Bumped every time the stored bundle is replaced ([`store`]: a sign-in or a
-/// refresh) or removed ([`clear`]). A verdict reached about one bundle says
+/// refresh; or a refresh the store refused, kept as [`UNSTORED`]) or removed
+/// ([`clear`]). A verdict reached about one bundle says
 /// nothing about the next, so a caller that takes a while to reach one reads
 /// this before and after and drops the verdict if it moved - otherwise a
 /// sign-in that finished during a re-check would be marked dead by it.
@@ -58,6 +60,44 @@ static SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The current [`SESSION_GENERATION`].
 pub fn session_generation() -> u64 {
     SESSION_GENERATION.load(Ordering::Acquire)
+}
+
+/// The last refreshed bundle the secret store would not take, read in
+/// preference to the stored one while it stands.
+///
+/// A refresh Cognito granted is the session, wherever it ends up. Without this
+/// it lived only as long as the call that minted it, so a store that refused
+/// the write left every later read on whatever the store still held: the
+/// expired bundle, a locally fresh one the gateway had already refused, or
+/// nothing readable at all. Each of those put the engine back on a bearer the
+/// gateway refuses, with nothing left to recover from but a relaunch.
+///
+/// Kept with the [`SESSION_GENERATION`] it became and the `account.json`
+/// witness beside it, and served only while both stand: a sign-in or a refresh
+/// that did reach the store moves the generation, a sign-out moves both, and
+/// another process (the CLI) signing in or out moves the witness. Memory only,
+/// so a restart starts again from the store, as it did before.
+static UNSTORED: Mutex<Option<Unstored>> = Mutex::new(None);
+
+struct Unstored {
+    generation: u64,
+    witness: String,
+    tokens: OAuthTokens,
+}
+
+/// [`UNSTORED`]'s bundle, if it still stands.
+fn unstored() -> Option<OAuthTokens> {
+    let guard = UNSTORED.lock().ok()?;
+    let kept = guard.as_ref()?;
+    let witness = crate::account::file_witness().ok()?;
+    (kept.generation == session_generation() && kept.witness == witness)
+        .then(|| kept.tokens.clone())
+}
+
+fn forget_unstored() {
+    if let Ok(mut kept) = UNSTORED.lock() {
+        *kept = None;
+    }
 }
 
 /// Whether the gateway has been recorded as rejecting the stored session
@@ -566,6 +606,7 @@ pub fn store(tokens: &OAuthTokens) -> Result<()> {
     let user = env::current_user()?;
     let json = serde_json::to_string(tokens).context("serializing oauth tokens")?;
     keychain::set(&service(), &user, &json)?;
+    forget_unstored();
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
     Ok(())
@@ -600,6 +641,9 @@ pub fn current() -> Result<Option<OAuthTokens>> {
 /// Delete the stored token bundle. Idempotent. Also drops any recorded
 /// gateway rejection - it described the bundle being deleted.
 pub fn clear() -> Result<()> {
+    // First, so a sign-out the store fails to carry out still ends the session
+    // this process was holding in memory.
+    forget_unstored();
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
@@ -708,7 +752,10 @@ pub fn access_token_for_injection() -> String {
 ///   locally, so it must not read as signed in.
 /// - Stored and still valid → `Ok(Some(unchanged))`.
 /// - Stored but expired: exchange the refresh token, persist, and return the
-///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
+///   new bundle. A store that refuses the write does not fail the refresh: the
+///   bundle is kept in memory ([`UNSTORED`]) and served ahead of the stored one
+///   until a store succeeds, a sign-in or sign-out replaces it, or the process
+///   exits. A failed refresh (revoked / expired refresh token) surfaces as
 ///   `Err` so the caller can drop to the interactive sign-in prompt.
 pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
     ensure_fresh_classified(cfg).map_err(RefreshError::into_error)
@@ -757,8 +804,15 @@ fn refresh_stored(
     cfg: &OAuthConfig,
     force: bool,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
-    let Some(tokens) = current().map_err(classify_read_error)? else {
-        return Ok(None);
+    // A bundle the store refused earlier outranks the stored one: it is newer,
+    // and the store may hold an expired or gateway-refused bundle, or nothing
+    // readable. See `UNSTORED`.
+    let tokens = match unstored() {
+        Some(tokens) => tokens,
+        None => match current().map_err(classify_read_error)? {
+            Some(tokens) => tokens,
+            None => return Ok(None),
+        },
     };
     if tokens.client_id != cfg.client_id {
         return Err(RefreshError::Refused(anyhow::anyhow!(
@@ -770,6 +824,7 @@ fn refresh_stored(
     if !force && !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
         return Ok(Some(tokens));
     }
+    let judged = session_generation();
     let refreshed = post_token(
         cfg,
         &[
@@ -790,9 +845,54 @@ fn refresh_stored(
         }
     })?;
     // A keychain write failing says nothing about the session: the token in
-    // hand is good, it just will not survive a restart.
-    store(&refreshed).map_err(RefreshError::Unavailable)?;
+    // hand is good, it just will not survive a restart. Failing the refresh
+    // here read as `Unavailable`, which every caller treats as "keep what you
+    // have": the 30s tick left the engine on the expired bearer and the 401
+    // re-check answered `Unchanged`, so routed traffic was refused while the
+    // app showed Protected, until a relaunch.
+    //
+    // So the bundle is kept in memory instead, and stands in for the stored
+    // one the way a successful `store` would have: a new generation, and the
+    // gateway's rejection of the previous bundle dropped. Whatever the store
+    // holds now - the old bundle, or nothing if `keychain::set` failed after
+    // its delete - is not what the next read serves.
+    if let Err(e) = store(&refreshed) {
+        crate::logging::failure(&format!(
+            "storing the refreshed OAuth session failed; keeping it in memory: {e:#}"
+        ));
+        keep_unstored(judged, &refreshed)?;
+    }
     Ok(Some(refreshed))
+}
+
+/// Keep `tokens` as [`UNSTORED`], in place of the bundle at generation
+/// `judged` that it was refreshed from.
+///
+/// Refused when the generation has moved since: a sign-in or sign-out landed
+/// while the refresh was out, and this bundle belongs to the session it
+/// replaced. `Unavailable`, so the caller keeps what it has and the next read
+/// starts from the new state. A witness that cannot be read keeps nothing
+/// either: an entry nothing can vouch for would never be served.
+fn keep_unstored(judged: u64, tokens: &OAuthTokens) -> std::result::Result<(), RefreshError> {
+    let mut kept = UNSTORED.lock().map_err(|_| {
+        RefreshError::Unavailable(anyhow::anyhow!("unstored-session lock poisoned"))
+    })?;
+    let witness = crate::account::file_witness().map_err(RefreshError::Unavailable)?;
+    if SESSION_GENERATION
+        .compare_exchange(judged, judged + 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(RefreshError::Unavailable(anyhow::anyhow!(
+            "the session changed while it was being refreshed"
+        )));
+    }
+    SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
+    *kept = Some(Unstored {
+        generation: judged + 1,
+        witness,
+        tokens: tokens.clone(),
+    });
+    Ok(())
 }
 
 /// Classify a failure to read the stored bundle.
