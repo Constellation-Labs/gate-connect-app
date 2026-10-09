@@ -1894,7 +1894,7 @@ export function CollectedDataLists({
         </p>
         <ul className="mt-1 list-disc pl-4">
           <li>
-            Your email and organization name and id, so support can find your
+            Your email, organization name and id, so support can find your
             account.
           </li>
           <li>

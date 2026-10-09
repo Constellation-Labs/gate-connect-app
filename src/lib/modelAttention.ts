@@ -154,7 +154,7 @@ export function modelAttention({
         cause: "payg-disabled",
         models: [],
         message:
-          "Pay-as-you-go is off, so Gate models will fail. Enable it or return to App default.",
+          "Pay-as-you-go is off, so Gate models will fail until it’s enabled. Or return to App default.",
       };
     }
     if (credits.balanceCents !== null && credits.balanceCents <= 0) {
