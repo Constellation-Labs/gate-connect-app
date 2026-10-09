@@ -131,7 +131,7 @@ describe("the model picker, choosing several", () => {
     fireEvent.click(box(CATALOGUE[0].id));
     const dialog = screen.getByRole("dialog").textContent ?? "";
     expect(dialog).toContain("No models enabled");
-    expect(dialog).toContain("needs at least one model");
+    expect(dialog).toContain("Choose at least one model");
   });
 
   it("holds AG-590 on the primary, not on the row", () => {

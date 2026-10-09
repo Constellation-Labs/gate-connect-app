@@ -298,8 +298,8 @@ export function compatibility(model: ModelFacts, needs: ToolNeeds): Compatibilit
 export function explain(reason: Incompatibility, appName: string): string {
   switch (reason) {
     case "no-tool-use":
-      return `Gate does not list tool support for this model, and ${appName} sends tools with every request.`;
+      return `Gate lists no tool support for this model, and ${appName} always sends tools.`;
     case "no-freeform-tools":
-      return `These models were tested and verified to reject the form ${appName} sends its tools in.`;
+      return `These models were tested and verified to reject ${appName}’s tool format.`;
   }
 }

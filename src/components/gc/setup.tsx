@@ -451,7 +451,7 @@ export function WelcomePane({
         subtitle={
           reauth
             ? deliberate
-              ? "Sign in again whenever you want to start routing your apps through Gate."
+              ? "Sign in again to start routing through Gate."
               : "Sign in again to keep routing your apps through Gate."
             : "Sign in once, then choose which AI apps route through Gate. Claude, Codex, OpenCode, and supported apps keep working normally while Gate handles protection underneath."
         }

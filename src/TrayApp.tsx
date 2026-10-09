@@ -1024,14 +1024,13 @@ export function TrayApp() {
               tone="warning"
               icon="shieldCheck"
               title="Trust the Gate certificate?"
-              subtitle="Gate inspects your AI traffic locally, which needs a certificate your system trusts."
+              subtitle="Gate needs a trusted certificate to inspect AI traffic on this machine."
               secondary={{ label: "Not now", onClick: () => routing.resolvePrompt(false) }}
               primary={{ label: "Trust certificate", onClick: () => routing.resolvePrompt(true) }}
               onDismiss={() => routing.resolvePrompt(false)}
             >
               <p className="text-sm leading-5 text-neutral-600">
-                The certificate stays on this machine, and you can remove it from
-                Settings at any time.
+                It stays on this machine. Remove it in Settings anytime.
               </p>
               <p className="text-sm font-medium leading-5 text-base-foreground">
                 {trustPromptHint(platform)}

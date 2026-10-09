@@ -254,7 +254,7 @@ test.describe("new UI model picker", () => {
       await expect(radio).toHaveAttribute("aria-checked", "false");
       await expect(radio).toBeDisabled();
     }
-    await expect(app.page.getByText(/could not read this app's model setting/i)).toBeVisible();
+    await expect(app.page.getByText(/read this app's model setting/i)).toBeVisible();
   });
 
 });
@@ -516,7 +516,7 @@ test.describe("new UI model picker search and set", () => {
     await only.click();
     await expect(only).toHaveAttribute("aria-checked", "false");
     await expect(dialog.getByText("No models enabled")).toBeVisible();
-    await expect(dialog.getByText(/needs at least one model/)).toBeVisible();
+    await expect(dialog.getByText(/Choose at least one model/)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Apply selections" })).toBeDisabled();
 
     // A *different* model unlocks it. Re-checking the one just cleared would
@@ -708,10 +708,10 @@ test.describe("new UI Gate model confirmation", () => {
     // being true once the choice was written into the app's config.
     await expect(app.page.getByText(/own model preference is not changed/)).toHaveCount(0);
     await expect(
-      app.page.getByText(/Gate sets CLI's model to these in its own config/),
+      app.page.getByText(/Gate writes these into CLI's config/),
     ).toBeVisible();
     await expect(
-      app.page.getByText(/restore your previous model/),
+      app.page.getByText(/anytime to undo/),
     ).toBeVisible();
   });
 });
@@ -744,7 +744,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await expect(app.page.getByText(/no longer available from Gate/)).toBeVisible();
+    await expect(app.page.getByText(/left Gate, so requests will fail/)).toBeVisible();
     // The rule the ticket is emphatic about.
     await expect(app.page.getByText(/will not pick a replacement/)).toBeVisible();
   });
@@ -764,7 +764,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await expect(app.page.getByText(/no longer available from Gate/)).toHaveCount(0);
+    await expect(app.page.getByText(/left Gate, so requests will fail/)).toHaveCount(0);
   });
 
   test("says nothing about a model remembered under App default", async ({ boot }) => {
@@ -793,7 +793,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await expect(app.page.getByText(/no Gate credits left/)).toBeVisible();
+    await expect(app.page.getByText(/No Gate credits left/)).toBeVisible();
   });
 
   test("lets an unavailable model be removed, which nothing else could", async ({ boot }) => {
@@ -1036,7 +1036,7 @@ test.describe("new UI Gate models in the tool's config", () => {
 
     const notice = app.page
       .getByRole("status")
-      .filter({ hasText: "You switched Codex to gpt-6-sol in Codex, so it is back on App default." });
+      .filter({ hasText: "You picked gpt-6-sol in Codex, so it’s back on App default." });
     await expect(notice).toBeVisible();
     await expect(app.page.getByRole("radio", { name: /App default/ })).toHaveAttribute(
       "aria-checked",

@@ -3183,7 +3183,7 @@ export function NewUiApp() {
             tone="warning"
             icon="shieldCheck"
             title="Trust the Gate certificate?"
-            subtitle="Gate inspects your AI traffic locally, which needs a certificate your system trusts."
+            subtitle="Gate needs a trusted certificate to inspect AI traffic on this machine."
             secondary={{
               label: "Not now",
               onClick: () => routing.resolvePrompt(false),
@@ -3195,8 +3195,7 @@ export function NewUiApp() {
             onDismiss={() => routing.resolvePrompt(false)}
           >
             <p className="text-sm leading-5 text-neutral-600">
-              The certificate stays on this machine, and you can remove it from
-              Settings at any time.
+              It stays on this machine. Remove it in Settings anytime.
             </p>
             {/* Naming the system dialog is the whole of AG-534, and "your
                 operating system will ask for permission" is not that: on Windows
@@ -3215,7 +3214,7 @@ export function NewUiApp() {
             tone="danger"
             icon="triangleAlert"
             title="Remove the Gate certificate?"
-            subtitle="Sites and apps routed through the local proxy stop being inspected until it is trusted again."
+            subtitle="Routed sites and apps aren’t inspected until it’s trusted again."
             secondary={{
               label: "Keep it",
               onClick: () => routing.resolvePrompt(false),
@@ -3236,9 +3235,8 @@ export function NewUiApp() {
                 behaviour. Configuration is untouched either way, which is the
                 half that makes this reversible. */}
             <p className="text-sm leading-5 text-neutral-600">
-              Routing turns off while the certificate is gone, and your tools
-              keep their configuration. Your operating system may ask for
-              permission to remove it.
+              Routing turns off while the certificate is gone. Tool configs are kept.
+              Your system may ask to confirm.
             </p>
             {/* The step after the one they are about to take, said here because
                 this is where they are standing and nothing later says it. A
@@ -3254,9 +3252,8 @@ export function NewUiApp() {
                 for the same reason: it is the sentence that prevents the
                 support thread. */}
             <p className="text-sm font-medium leading-5 text-base-foreground">
-              When you trust a new certificate, quit and reopen any AI tools
-              that are running. They read the certificate when they start, so
-              one that is already open will fail to connect until you do.
+              After trusting a new certificate, quit and reopen any running AI tools,
+              or they won&apos;t connect.
             </p>
           </Modal>
         ) : runningApps.stage?.kind === "offer" ? (

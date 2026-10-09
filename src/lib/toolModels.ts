@@ -193,7 +193,7 @@ export function adaptPreferences(raw: ToolModels): ToolModelsView {
  * which the sentence covers without inventing one.
  */
 export function leftGateModelsNotice(appName: string, toModel: string | null): string {
-  return `You switched ${appName} to ${toModel ?? "another model"} in ${appName}, so it is back on App default.`;
+  return `You picked ${toModel ?? "another model"} in ${appName}, so it’s back on App default.`;
 }
 
 /** What a click on one of the card's two radios should do. */

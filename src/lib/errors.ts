@@ -273,7 +273,7 @@ export function classifyError(
   ) {
     return {
       title: "This action isn’t available on your platform.",
-      hint: "This tool or action isn’t supported here yet. The details below help when reporting it.",
+      hint: "Not supported here yet. The details below help when reporting it.",
       raw,
     };
   }
@@ -287,7 +287,7 @@ export function classifyError(
   if (isRoutingOffRefusal(raw)) {
     return {
       title: "Turn on “Route through Gate” first",
-      hint: "This tool sends all of its traffic through Gate’s local proxy, so routing has to be on before it can be connected.",
+      hint: "This tool routes through Gate’s local proxy, so turn routing on first.",
       raw,
     };
   }
@@ -302,7 +302,7 @@ export function classifyError(
   if (lc.includes("certificate trust dialog was cancelled")) {
     return {
       title: "The certificate wasn’t trusted",
-      hint: "Click Trust again and choose Yes in the Windows security warning. Apps with no gateway setting can’t route until it’s trusted.",
+      hint: "Click Trust again and choose Yes in the Windows security warning. Until then, some apps can’t route.",
       raw,
     };
   }
@@ -321,7 +321,7 @@ export function classifyError(
   if (lc.includes("access_denied") || lc.includes("access denied")) {
     return {
       title: "The sign-in was declined",
-      hint: "Try again and approve the sign-in in the browser window that opens.",
+      hint: "Try again and approve it in the browser.",
       raw,
     };
   }
@@ -401,7 +401,7 @@ export function classifyError(
   if (lc.includes("login redirect") || lc.includes("waiting for the login")) {
     return {
       title: "The browser sign-in was not finished",
-      hint: "Gate stopped waiting after five minutes. Try again, and complete the sign-in in the browser window that opens.",
+      hint: "Gate stopped waiting after five minutes. Try again and finish in the browser.",
       raw,
     };
   }
@@ -416,7 +416,7 @@ export function classifyError(
   if (isPortInUse(lc)) {
     return {
       title: "Gate’s local port is already in use",
-      hint: "Another copy of Gate Connect, or a gate-connect proxy relay, is using it. Quit that one, then try again.",
+      hint: "Another Gate Connect or gate-connect relay is using it. Quit it and try again.",
       raw,
     };
   }
@@ -431,7 +431,7 @@ export function classifyError(
   ) {
     return {
       title: "Couldn’t reach the gateway",
-      hint: "Check that you’re online and that the gateway URL in Settings is right, then try again.",
+      hint: "Check your connection and the gateway URL in Settings.",
       raw,
     };
   }
@@ -508,7 +508,7 @@ export function classifyError(
   };
   return {
     title: titles[context],
-    hint: "Try again. If it keeps failing, the details below help when reporting it.",
+    hint: "Try again, or report it with the details below.",
     raw,
   };
 }
@@ -530,7 +530,7 @@ const CONNECT_REFUSALS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
   [
     /^No supported OpenCode providers found to route through Gate\b/,
     () =>
-      "OpenCode isn’t signed in to a provider Gate can route. Run opencode auth login, then turn OpenCode on again.",
+      "OpenCode has no provider Gate can route. Run opencode auth login, then try again.",
   ],
   [
     /^None of the configured OpenCode providers can route through Gate yet \(([^)]*)\)/,
@@ -538,16 +538,16 @@ const CONNECT_REFUSALS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
   ],
   [
     /^Codex isn't logged in yet\b/,
-    () => "Codex isn’t signed in yet. Run codex login, then turn it on again.",
+    () => "Codex isn’t signed in. Run codex login, then try again.",
   ],
   [
     /^Hermes already has its own proxy settings in ~\/\.hermes\/\.env\b/,
     () =>
-      "Hermes already has its own proxy settings in ~/.hermes/.env, and Gate left them alone. Remove them to route Hermes through Gate.",
+      "Hermes has its own proxy settings in ~/.hermes/.env. Remove them to route it through Gate.",
   ],
   [
     /^(Claude Code|Codex|OpenCode|OpenClaw|Hermes) is not installed\b/,
-    (m) => `${m[1]} isn’t installed on this machine. Install it, then turn it on again.`,
+    (m) => `${m[1]} isn’t installed. Install it, then try again.`,
   ],
 ];
 

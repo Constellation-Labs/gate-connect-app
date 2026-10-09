@@ -36,8 +36,8 @@ describe("OpenCodeEnvDialog", () => {
     // `ReopenEvidence::process_names_known` is false and `reopen_pending`
     // declines to claim anything, which is correct and leaves this silent.
     render(<OpenCodeEnvDialog onCancel={noop} onConfirm={noop} />);
-    expect(screen.getByText(/already open keep the environment/i)).toBeTruthy();
-    expect(screen.getByText(/Reopen them/i)).toBeTruthy();
+    expect(screen.getByText(/already open aren't covered/i)).toBeTruthy();
+    expect(screen.getByText(/until you reopen them/i)).toBeTruthy();
   });
 
   it("does not claim the variables are how OpenCode routes", () => {
@@ -49,7 +49,7 @@ describe("OpenCodeEnvDialog", () => {
     expect(
       screen.queryByText(/no gateway setting of its own/i),
     ).toBeNull();
-    expect(screen.getByText(/providers you had set up/i)).toBeTruthy();
+    expect(screen.getByText(/Providers you add to OpenCode later/i)).toBeTruthy();
   });
 
   it("says a certificate is involved, which is the larger fact", () => {
@@ -57,7 +57,7 @@ describe("OpenCodeEnvDialog", () => {
     // roots of every Node process started afterwards. Harder to discover than
     // "git and curl go through Gate" and a bigger claim on the machine.
     render(<OpenCodeEnvDialog onCancel={noop} onConfirm={noop} />);
-    expect(screen.getByText(/tells Node to trust Gate/i)).toBeTruthy();
+    expect(screen.getByText(/make every Node program trust Gate/i)).toBeTruthy();
   });
 
   it("is informational, so the primary turns both on and cancel is the way out", () => {

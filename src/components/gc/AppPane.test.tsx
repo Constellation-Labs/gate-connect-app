@@ -455,7 +455,7 @@ describe("AppPane model selection", () => {
       expect(radio.getAttribute("aria-checked")).toBe("false");
       expect((radio as HTMLButtonElement).disabled).toBe(true);
     }
-    expect(within(card_).getByText(/could not read this app's model setting/i)).toBeTruthy();
+    expect(within(card_).getByText(/read this app's model setting/i)).toBeTruthy();
   });
 
   it("draws skeletons rather than a default while the reading is in flight", () => {
@@ -592,7 +592,7 @@ describe("AppPane model selection", () => {
     // Reachable while Gate is the source and the set came back empty - the state
     // the pane must not draw as a blank row pretending to name something.
     render(pane({ modelChoice: "gate", gateModel: null }));
-    expect(within(card("Model selection")).getByText(/No Gate model chosen yet/i)).toBeTruthy();
+    expect(within(card("Model selection")).getByText(/No Gate model chosen/i)).toBeTruthy();
   });
 
   it("refuses a second click while a write is in flight", () => {
