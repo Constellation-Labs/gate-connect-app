@@ -268,16 +268,34 @@ pub fn get_cached(service: &str, account: &str, witness: &str) -> Result<Option<
 
 /// Delete the secret at `(service, account)`, whether stored as a single entry
 /// or a chunk manifest plus its chunks. Returns whether anything was present.
+///
+/// Also deletes chunks no manifest names: what a chunked [`set`] leaves when it
+/// is cut short after some chunks and before the manifest. Those hold pieces of
+/// the secret - for the OAuth bundle, of its refresh token - and before this a
+/// sign-out left them in the store for good, since only a manifest led here.
 fn remove(service: &str, account: &str) -> Result<bool> {
-    if let Some(n) = get_raw(service, account)?
+    let named = get_raw(service, account)?
         .as_deref()
         .and_then(parse_manifest)
-    {
-        for i in 0..n {
-            delete_raw(service, &chunk_account(account, i))?;
-        }
+        .unwrap_or(0);
+    for i in 0..named {
+        delete_raw(service, &chunk_account(account, i))?;
     }
+    remove_unnamed_chunks(service, account, named)?;
     delete_raw(service, account)
+}
+
+/// Delete chunk entries from `from` up to the first one that is absent.
+///
+/// `set` writes chunks in order, so what a cut-short write leaves is a run with
+/// no gap in it, and the first absent chunk is the end of it. The common case
+/// costs one lookup that finds nothing.
+fn remove_unnamed_chunks(service: &str, account: &str, from: usize) -> Result<()> {
+    let mut i = from;
+    while delete_raw(service, &chunk_account(account, i))? {
+        i += 1;
+    }
+    Ok(())
 }
 
 pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
@@ -296,12 +314,22 @@ pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
         return Ok(());
     }
     let chunks = split_chunks(value, MAX_CHUNK_CHARS);
-    for (i, chunk) in chunks.iter().enumerate() {
-        set_raw(service, &chunk_account(account, i), chunk)?;
-    }
     // Write the manifest last: until it exists a torn write reads as "no secret"
     // rather than a manifest pointing at chunks that aren't all there yet.
-    set_raw(service, account, &format!("{CHUNK_MARKER}{}", chunks.len()))?;
+    let written = chunks
+        .iter()
+        .enumerate()
+        .try_for_each(|(i, chunk)| set_raw(service, &chunk_account(account, i), chunk))
+        .and_then(|()| set_raw(service, account, &format!("{CHUNK_MARKER}{}", chunks.len())));
+    if let Err(e) = written {
+        // Nothing names the chunks already written, so take them back now
+        // rather than leave pieces of the secret for the next `remove` to find.
+        // Best effort: the write's own error is the one worth reporting, and a
+        // chunk this misses is still swept by that next `remove`.
+        let _ = remove_unnamed_chunks(service, account, 0);
+        invalidate_cache();
+        return Err(e);
+    }
     invalidate_cache();
     Ok(())
 }
