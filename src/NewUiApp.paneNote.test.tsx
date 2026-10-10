@@ -148,7 +148,7 @@ describe("the uninspected provider card", () => {
       upstream_provider_name: "your existing providers",
       default_upstream_url: "https://openrouter.ai/api/v1",
       status: { kind: "connected" },
-      coverage: { defaulted: false, switched_off: switchedOff, unknown: [], local },
+      coverage: { defaulted: false, switched_off: switchedOff, unknown: [], bypassed: [], local },
     });
     return state;
   }
@@ -249,7 +249,7 @@ describe("the uninspected provider card", () => {
 
 describe("upstreamFix", () => {
   it("has nothing to offer for an unknown provider alone", () => {
-    expect(upstreamFix({ defaulted: false, switched_off: [], unknown: ["api.groq.com"], local: [] })).toBe(
+    expect(upstreamFix({ defaulted: false, switched_off: [], unknown: ["api.groq.com"], bypassed: [], local: [] })).toBe(
       undefined,
     );
   });
@@ -263,6 +263,7 @@ describe("upstreamFix", () => {
           { slug: "openai", hosts: ["api.openai.com"], tools: [] },
         ],
         unknown: [],
+        bypassed: [],
         local: [],
       }),
     ).toEqual({ slugs: ["openrouter"], label: "Turn it on" });
@@ -271,6 +272,7 @@ describe("upstreamFix", () => {
         defaulted: false,
         switched_off: [{ slug: "chatgpt", hosts: ["chatgpt.com"], tools: [] }],
         unknown: [],
+        bypassed: [],
         local: [],
       }),
     ).toBe(undefined);

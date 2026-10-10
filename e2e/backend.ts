@@ -74,6 +74,7 @@ export interface ToolFixture {
     defaulted: boolean;
     switched_off: { slug: string; hosts: string[]; tools: string[] }[];
     unknown: string[];
+    bypassed: string[];
     local: string[];
   } | null;
   /** Which client this row is aimed at - the ledger's grouping key. Optional

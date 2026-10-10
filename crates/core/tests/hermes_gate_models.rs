@@ -443,3 +443,48 @@ fn a_config_left_on_gate_models_after_app_default_is_drift() {
         other => panic!("expected drift, got {other:?}"),
     }
 }
+
+/// The `.env` line for `key`, as written.
+fn env_line(key: &str) -> Option<String> {
+    let body = fs::read_to_string(env::hermes_config_dir().unwrap().join(".env")).unwrap();
+    body.lines()
+        .find_map(|l| l.strip_prefix(&format!("{key}=")).map(str::to_string))
+}
+
+/// A real switch, both ways, on a Hermes whose own model is on the LAN. The
+/// `NO_PROXY` list follows config.yaml, which Gate models rewrite, so it has
+/// to be brought up to date in the same connect - or status reads drift
+/// straight after the switch - and Gate models themselves must read
+/// Protected: their relay is on loopback but it is Gate, not a local model.
+#[test]
+fn no_proxy_and_coverage_follow_a_gate_models_switch() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let lan = ORIGINAL.replace(
+        "https://openrouter.ai/api/v1",
+        "http://192.168.1.20:1234/v1",
+    );
+    let _home = setup(&lan);
+    let hermes = find(ToolId::Hermes).unwrap();
+    let names_lan = |key: &str| {
+        env_line(key)
+            .unwrap_or_default()
+            .split(',')
+            .any(|e| e == "192.168.1.20")
+    };
+
+    hermes.connect(&input()).unwrap();
+    assert!(names_lan("NO_PROXY") && names_lan("no_proxy"));
+
+    choose_gate(&[LUNA]);
+    hermes.connect(&input()).unwrap();
+    assert!(
+        !names_lan("NO_PROXY") && !names_lan("no_proxy"),
+        "config.yaml names only the relay now"
+    );
+    let coverage = gate_connect_core::integrations::hermes::upstream_coverage();
+    assert!(coverage.local.is_empty(), "{coverage:?}");
+
+    choose_tool();
+    hermes.connect(&input()).unwrap();
+    assert!(names_lan("NO_PROXY") && names_lan("no_proxy"));
+}

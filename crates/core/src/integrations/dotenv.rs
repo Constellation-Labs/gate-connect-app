@@ -85,9 +85,10 @@ fn assigns(line: &str, key: &str) -> bool {
 }
 
 /// True if `line` assigns `key` the way python-dotenv reads one: any `export`
-/// prefix and whitespace on either side of the key. Reads only. The writers
-/// keep [`assigns`], so a line spelled loosely is never taken for one of ours
-/// - but a reader that missed it would report a value Hermes is not using.
+/// prefix and whitespace on either side of the key. Readers use this, so they
+/// see what Hermes sees. The writers keep [`assigns`], so a line spelled
+/// loosely is never taken for one of ours; a caller that needs to know whether
+/// such a line overrides one of ours compares the two reads.
 fn assigns_loosely(line: &str, key: &str) -> bool {
     let l = line.trim_start();
     let l = l
@@ -108,14 +109,36 @@ fn split_terminator(line: &str) -> (&str, &str) {
         .unwrap_or((line, ""))
 }
 
-/// Strip whitespace and one layer of surrounding quotes, which is how a dotenv
-/// reader sees a value. Shared with [`read_var`] on purpose: the comparison
-/// that decides a line of ours is stale has to be the same one that decides the
-/// tool has drifted, or a correct line gets "repaired" on every single connect.
+/// A raw value as python-dotenv reads it: a quoted value is what is between
+/// its quotes, whatever follows the closing one; an unquoted value ends at a
+/// `#` that follows whitespace, which starts a comment. Shared with
+/// [`read_var`] on purpose: the comparison that decides a line of ours is
+/// stale has to be the same one that decides the tool has drifted, or a
+/// correct line gets "repaired" on every single connect.
+///
+/// `${VAR}` is left as written. python-dotenv expands it and this does not,
+/// so a caller that has to know what the tool sees treats a value holding one
+/// as unknown rather than reading it literally.
 fn unquote(raw: &str) -> String {
-    raw.trim()
-        .trim_matches(|c| c == '"' || c == '\'')
-        .to_string()
+    let trimmed = raw.trim_start();
+    if let Some(quote) = trimmed.chars().next().filter(|c| matches!(c, '"' | '\'')) {
+        let inner = &trimmed[1..];
+        return match inner.find(quote) {
+            Some(end) => inner[..end].to_string(),
+            // Unterminated: no closing quote to stop at, so the line as a whole.
+            None => inner.trim_end().to_string(),
+        };
+    }
+    let mut end = trimmed.len();
+    let mut after_space = false;
+    for (i, c) in trimmed.char_indices() {
+        if c == '#' && after_space {
+            end = i;
+            break;
+        }
+        after_space = c.is_whitespace();
+    }
+    trimmed[..end].trim_end().to_string()
 }
 
 /// The value an assignment line carries, read the way [`read_var`] reads one.
@@ -240,8 +263,9 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
         // Correct the first assignment in place and drop any others. Collapsing
         // is what makes this converge: a duplicate assignment of a key that is
         // ours is a line we wrote, and leaving a stale second copy behind means
-        // a last-wins reader keeps using it while `read_var` reports the fresh
-        // one and status reads Connected.
+        // a last-wins reader keeps using it. `read_var` reads last-wins now as
+        // well, so it would report the stale copy and status would read
+        // Drifted on every pass, with the repair never landing.
         lines[hits[0]] = rewrite_assignment(&lines[hits[0]], value);
         for &i in hits[1..].iter().rev() {
             lines.remove(i);
@@ -275,23 +299,57 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
 /// Remove exactly the keys named, and the file too when we created it and
 /// nothing but blank lines is left.
 pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> Result<()> {
-    if !path.exists() || keys.is_empty() {
+    let owned: Vec<Owned> = keys
+        .iter()
+        .map(|key| Owned {
+            key: key.clone(),
+            value: None,
+        })
+        .collect();
+    remove_owned(path, &owned, file_created)
+}
+
+/// Remove the lines of ours among `owned`, and the file too when we created it
+/// and nothing but blank lines is left.
+///
+/// A recorded value narrows it to the lines holding that value, when any does:
+/// a second assignment of the key with another value is a line somebody else
+/// added, and a last-wins reader may be using it. When none holds it - the
+/// user edited our line - every assignment goes, which is what taking back a
+/// key we added has always meant. `None` is ownership by key alone.
+///
+/// Line endings are kept per line, as `add_vars` keeps them: rebuilding with
+/// `lines()` turned a CRLF file into LF on every removal.
+pub(crate) fn remove_owned(path: &Path, owned: &[Owned], file_created: bool) -> Result<()> {
+    if !path.exists() || owned.is_empty() {
         return Ok(());
     }
     let existing =
         fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let kept: Vec<&str> = existing
-        .lines()
-        .filter(|l| !keys.iter().any(|k| assigns(l, k)))
-        .collect();
+    let lines: Vec<&str> = existing.split_inclusive('\n').collect();
+    let doomed = |line: &str| {
+        owned.iter().any(|o| {
+            if !assigns(line, &o.key) {
+                return false;
+            }
+            let Some(value) = &o.value else {
+                return true;
+            };
+            let held_somewhere = lines
+                .iter()
+                .any(|l| assigns(l, &o.key) && assigned_value(l).as_deref() == Some(value));
+            !held_somewhere || assigned_value(line).as_deref() == Some(value.as_str())
+        })
+    };
+    let kept: Vec<&str> = lines.iter().copied().filter(|l| !doomed(l)).collect();
 
     if file_created && kept.iter().all(|l| l.trim().is_empty()) {
         return crate::config_changes::remove(path);
     }
 
-    let mut body = kept.join("\n");
+    let mut body = kept.concat();
     if !body.is_empty() && !body.ends_with('\n') {
-        body.push('\n');
+        body.push_str(dominant_newline(&existing));
     }
     crate::config_changes::write(path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
@@ -306,6 +364,18 @@ pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> R
 /// used while status kept reading Gate's own.
 pub(crate) fn read_var(path: &Path, key: &str) -> Result<Option<String>> {
     read_last_of(path, &[key])
+}
+
+/// Whether some line assigns `key` exactly `value`, matched the way the
+/// writers match a line of ours.
+pub(crate) fn holds(path: &Path, key: &str, value: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let body = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(body
+        .lines()
+        .any(|l| assigns(l, key) && assigned_value(l).as_deref() == Some(value)))
 }
 
 /// The value of whichever of `keys` is assigned LAST in the file. With one key
@@ -352,6 +422,36 @@ mod tests {
             Some("second")
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn values_are_read_as_python_dotenv_reads_them() {
+        // An unquoted value ends at a `#` after whitespace; a quoted one is
+        // what is between its quotes, whatever follows.
+        for (line, value) in [
+            ("K=* # mine", "*"),
+            ("K=a#b", "a#b"),
+            ("K=\"x y\" # c", "x y"),
+            ("K='a # b'", "a # b"),
+            ("K=  v  ", "v"),
+            ("K=${STAR}", "${STAR}"),
+        ] {
+            assert_eq!(assigned_value(line).as_deref(), Some(value), "{line}");
+        }
+    }
+
+    #[test]
+    fn remove_owned_takes_only_gates_line_and_keeps_crlf() {
+        let (_store, path) = tmp();
+        fs::write(&path, "no_proxy=mine\r\nKEY=v\r\nno_proxy=gate\r\n").unwrap();
+        remove_owned(&path, &[wrote("no_proxy", "gate")], false).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "no_proxy=mine\r\nKEY=v\r\n",
+            "the user's line and the CRLF endings stay"
+        );
+        assert!(holds(&path, "no_proxy", "mine").unwrap());
+        assert!(!holds(&path, "no_proxy", "gate").unwrap());
     }
 
     #[test]
@@ -695,7 +795,7 @@ mod tests {
     /// This was the one case that did not converge. With the correct value
     /// first and a stale copy after it, the old exact-line check found a
     /// matching line and skipped: a last-wins reader kept using the stale copy
-    /// while `read_var`, which takes the first, reported the fresh one, so
+    /// while `read_var`, which then took the first, reported the fresh one, so
     /// status read Connected and the unattended repair never ran again.
     #[test]
     fn a_duplicate_assignment_of_ours_collapses() {

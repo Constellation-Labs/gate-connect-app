@@ -125,6 +125,10 @@ use crate::proxy::ENV_NO_PROXY_VALUE;
 /// The variable status compares against; the others move with it.
 const PRIMARY_VAR: &str = "HTTPS_PROXY";
 
+/// The variables connect writes in one go. The lower-case `no_proxy` is not
+/// among them: [`sync_no_proxy`] owns it.
+const ROUTING_VARS: [&str; 4] = ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "HERMES_CA_BUNDLE"];
+
 #[cfg(unix)]
 const CLI_BIN_PATHS: &[&str] = &["/usr/local/bin/hermes", "/usr/bin/hermes"];
 #[cfg(not(unix))]
@@ -147,6 +151,13 @@ struct State {
     /// by key for one connect and then records properly.
     #[serde(default)]
     written_vars: BTreeMap<String, String>,
+    /// Whether `written_vars` is the record, as opposed to a sidecar from
+    /// before values were recorded. Explicit because emptiness cannot say it:
+    /// a user who takes every key over leaves the map empty too, and reading
+    /// that as "old sidecar" handed every key back to Gate by name, so the
+    /// next connect overwrote all of the user's values. See [`State::owned`].
+    #[serde(default)]
+    values_recorded: bool,
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
@@ -189,6 +200,50 @@ struct GateModels {
 
 fn default_version() -> u8 {
     2
+}
+
+impl State {
+    /// Whether `key` in `.env` is Gate's, and what Gate left there: the single
+    /// ownership rule connect, status and [`sync_no_proxy`] all read.
+    ///
+    /// By recorded value once values are recorded at all: a key missing from
+    /// the record is one the user took over, and `add_vars` left it out of the
+    /// record for exactly that reason. By key alone only on a sidecar from
+    /// before values were recorded, for one connect, which then records them.
+    fn owned(&self, key: &str) -> Option<dotenv::Owned> {
+        match self.written_vars.get(key) {
+            Some(value) => Some(dotenv::Owned {
+                key: key.to_string(),
+                value: Some(value.clone()),
+            }),
+            None => {
+                (!self.values_recorded && self.added_vars.iter().any(|k| k == key)).then(|| {
+                    dotenv::Owned {
+                        key: key.to_string(),
+                        value: None,
+                    }
+                })
+            }
+        }
+    }
+
+    /// Record what one `add_vars` call left: for each of `keys` it was asked
+    /// to write, the value now on disk if the key is ours, and no record if it
+    /// is not. Keys outside `keys` keep theirs, since that call never looked at
+    /// them.
+    fn record(&mut self, keys: &[&str], applied: &dotenv::Applied) {
+        for key in keys {
+            self.written_vars.remove(*key);
+        }
+        self.written_vars
+            .extend(applied.owned_values.iter().cloned());
+        for key in &applied.added {
+            if !self.added_vars.contains(key) {
+                self.added_vars.push(key.clone());
+            }
+        }
+        self.values_recorded = true;
+    }
 }
 
 pub struct Hermes;
@@ -294,7 +349,7 @@ impl Integration for Hermes {
         };
         revert_gate_models(&mut state)?;
         save_state(&state)?;
-        refresh_no_proxy(&mut state)
+        sync_no_proxy(&mut state).map(|_| ())
     }
 
     fn gate_model_state(&self) -> Result<GateModelState> {
@@ -359,17 +414,19 @@ impl Integration for Hermes {
             let path = env_file_path()?;
             for key in ["NO_PROXY", "no_proxy"] {
                 let on_disk = dotenv::read_var(&path, key)?;
-                if no_proxy_is_stale(
-                    &state.written_vars,
-                    &state.added_vars,
-                    key,
-                    on_disk.as_deref(),
-                    &expected,
-                ) {
+                if no_proxy_is_stale(state.owned(key).as_ref(), on_disk.as_deref(), &expected) {
                     return Ok(Status::Drifted(format!(
                         "{key} in ~/.hermes/.env is not the list Gate would write for this config"
                     )));
                 }
+            }
+            // Gate's lower-case line outlives the user taking `NO_PROXY` over -
+            // in a spelling the writer does not match, say - and keeps
+            // overriding their list until a connect stands it down.
+            if state.owned("no_proxy").is_some() && !no_proxy_is_gates(&state, &path) {
+                return Ok(Status::Drifted(
+                    "Gate's no_proxy in ~/.hermes/.env overrides the NO_PROXY you set there".into(),
+                ));
             }
         }
         Ok(status)
@@ -400,30 +457,11 @@ impl Integration for Hermes {
         // What a previous connect wrote, and the value it left there. Passing
         // the value is what keeps this ownership rather than a standing claim
         // on the key: a line the user has since repointed at their own proxy is
-        // no longer ours to correct.
-        let mut ours: Vec<dotenv::Owned> = state
-            .written_vars
+        // no longer ours to correct. See [`State::owned`].
+        let ours: Vec<dotenv::Owned> = ROUTING_VARS
             .iter()
-            .map(|(key, value)| dotenv::Owned {
-                key: key.clone(),
-                value: Some(value.clone()),
-            })
+            .filter_map(|key| state.owned(key))
             .collect();
-        // Keys from an install that predates `written_vars`: ours by key alone,
-        // for this one connect, and recorded with a value on the way out.
-        //
-        // Only when the record is empty, i.e. really that old. Once values are
-        // recorded, a key Gate added that is missing from them is one the user
-        // took over - `add_vars` left it out of `owned_values` for exactly that
-        // reason - and claiming it back by key would overwrite their value.
-        if state.written_vars.is_empty() {
-            for key in &state.added_vars {
-                ours.push(dotenv::Owned {
-                    key: key.clone(),
-                    value: None,
-                });
-            }
-        }
 
         // Gate models are settled before anything is written. Drift first: a
         // config the user moved off them is theirs, so no Gate models apply.
@@ -483,55 +521,15 @@ impl Integration for Hermes {
 
         // Recorded at once: from here on `.env` holds variables of ours, and a
         // failure below must not leave them without a sidecar that owns them.
+        // `added_vars` keeps the ORIGINAL list across re-connects - a second
+        // connect never claims credit for variables the first one added - and
+        // gains only a key this connect added itself.
         if state.added_vars.is_empty() {
             state.version = 2;
-            state.added_vars = applied.added.clone();
             state.env_file_created = applied.file_created;
-        } else {
-            // A key this connect added that an earlier one did not - `no_proxy`
-            // on an install that predates it - is ours as much as the first
-            // set, and disconnect only removes what this list names.
-            for key in &applied.added {
-                if !state.added_vars.contains(key) {
-                    state.added_vars.push(key.clone());
-                }
-            }
         }
-        // The lower-case line is not part of that write; its record carries
-        // over, so the step below and `refresh_no_proxy` can still tell Gate's
-        // line from the user's.
-        let lower_record = state.written_vars.remove("no_proxy");
-        state.written_vars = applied.owned_values.clone().into_iter().collect();
-        if let Some(value) = lower_record {
-            state.written_vars.insert("no_proxy".to_string(), value);
-        }
+        state.record(&ROUTING_VARS, &applied);
         save_state(&state)?;
-
-        // Lower-case `no_proxy` too, and not as a courtesy: `urllib` lets it
-        // win over `NO_PROXY`, and Gate's own shell export sets one, so without
-        // this a Hermes started from that shell reads Gate's list rather than
-        // the one above.
-        //
-        // Only while `NO_PROXY` is Gate's. A user's own `NO_PROXY` would be
-        // silently overridden by it - lower-case wins in `urllib`, and the last
-        // line wins on Windows - so theirs is left to stand alone. And only
-        // after the record above is saved: the second write can fail too, and
-        // its lines must never exist without a sidecar that owns them.
-        if applied
-            .owned_values
-            .iter()
-            .any(|(key, _)| key == "NO_PROXY")
-        {
-            let lower = dotenv::add_vars(&env_file_path()?, &[("no_proxy", no_proxy)], &ours)?;
-            for key in &lower.added {
-                if !state.added_vars.contains(key) {
-                    state.added_vars.push(key.clone());
-                }
-            }
-            state.written_vars.extend(lower.owned_values);
-            save_state(&state)?;
-            applied.refreshed.extend(lower.refreshed);
-        }
 
         // Name Hermes on its own requests. This is the one signal the engine
         // can have for it: Hermes has no base URL for us to write, so there is
@@ -574,16 +572,18 @@ impl Integration for Hermes {
             (Some(ids), Some(relay)) => apply_gate_models(&mut state, ids, relay)?,
             _ => revert_gate_models(&mut state)?,
         }
-        refresh_no_proxy(&mut state)?;
-
-        // `added_vars` above keeps the ORIGINAL record across re-connects, so a
-        // second connect never claims credit for variables the first one added
-        // - only for a key it added itself, which the backfill there appends.
-        // The values, unlike `added_vars`, are replaced every time: they are
-        // what the file holds now, not who put it there. Recorded even when
-        // nothing changed, so a sidecar that predates the field stops relying
-        // on ownership by key after a single connect.
+        // Saved before the `NO_PROXY` sync: it can fail, and the record of
+        // what Gate models replaced in `config.yaml` is the only way back to
+        // the user's own model.
         save_state(&state)?;
+
+        // Last, because the list follows `config.yaml` and Gate models have
+        // just rewritten it. This is the only writer of the lower-case line.
+        for key in sync_no_proxy(&mut state)? {
+            if !applied.refreshed.contains(&key) {
+                applied.refreshed.push(key);
+            }
+        }
 
         // Naming what moved matters more on a repair than on a first connect.
         // A refreshed key means the file was pointing somewhere Gate no longer
@@ -640,7 +640,20 @@ impl Integration for Hermes {
                 write_config(&crate::env::hermes_config_path()?, &after)?;
             }
         }
-        dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
+        // Each key Gate added, narrowed to Gate's own line when the file holds
+        // it: a second line of the key that the user added stays. A key the
+        // user took over is taken back by name, as disconnect always did.
+        let owned: Vec<dotenv::Owned> = state
+            .added_vars
+            .iter()
+            .map(|key| {
+                state.owned(key).unwrap_or(dotenv::Owned {
+                    key: key.clone(),
+                    value: None,
+                })
+            })
+            .collect();
+        dotenv::remove_owned(&env_file_path()?, &owned, state.env_file_created)?;
         // Only drop the sidecar once the file is back: losing it first would
         // leave our variables in place while status reports the tool clean.
         clear_state()
@@ -738,28 +751,28 @@ fn configured_proxy() -> Result<Option<String>> {
     dotenv::read_var(&env_file_path()?, PRIMARY_VAR)
 }
 
-/// Whether Gate's own `key` line in `.env` is out of date: it is still Gate's
-/// and it differs from `expected`. A value the user changed is theirs and never
+/// Whether Gate's own line, `owned` as [`State::owned`] reads it, is out of
+/// date: still the value Gate recorded (or Gate's by key alone, on an old
+/// sidecar) and not `expected`. A value the user changed is theirs and never
 /// stale.
-///
-/// Gate's by the same test connect applies: the sidecar recorded this exact
-/// value, or - a sidecar from before values were recorded at all - Gate added
-/// the key and has nothing to compare against, so it is Gate's by key alone.
-fn no_proxy_is_stale(
-    written: &BTreeMap<String, String>,
-    added: &[String],
-    key: &str,
-    on_disk: Option<&str>,
-    expected: &str,
-) -> bool {
-    let Some(disk) = on_disk else {
+fn no_proxy_is_stale(owned: Option<&dotenv::Owned>, on_disk: Option<&str>, expected: &str) -> bool {
+    let (Some(owned), Some(disk)) = (owned, on_disk) else {
         return false;
     };
-    let ours = match written.get(key) {
-        Some(recorded) => recorded == disk,
-        None => written.is_empty() && added.iter().any(|k| k == key),
-    };
-    ours && disk != expected
+    owned
+        .value
+        .as_deref()
+        .is_none_or(|recorded| recorded == disk)
+        && disk != expected
+}
+
+/// Whether the `NO_PROXY` Hermes reads is Gate's line. Read the way Hermes
+/// reads it, so a user line after Gate's - in any spelling, including one the
+/// writer does not match - counts as theirs.
+fn no_proxy_is_gates(state: &State, path: &std::path::Path) -> bool {
+    state.written_vars.get("NO_PROXY").is_some_and(|recorded| {
+        dotenv::read_var(path, "NO_PROXY").ok().flatten().as_deref() == Some(recorded)
+    })
 }
 
 /// Whether `config.yaml` exists and does not parse - as opposed to missing, or
@@ -769,70 +782,48 @@ fn config_unparseable() -> bool {
 }
 
 /// Bring Gate's own `NO_PROXY` lines in `.env` up to what `config.yaml` needs
-/// now, and stand Gate's lower-case line down if the upper-case one is no
-/// longer Gate's.
+/// now, and return the keys it changed. The only writer of the lower-case
+/// `no_proxy`.
 ///
-/// After every Gate models change, because they rewrite `config.yaml` and the
-/// list is computed from it: connect writes `.env` before the models step, and
-/// leaving Gate models never touched `.env` at all, so a model on a LAN or
-/// tailnet address read as drift straight after either switch.
+/// Run last by connect and by [`Hermes::leave_gate_models`], because the list
+/// follows `config.yaml` and Gate models rewrite it: computed before them, a
+/// model on a LAN or tailnet address read as drift straight after a switch.
 ///
-/// The lower-case line goes when the user has taken `NO_PROXY` over: it wins
-/// in `urllib`, and on Windows as the later line, so leaving Gate's would
-/// override the list the user just wrote.
-fn refresh_no_proxy(state: &mut State) -> Result<()> {
+/// The lower-case line is written only while the `NO_PROXY` Hermes reads is
+/// Gate's, and taken back out once it is not: it wins in `urllib`, and on
+/// Windows as the later line, so keeping it would override the list the user
+/// wrote. Only Gate's own line goes - one the user edited is theirs.
+fn sync_no_proxy(state: &mut State) -> Result<Vec<String>> {
     let path = env_file_path()?;
     let expected = no_proxy_for(&config_base_urls().unwrap_or_default());
-    // Ownership as connect reads it: by recorded value, or by key alone only
-    // for a sidecar that has no values recorded at all.
-    let owned = |state: &State, key: &str| -> Option<dotenv::Owned> {
-        match state.written_vars.get(key) {
-            Some(value) => Some(dotenv::Owned {
-                key: key.to_string(),
-                value: Some(value.clone()),
-            }),
-            None => (state.written_vars.is_empty() && state.added_vars.iter().any(|k| k == key))
-                .then(|| dotenv::Owned {
-                    key: key.to_string(),
-                    value: None,
-                }),
-        }
+    let mut changed = Vec::new();
+    let mut write = |state: &mut State, key: &'static str| -> Result<()> {
+        let ours: Vec<dotenv::Owned> = state.owned(key).into_iter().collect();
+        let applied = dotenv::add_vars(&path, &[(key, expected.clone())], &ours)?;
+        changed.extend(applied.added.iter().chain(&applied.refreshed).cloned());
+        state.record(&[key], &applied);
+        Ok(())
     };
-    let refresh = |state: &mut State, key: &str| -> Result<bool> {
-        let Some(ours) = owned(state, key) else {
-            return Ok(false);
-        };
-        let applied = dotenv::add_vars(&path, &[(key, expected.clone())], &[ours])?;
-        match applied.owned_values.into_iter().next() {
-            Some((k, v)) => {
-                state.written_vars.insert(k, v);
-                Ok(true)
-            }
-            None => {
-                // The user's now: stop recording a value of ours for it.
-                state.written_vars.remove(key);
-                Ok(false)
-            }
-        }
-    };
-    let upper_is_ours = refresh(state, "NO_PROXY")?;
-    if upper_is_ours {
-        refresh(state, "no_proxy")?;
-    } else if let Some(ours) = owned(state, "no_proxy") {
-        let still_ours = ours.value.as_deref().is_none_or(|v| {
-            dotenv::read_var(&path, "no_proxy")
-                .ok()
-                .flatten()
-                .as_deref()
-                == Some(v)
-        });
-        if still_ours {
-            dotenv::remove_vars(&path, &["no_proxy".to_string()], false)?;
-            state.added_vars.retain(|k| k != "no_proxy");
-            state.written_vars.remove("no_proxy");
-        }
+    if state.owned("NO_PROXY").is_some() {
+        write(state, "NO_PROXY")?;
     }
-    save_state(state)
+    if no_proxy_is_gates(state, &path) {
+        write(state, "no_proxy")?;
+    } else if let Some(ours) = state.owned("no_proxy") {
+        let still_ours = ours
+            .value
+            .as_deref()
+            .is_none_or(|v| dotenv::holds(&path, "no_proxy", v).unwrap_or(false));
+        if still_ours {
+            dotenv::remove_owned(&path, &[ours], false)?;
+            changed.push("no_proxy".to_string());
+        }
+        // Gone, or the user's now: no longer a line of Gate's either way.
+        state.added_vars.retain(|k| k != "no_proxy");
+        state.written_vars.remove("no_proxy");
+    }
+    save_state(state)?;
+    Ok(changed)
 }
 
 /// Whether a proxy URL points at loopback - i.e. is one of ours rather than a
@@ -930,6 +921,13 @@ impl Coverage {
                 self.unknown.join(", ")
             ));
         }
+        if !self.bypassed.is_empty() {
+            out.push(format!(
+                "note: NO_PROXY in ~/.hermes/.env can send Hermes' calls to {} straight there, \
+                 around Gate -- Gate sees none of them.",
+                self.bypassed.join(", ")
+            ));
+        }
         if !self.local.is_empty() {
             out.push(format!(
                 "note: Hermes only calls {} directly, not through Gate -- it keeps working, \
@@ -1003,14 +1001,16 @@ fn coverage_from(
 
 /// The lookup behind [`coverage_from`], over an explicit catalog and URL list.
 ///
-/// Hosts Hermes bypasses the proxy for are absent from both lists: a model on
-/// the LAN or a Tailscale VM is reached directly and never passes the engine,
-/// so it is not a gap in what Gate sees but something Gate chose not to look
-/// at. They go in `local` instead when they are every host Hermes calls.
-/// Decided by `no_proxy` as Hermes reads it ([`python_bypasses`]), not by
-/// what Gate's list means: a `100.x` address the list covers by CIDR still
-/// rides the engine unless `no_proxy` names it, and saying Protected over that
-/// would be claiming a bypass that is not happening.
+/// A host Hermes bypasses the proxy for is never `switched_off` or `unknown`.
+/// A local one - a model on the LAN or a Tailscale VM - is not a gap in what
+/// Gate sees but something Gate chose not to look at, and goes in `local` when
+/// local hosts are every host Hermes calls. Any other is `bypassed`: traffic
+/// Gate never sees. Decided by `no_proxy` as Hermes reads it
+/// ([`python_bypasses`]), not by what Gate's list means: a `100.x` address the
+/// list covers by CIDR still rides the engine unless `no_proxy` names it, and
+/// saying Protected over that would be claiming a bypass that is not
+/// happening. A `no_proxy` holding `${...}` is one Hermes expands and this
+/// cannot, so every non-local host is read as possibly bypassed.
 ///
 /// Keyed by slug, not host: two hosts one row claims are one switch, and a
 /// caller that named the row per host would ask about it twice.
@@ -1018,23 +1018,24 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
     let mut coverage = Coverage::default();
     let mut inspected = false;
     let mut local = Vec::new();
+    let unreadable = no_proxy.contains("${");
     for url in urls {
         // Gate's own relay, where Gate models point Hermes: inspected, and on
         // loopback, so the bypass below would file it as a local model and
         // every Hermes on Gate models would read as protecting nothing.
-        if crate::proxy::gate_served::is_relay_base_url(url, ToolId::Hermes) {
+        if is_gate_relay(url) {
             inspected = true;
             continue;
         }
         let host = url_host(url);
-        if python_bypasses(no_proxy, &host) {
+        if unreadable || python_bypasses(no_proxy, &host) {
             // Local only if Gate's own list means it to be. Anything else the
             // `.env` bypasses - a provider somebody added - is traffic Gate
             // never sees, and is reported as the gap it is.
             let list = if is_local_host(&host) {
                 &mut local
             } else {
-                &mut coverage.unknown
+                &mut coverage.bypassed
             };
             if !list.contains(&host) {
                 list.push(host);
@@ -1066,7 +1067,11 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
     // Only when local models are all there is: see `UpstreamCoverage::local`.
     // Beside a gap the gap is the reason, and beside an inspected provider
     // there is nothing wrong.
-    if !inspected && coverage.switched_off.is_empty() && coverage.unknown.is_empty() {
+    if !inspected
+        && coverage.switched_off.is_empty()
+        && coverage.unknown.is_empty()
+        && coverage.bypassed.is_empty()
+    {
         coverage.local = local;
     }
     coverage
@@ -1088,8 +1093,9 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String], no_proxy:
 /// from writing anything into `.env` but an address: `127.attacker.example`
 /// or `127.x,*` is not one.
 ///
-/// Read at connect, so a host added to `config.yaml` afterwards is not named
-/// until then; `status` reads that as drift and the reconcile reconnects it.
+/// Read when [`sync_no_proxy`] runs - at connect and on leaving Gate models -
+/// so a host added to `config.yaml` afterwards is not named until then;
+/// `status` reads that as drift and the reconcile reconnects it.
 fn no_proxy_for(urls: &[String]) -> String {
     let mut value = ENV_NO_PROXY_VALUE.to_string();
     for url in urls {
@@ -1103,6 +1109,24 @@ fn no_proxy_for(urls: &[String]) -> String {
         }
     }
     value
+}
+
+/// Whether `url` is Gate's relay serving Hermes: the relay's path, at a
+/// numeric port on `127.0.0.1` or `localhost`, and nothing else in the
+/// authority. [`crate::proxy::gate_served::is_relay_base_url`] checks only the
+/// start of the origin, so `http://127.0.0.1:@evil.example/<relay path>` -
+/// whose host is `evil.example` to Python - passed it and read as inspected.
+fn is_gate_relay(url: &str) -> bool {
+    let Some(rest) = url.trim().strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let port_ok = ["127.0.0.1:", "localhost:"].iter().any(|host| {
+        authority
+            .strip_prefix(host)
+            .is_some_and(|port| port.parse::<u16>().is_ok())
+    });
+    port_ok && crate::proxy::gate_served::is_relay_base_url(url, ToolId::Hermes)
 }
 
 /// Whether Gate's own list means `host` to be reached directly: loopback and
@@ -1564,8 +1588,14 @@ fn load_state() -> Result<Option<State>> {
     }
     let raw =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let state: State =
+    let mut state: State =
         serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    // Written by a build that recorded values before it recorded saying so.
+    // An empty record from such a build stays ambiguous and is read as the
+    // older shape; that costs one connect reclaiming keys by name, once.
+    if !state.written_vars.is_empty() {
+        state.values_recorded = true;
+    }
     Ok(Some(state))
 }
 
@@ -1721,34 +1751,54 @@ mod tests {
 
     #[test]
     fn a_stale_no_proxy_is_drift_only_while_it_is_gates() {
-        let ours: BTreeMap<String, String> = [("NO_PROXY".to_string(), "a,b".to_string())].into();
-        let stale = |written: &BTreeMap<String, String>, added: &[String], key, disk, expected| {
-            no_proxy_is_stale(written, added, key, Some(disk), expected)
+        let owned = |key: &str, value: Option<&str>| dotenv::Owned {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+        };
+        let stale = |o: Option<dotenv::Owned>, disk, expected| {
+            no_proxy_is_stale(o.as_ref(), Some(disk), expected)
         };
         // Gate's value, and not what a connect would write now: stale.
-        assert!(stale(&ours, &[], "NO_PROXY", "a,b", "a,b,100.1.2.3"));
+        assert!(stale(
+            Some(owned("NO_PROXY", Some("a,b"))),
+            "a,b",
+            "a,b,100.1.2.3"
+        ));
         // Up to date.
-        assert!(!stale(&ours, &[], "NO_PROXY", "a,b", "a,b"));
+        assert!(!stale(Some(owned("NO_PROXY", Some("a,b"))), "a,b", "a,b"));
         // The user has changed it since: theirs.
-        assert!(!stale(&ours, &[], "NO_PROXY", "mine", "a,b,100.1.2.3"));
-        // Gate never wrote it.
-        assert!(!stale(&BTreeMap::new(), &[], "NO_PROXY", "a,b", "c"));
-        // A sidecar from before values were recorded: Gate's by key alone.
-        let added = ["NO_PROXY".to_string()];
-        assert!(stale(&BTreeMap::new(), &added, "NO_PROXY", "old", "new"));
-        // But once values are recorded, a key Gate added that is missing from
-        // them is one the user took over.
-        let others: BTreeMap<String, String> =
-            [("HTTPS_PROXY".to_string(), "x".to_string())].into();
-        assert!(!stale(&others, &added, "NO_PROXY", "theirs", "new"));
-        // The lower-case line is checked the same way.
-        let lower: BTreeMap<String, String> = [("no_proxy".to_string(), "a".to_string())].into();
-        assert!(stale(&lower, &[], "no_proxy", "a", "a,100.1.2.3"));
+        assert!(!stale(
+            Some(owned("NO_PROXY", Some("a,b"))),
+            "mine",
+            "a,b,100.1.2.3"
+        ));
+        // Not Gate's at all.
+        assert!(!stale(None, "a,b", "c"));
+        // Gate's by key alone, on an old sidecar.
+        assert!(stale(Some(owned("NO_PROXY", None)), "old", "new"));
         // The list older builds wrote, IPv6 CIDRs and all, is one more stale
         // value of Gate's - the case #441 matched by name.
         let legacy = crate::proxy::LEGACY_ENV_NO_PROXY_VALUE;
-        let old: BTreeMap<String, String> = [("NO_PROXY".to_string(), legacy.to_string())].into();
-        assert!(stale(&old, &[], "NO_PROXY", legacy, &no_proxy_for(&[])));
+        assert!(stale(
+            Some(owned("NO_PROXY", Some(legacy))),
+            legacy,
+            &no_proxy_for(&[])
+        ));
+    }
+
+    #[test]
+    fn ownership_by_key_is_only_for_a_sidecar_that_never_recorded_values() {
+        let mut state = State {
+            added_vars: vec!["NO_PROXY".to_string()],
+            ..State::default()
+        };
+        // Older than recorded values: Gate's by key alone.
+        assert!(state.owned("NO_PROXY").is_some_and(|o| o.value.is_none()));
+        // Values recorded, and the user took every key over - the record is
+        // empty, but that is not an old sidecar. Reclaiming by key here is
+        // what overwrote all of the user's values on the next connect.
+        state.values_recorded = true;
+        assert!(state.owned("NO_PROXY").is_none());
     }
 
     #[test]
@@ -1771,7 +1821,40 @@ mod tests {
             &urls(&["https://openrouter.ai/api/v1", "https://api.anthropic.com"]),
             &format!("{ENV_NO_PROXY_VALUE},api.anthropic.com"),
         );
-        assert_eq!(coverage.unknown, vec!["api.anthropic.com"]);
+        // Bypassed, not unknown: Gate does have a domain for it, and the
+        // reason it sees nothing is the .env, not the catalog.
+        assert_eq!(coverage.bypassed, vec!["api.anthropic.com"]);
+        assert!(coverage.unknown.is_empty());
+        assert!(!coverage.is_covered());
+        assert!(coverage.notes().iter().any(|n| n.contains("around Gate")));
+    }
+
+    #[test]
+    fn a_spoofed_relay_url_is_not_gate() {
+        // Python reads this host as evil.example: the relay check used to pass
+        // it on its prefix, and the row read Protected.
+        let path = crate::proxy::gate_served::relay_base_url("http://x", ToolId::Hermes);
+        let path = path.trim_start_matches("http://x");
+        for spoof in [
+            format!("http://127.0.0.1:@evil.example{path}"),
+            format!("http://127.0.0.1:4321@evil.example{path}"),
+            format!("http://127.0.0.1:x{path}"),
+        ] {
+            assert!(!is_gate_relay(&spoof), "{spoof}");
+        }
+        assert!(is_gate_relay(&format!("http://127.0.0.1:4321{path}")));
+    }
+
+    #[test]
+    fn a_no_proxy_hermes_expands_is_not_read_literally() {
+        // `no_proxy=${STAR}` is `*` to python-dotenv; read literally it
+        // bypasses nothing and the row would read Protected.
+        let coverage = coverage_of(
+            &catalog_with("openrouter"),
+            &urls(&["https://openrouter.ai/api/v1", "http://127.0.0.1:11434/v1"]),
+            "${STAR}",
+        );
+        assert_eq!(coverage.bypassed, vec!["openrouter.ai"]);
         assert!(!coverage.is_covered());
     }
 

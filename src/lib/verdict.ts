@@ -109,8 +109,9 @@ export function verdictStatus(
  * Why Gate is not looking at some of the hosts, or `undefined` when it is
  * looking at every one.
  *
- * All three lists count. `local` is a tool on local models alone, switched on
- * and sending Gate nothing; the backend lists them only then. `unknown` is the
+ * All four lists count. `local` is a tool on local models alone, switched on
+ * and sending Gate nothing; the backend lists them only then. `bypassed` is a
+ * host the tool's own NO_PROXY sends around Gate. `unknown` is the
  * irremediable one - no catalog entry claims that host - and `switched_off` is
  * a domain whose switch is off, which AG-930's dialog offers to fix at the
  * moment a tool is connected. The row still has to say it, because the dialog
@@ -145,6 +146,14 @@ function uninspectedDetail(
   }
   if (coverage.unknown.length > 0) {
     sentences.push(`Gate can’t inspect requests to ${coverage.unknown.join(", ")}.`);
+  }
+  // Not "can't inspect": Gate could, and a NO_PROXY setting sends the calls
+  // around it. "May", because a value the tool expands is read as a possible
+  // bypass rather than guessed at.
+  if (coverage.bypassed.length > 0) {
+    sentences.push(
+      `Requests to ${coverage.bypassed.join(", ")} may skip Gate: a NO_PROXY setting can send them straight there.`,
+    );
   }
   // Only sent when local hosts are all the tool calls: the switch is on and
   // none of its traffic reaches Gate, so the row may not say Protected.

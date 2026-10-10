@@ -797,11 +797,12 @@ describe("useRouting: remembering a failed write", () => {
  * enabled themselves.
  */
 describe("useRouting: Hermes and the provider it talks to", () => {
-  const covered = { defaulted: false, switched_off: [], unknown: [], local: [] };
+  const covered = { defaulted: false, switched_off: [], unknown: [], bypassed: [], local: [] };
   const off = {
     defaulted: false,
     switched_off: [{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }],
     unknown: [],
+    bypassed: [],
     local: [],
   };
 
@@ -1016,6 +1017,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
       defaulted: false,
       switched_off: [],
       unknown: ["bedrock-runtime.us-east-1.amazonaws.com"],
+      bypassed: [],
       local: [],
     });
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());

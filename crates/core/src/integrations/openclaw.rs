@@ -240,6 +240,7 @@ impl Integration for OpenClaw {
                 tools: Vec::new(),
             }],
             unknown: Vec::new(),
+            bypassed: Vec::new(),
             local: Vec::new(),
         })
     }

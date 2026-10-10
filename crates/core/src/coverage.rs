@@ -29,6 +29,11 @@ pub struct UpstreamCoverage {
     pub switched_off: Vec<SwitchedOff>,
     /// Hosts no catalog entry claims, which Gate cannot route at all.
     pub unknown: Vec<String>,
+    /// Non-local hosts the tool's own `NO_PROXY` may send straight there,
+    /// around Gate: one it names, or any at all when the value cannot be read
+    /// the way the tool reads it (a `${VAR}` the tool expands). Gate sees none
+    /// of these calls, whether or not a domain claims the host.
+    pub bypassed: Vec<String>,
     /// Local hosts the tool reaches directly, listed only when they are every
     /// host it calls. A Hermes on local models alone sends Gate nothing to
     /// look at, so its switch being on protects nothing and the row must not
@@ -60,6 +65,9 @@ pub struct SwitchedOff {
 impl UpstreamCoverage {
     /// Is there anything to report at all?
     pub fn is_covered(&self) -> bool {
-        self.switched_off.is_empty() && self.unknown.is_empty() && self.local.is_empty()
+        self.switched_off.is_empty()
+            && self.unknown.is_empty()
+            && self.bypassed.is_empty()
+            && self.local.is_empty()
     }
 }

@@ -129,6 +129,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     defaulted: false,
     switched_off: [],
     unknown: [],
+    bypassed: [],
     local: [],
     ...over,
   });
@@ -191,6 +192,19 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     ).toEqual({
       kind: "not-protected",
       detail: "Requests to 100.101.102.103, llm.local go straight there, not through Gate.",
+      uninspected: true,
+    });
+  });
+
+  it("says a host the tool's NO_PROXY sends around Gate may skip it", () => {
+    // Not "can't inspect": Gate has a domain for api.anthropic.com, and the
+    // reason it sees nothing is the tool's own NO_PROXY.
+    expect(
+      verdictStatus(on(), { coverage: coverage({ bypassed: ["api.anthropic.com"] }) }),
+    ).toEqual({
+      kind: "not-protected",
+      detail:
+        "Requests to api.anthropic.com may skip Gate: a NO_PROXY setting can send them straight there.",
       uninspected: true,
     });
   });
