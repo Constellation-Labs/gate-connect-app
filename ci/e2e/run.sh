@@ -1268,8 +1268,9 @@ run_engine_tools() {
 
   # --- Hermes: Python OpenAI-compatible agent, PROXY-routed like OpenClaw.
   #     gate-connect writes HTTPS_PROXY / HTTP_PROXY / NO_PROXY / HERMES_CA_BUNDLE
-  #     into ~/.hermes/.env and does not touch config.yaml at all, so the seeded
-  #     base_url below stays CANONICAL and the engine catches the socket
+  #     into ~/.hermes/.env, and touches config.yaml only to add
+  #     `x-gate-tool: hermes` under model.extra_headers. The seeded base_url
+  #     below therefore stays CANONICAL and the engine catches the socket
   #     whichever provider config wins. HERMES_CA_BUNDLE is required rather than
   #     nice-to-have: hermes installs into a venv, so httpx/requests use a
   #     pip-installed certifi that knows nothing about the OS trust store.
@@ -1304,9 +1305,12 @@ run_engine_tools() {
     # sk-or-. Anything else resolves to "provider 'custom' resolved without
     # credentials" and hermes exits before sending a request.
     export OPENROUTER_API_KEY="sk-or-e2e-dummy"
-    # Same as OpenClaw above: proxy-routed, so the User-Agent is the whole of
-    # the attribution and this run has never captured it.
-    run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" client= -- \
+    # Attribution is asserted, unlike OpenClaw above. Hermes' User-Agent is
+    # python-httpx and names nothing, so what names it is the x-gate-tool
+    # header connect wrote into config.yaml, which the engine reads and turns
+    # into x-gate-client. This is the only run that proves that header leaves a
+    # real Hermes and arrives, so it must not be skipped with `client=`.
+    run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
       hermes -z "ping" --model openai/gpt-4o-mini
   fi
 }
