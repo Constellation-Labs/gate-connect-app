@@ -23,6 +23,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 
 use crate::env;
@@ -38,7 +39,8 @@ const KEYCHAIN_LABEL: &str = "oauth-tokens";
 /// so status drops to the sign-in prompt, injection falls back, and the tray's
 /// dead-session signal fires - the same plumbing a failed refresh drives.
 /// In-memory only (a restart re-probes); cleared when new tokens are stored
-/// (re-login) or the bundle is cleared (sign-out).
+/// (re-login, or a refresh kept as [`UNSTORED`]) or the bundle is cleared
+/// (sign-out).
 static SESSION_REJECTED_BY_GATEWAY: AtomicBool = AtomicBool::new(false);
 
 /// Record a gateway verdict that the stored session is dead. [`live_session`]
@@ -48,7 +50,8 @@ pub fn mark_session_rejected() {
 }
 
 /// Bumped every time the stored bundle is replaced ([`store`]: a sign-in or a
-/// refresh) or removed ([`clear`]). A verdict reached about one bundle says
+/// refresh; or a refresh the store refused, kept as [`UNSTORED`]) or removed
+/// ([`clear`]). A verdict reached about one bundle says
 /// nothing about the next, so a caller that takes a while to reach one reads
 /// this before and after and drops the verdict if it moved - otherwise a
 /// sign-in that finished during a re-check would be marked dead by it.
@@ -57,6 +60,44 @@ static SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The current [`SESSION_GENERATION`].
 pub fn session_generation() -> u64 {
     SESSION_GENERATION.load(Ordering::Acquire)
+}
+
+/// The last refreshed bundle the secret store would not take, read in
+/// preference to the stored one while it stands.
+///
+/// A refresh Cognito granted is the session, wherever it ends up. Without this
+/// it lived only as long as the call that minted it, so a store that refused
+/// the write left every later read on whatever the store still held: the
+/// expired bundle, a locally fresh one the gateway had already refused, or
+/// nothing readable at all. Each of those put the engine back on a bearer the
+/// gateway refuses, with nothing left to recover from but a relaunch.
+///
+/// Kept with the [`SESSION_GENERATION`] it became and the `account.json`
+/// witness beside it, and served only while both stand: a sign-in or a refresh
+/// that did reach the store moves the generation, a sign-out moves both, and
+/// another process (the CLI) signing in or out moves the witness. Memory only,
+/// so a restart starts again from the store, as it did before.
+static UNSTORED: Mutex<Option<Unstored>> = Mutex::new(None);
+
+struct Unstored {
+    generation: u64,
+    witness: String,
+    tokens: OAuthTokens,
+}
+
+/// [`UNSTORED`]'s bundle, if it still stands.
+fn unstored() -> Option<OAuthTokens> {
+    let guard = UNSTORED.lock().ok()?;
+    let kept = guard.as_ref()?;
+    let witness = crate::account::file_witness().ok()?;
+    (kept.generation == session_generation() && kept.witness == witness)
+        .then(|| kept.tokens.clone())
+}
+
+fn forget_unstored() {
+    if let Ok(mut kept) = UNSTORED.lock() {
+        *kept = None;
+    }
 }
 
 /// Whether the gateway has been recorded as rejecting the stored session
@@ -79,12 +120,13 @@ const EXPIRY_SKEW_SECS: i64 = 60;
 pub const REFRESH_INTERVAL_SECS: u64 = 30;
 
 /// OAuth client configuration, resolved for the **currently selected
-/// gateway**. Both the production and staging Cognito pools are baked in at
-/// build time; [`OAuthConfig::from_build_env`] picks the pair matching the
-/// active gateway host (see [`crate::account::gateway_is_staging`]). Set
-/// `GATE_COGNITO_HOSTED_DOMAIN` / `GATE_COGNITO_CLIENT_ID` /
-/// `GATE_COGNITO_SCOPES` (and their `_STAGING` variants) at build time, or
-/// override any of them via the process env at runtime.
+/// gateway**. The production, staging and dev Cognito pools are baked in at
+/// build time; [`OAuthConfig::for_gateway`] picks the pair matching the gateway
+/// host (see [`crate::account::STAGING_GATEWAY_HOST`] and
+/// [`crate::account::DEV_GATEWAY_HOST`]). Set `GATE_COGNITO_HOSTED_DOMAIN` /
+/// `GATE_COGNITO_CLIENT_ID` / `GATE_COGNITO_SCOPES` (and their `_STAGING` and
+/// `_DEV` variants) at build time, or, in a debug build only, override any of
+/// them via the process env at runtime.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     /// Cognito Hosted UI domain - e.g. `auth.constellationgate.ai` or
@@ -96,28 +138,63 @@ pub struct OAuthConfig {
     pub scopes: Vec<String>,
 }
 
-/// One build-time OAuth config value: the process env wins at runtime, else
-/// the value baked in at build time. Empty env values are ignored so an
-/// exported-but-blank var doesn't blank out a baked default.
+/// One build-time OAuth config value: in a debug build the process env wins at
+/// runtime, else the value baked in at build time. Blank values (empty or
+/// whitespace) are ignored on both sides. `release.yml` passes every Cognito
+/// variable, so one whose repo Variable is unset is baked as `Some("")`, and
+/// that has to read as absent: an empty hosted domain is a sign-in that opens
+/// `https:///oauth2/authorize`, and blank scopes request none.
+///
+/// A release build ignores the override. The hosted domain names the token
+/// endpoint, which receives the auth code, the PKCE verifier and every refresh
+/// token, so a process able to set this one's environment could otherwise
+/// collect the refresh token without touching the keychain. The CLI tests and
+/// the e2e harness that rely on the override all run debug builds.
 fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| baked.map(str::to_string))
+    runtime_override(name).or_else(|| baked.filter(|s| !s.trim().is_empty()).map(str::to_string))
+}
+
+/// The process-env half of [`config_value`]: honoured in a debug build,
+/// ignored in a release one. The ignore is reported once per process rather
+/// than on every resolve, which the 30s refresh loop would otherwise turn into
+/// a line every tick, and it names what was ignored in words a person who
+/// followed the runbook's local-testing step would recognise.
+fn runtime_override(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok().filter(|s| !s.trim().is_empty())?;
+    if cfg!(debug_assertions) {
+        return Some(value);
+    }
+    static IGNORED: std::sync::Once = std::sync::Once::new();
+    IGNORED.call_once(|| {
+        eprintln!(
+            "[gate] ignoring GATE_COGNITO_* from the environment: release builds use the Cognito config baked in at build time"
+        )
+    });
+    None
 }
 
 impl OAuthConfig {
-    /// Resolve the OAuth client config for the gateway currently on disk. The
-    /// active gateway host (`account.json`) selects the production or staging
-    /// Cognito pool; within the chosen pool each value comes from the process
-    /// env at runtime if set (dev/staging override, and the CLI's hermetic
-    /// tests), otherwise the value baked in at build time via `option_env!`.
-    /// Returns `None` when neither supplies the domain/client id, so callers
-    /// can fall back to the legacy API-key flow with a clear message instead
-    /// of panicking. All values are public client config (no secret), so a
-    /// runtime override is safe.
+    /// Resolve the OAuth client config for the gateway currently on disk
+    /// (`account.json`, no keychain touch). See [`OAuthConfig::for_gateway`].
     pub fn from_build_env() -> Option<Self> {
-        let (hosted_domain, client_id, scopes_raw) = if crate::account::gateway_is_staging() {
+        let base_url = crate::account::load_base_url().ok().flatten();
+        Self::for_gateway(base_url.as_deref())
+    }
+
+    /// Resolve the OAuth client config for a gateway base URL, which need not
+    /// be on disk yet: the CLI's `login --oauth` resolves the pool for the
+    /// gateway it is about to save, not the one it is replacing. The host
+    /// selects the production, staging or dev Cognito pool; a missing or
+    /// unparseable URL gets production. Within the chosen pool each value comes
+    /// from [`config_value`]. Returns `None` when the pool has no domain or
+    /// client id, so callers can fall back to the legacy API-key flow with a
+    /// clear message instead of panicking.
+    pub fn for_gateway(gateway_base_url: Option<&str>) -> Option<Self> {
+        let host = gateway_base_url
+            .and_then(|u| reqwest::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_owned));
+        let is = |h: &str| host.as_deref() == Some(h);
+        let (hosted_domain, client_id, scopes_raw) = if is(crate::account::STAGING_GATEWAY_HOST) {
             (
                 config_value(
                     "GATE_COGNITO_HOSTED_DOMAIN_STAGING",
@@ -130,6 +207,21 @@ impl OAuthConfig {
                 config_value(
                     "GATE_COGNITO_SCOPES_STAGING",
                     option_env!("GATE_COGNITO_SCOPES_STAGING"),
+                ),
+            )
+        } else if is(crate::account::DEV_GATEWAY_HOST) {
+            (
+                config_value(
+                    "GATE_COGNITO_HOSTED_DOMAIN_DEV",
+                    option_env!("GATE_COGNITO_HOSTED_DOMAIN_DEV"),
+                )?,
+                config_value(
+                    "GATE_COGNITO_CLIENT_ID_DEV",
+                    option_env!("GATE_COGNITO_CLIENT_ID_DEV"),
+                )?,
+                config_value(
+                    "GATE_COGNITO_SCOPES_DEV",
+                    option_env!("GATE_COGNITO_SCOPES_DEV"),
                 ),
             )
         } else {
@@ -276,8 +368,25 @@ impl OAuthTokens {
     /// Best-effort email from the id token's payload, for UI display only -
     /// no signature check (the gateway verifies). `None` if absent/unparseable.
     pub fn email(&self) -> Option<String> {
+        self.id_claim("email")
+    }
+
+    /// The Cognito `sub` from the id token: the stable, opaque user id the
+    /// dashboard identifies its PostHog person with, and the one the gateway's
+    /// `first_gateway_request` event is sent under. The app identifies as it on
+    /// sign-in so the person funnel joins the dashboard's download click to the
+    /// gateway's first request (AG-960).
+    ///
+    /// Same terms as [`Self::email`]: unverified, read for attribution only,
+    /// `None` if absent or unparseable. An empty string is `None` too, because
+    /// identifying as "" would merge every such install into one person.
+    pub fn sub(&self) -> Option<String> {
+        self.id_claim("sub").filter(|s| !s.trim().is_empty())
+    }
+
+    fn id_claim(&self, name: &str) -> Option<String> {
         let id = self.id_token.as_deref()?;
-        jwt_payload(id)?.get("email")?.as_str().map(str::to_string)
+        jwt_payload(id)?.get(name)?.as_str().map(str::to_string)
     }
 }
 
@@ -411,8 +520,14 @@ fn post_token(
 
     // Control-plane call: reach Cognito directly, never through the app's own
     // data-plane proxy. `.no_proxy()` ignores any `HTTP(S)_PROXY` the app set.
+    //
+    // Bounded at 10s, the same as the gateway probe (`org::probe_session`).
+    // Callers wait on this one at a time (see `refresh_stored`), so its bound
+    // is how long a window read or the 30s tick can stall on a Cognito that
+    // does not answer; reqwest's own default is 30s.
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .context("building the Cognito token HTTP client")
         .map_err(RefreshError::Unavailable)?;
@@ -497,6 +612,7 @@ pub fn store(tokens: &OAuthTokens) -> Result<()> {
     let user = env::current_user()?;
     let json = serde_json::to_string(tokens).context("serializing oauth tokens")?;
     keychain::set(&service(), &user, &json)?;
+    forget_unstored();
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
     Ok(())
@@ -531,10 +647,19 @@ pub fn current() -> Result<Option<OAuthTokens>> {
 /// Delete the stored token bundle. Idempotent. Also drops any recorded
 /// gateway rejection - it described the bundle being deleted.
 pub fn clear() -> Result<()> {
+    // First, so a sign-out the store fails to carry out still ends the session
+    // this process was holding in memory.
+    forget_unstored();
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    // The session is gone, so the analytics identity tied to it is too (AG-960).
+    // Here rather than in each caller so every sign-out path forgets it: the
+    // app's Disconnect and Reset, `gate-connect logout` (through
+    // `account::clear`), and the startup reconcile. Best-effort: an analytics
+    // record must never be the reason a sign-out fails.
+    let _ = crate::analytics::forget_identity();
     Ok(())
 }
 
@@ -563,7 +688,7 @@ pub fn live_session() -> Option<OAuthTokens> {
 }
 
 /// What a status read can say about the stored session, keeping apart the two
-/// things [`live_session`]'s `None` conflates: the credential is gone
+/// things [`live_session`]'s `None` conflates (AG-960): the credential is gone
 /// or refused, versus nobody could tell - the identity provider was
 /// unreachable, or the secret store could not be read. The second says nothing
 /// about who is signed in, so a caller deciding "did this person sign out" must
@@ -633,7 +758,10 @@ pub fn access_token_for_injection() -> String {
 ///   locally, so it must not read as signed in.
 /// - Stored and still valid → `Ok(Some(unchanged))`.
 /// - Stored but expired: exchange the refresh token, persist, and return the
-///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
+///   new bundle. A store that refuses the write does not fail the refresh: the
+///   bundle is kept in memory ([`UNSTORED`]) and served ahead of the stored one
+///   until a store succeeds, a sign-in or sign-out replaces it, or the process
+///   exits. A failed refresh (revoked / expired refresh token) surfaces as
 ///   `Err` so the caller can drop to the interactive sign-in prompt.
 pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
     ensure_fresh_classified(cfg).map_err(RefreshError::into_error)
@@ -645,8 +773,8 @@ pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
 /// refresh that could not reach the identity provider, or a secret store that
 /// could not be read, says nothing about the credential, and [`live_session`]'s
 /// `None` cannot tell those apart from a revoked refresh token. Reporting all of
-/// them as refused is what told a machine that was only offline that its session
-/// had expired.
+/// them as refused is what put "Access problem / Sign in" on a machine that was
+/// only offline.
 pub fn ensure_fresh_classified(
     cfg: &OAuthConfig,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
@@ -682,20 +810,45 @@ fn refresh_stored(
     cfg: &OAuthConfig,
     force: bool,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
-    let Some(tokens) = current().map_err(classify_read_error)? else {
+    // Both read before the bundle, so a refresh that ends between the two is
+    // seen, whichever way it ends.
+    let seen = session_generation();
+    let attempts = REFRESH_ATTEMPTS.load(Ordering::Acquire);
+    let Some(mut tokens) = stored_for(cfg)? else {
         return Ok(None);
     };
-    if tokens.client_id != cfg.client_id {
-        return Err(RefreshError::Refused(anyhow::anyhow!(
-            "stored tokens were minted by app client {:?}, but this build uses {:?}; sign in again",
-            tokens.client_id,
-            cfg.client_id
-        )));
-    }
     if !force && !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
         return Ok(Some(tokens));
     }
-    let refreshed = post_token(
+    // One refresh at a time. Every reader finds an expired bundle at once after
+    // a sleep or a reboot - startup, the security feed, the window's reads, the
+    // 30s tick - and each used to mint its own token and store it, which is
+    // what deadlocked the keychain (see `keychain::STORE_LOCK`).
+    //
+    // A caller that waited here takes the outcome of the refresh it waited on,
+    // whichever way it went. Stored: that bundle, which also answers `force`,
+    // since all `force` asks for is a token newer than the one the gateway
+    // refused; and a sign-out meanwhile reads as `None`. Failed: the same
+    // failure, rather than an attempt of its own. Retrying in turn would put
+    // each caller behind every earlier one's timeout, on exactly the wake from
+    // sleep where the network is likeliest to be down.
+    let mut last = REFRESH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut basis = seen;
+    if session_generation() != seen {
+        basis = session_generation();
+        let Some(latest) = stored_for(cfg)? else {
+            return Ok(None);
+        };
+        if !latest.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
+            return Ok(Some(latest));
+        }
+        tokens = latest;
+    } else if REFRESH_ATTEMPTS.load(Ordering::Acquire) != attempts {
+        if let Some(failed) = last.as_ref() {
+            return Err(failed.to_error());
+        }
+    }
+    let minted = post_token(
         cfg,
         &[
             ("grant_type", "refresh_token"),
@@ -713,11 +866,142 @@ fn refresh_stored(
         RefreshError::Unavailable(e) => {
             RefreshError::Unavailable(e.context("refreshing expired access token"))
         }
+    });
+    let outcome = match minted {
+        // A sign-in or sign-out landed while Cognito was answering: the bundle
+        // this refreshed is not the session any more, and storing the result
+        // would put a signed-out user back in, or one user's session over
+        // another's. What is stored now is the answer instead, and nothing is
+        // passed on to the callers waiting here - they read the new session
+        // themselves. A sign-in or sign-out that lands between this check and
+        // the store below is not caught: neither takes this lock, and the
+        // window is one keychain write.
+        Ok(_) if session_generation() != basis => {
+            *last = None;
+            REFRESH_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+            return match stored_for(cfg)? {
+                None => Ok(None),
+                Some(t) if !t.is_expired(OffsetDateTime::now_utc().unix_timestamp()) => Ok(Some(t)),
+                Some(_) => Err(RefreshError::Unavailable(anyhow::anyhow!(
+                    "the session changed while it was being refreshed"
+                ))),
+            };
+        }
+        // A keychain write failing says nothing about the session: the token
+        // in hand is good, it just will not survive a restart. Failing the
+        // refresh here read as `Unavailable`, which every caller treats as
+        // "keep what you have": the 30s tick left the engine on the expired
+        // bearer and the 401 re-check answered `Unchanged`, so routed traffic
+        // was refused while the app showed Protected, until a relaunch.
+        //
+        // So the bundle is kept in memory instead, and stands in for the
+        // stored one the way a successful `store` would have: a new
+        // generation, and the gateway's rejection of the previous bundle
+        // dropped. Whatever the store holds now - the old bundle, or nothing
+        // if `keychain::set` failed after its delete - is not what the next
+        // read serves. Waiters see the generation move and take it.
+        Ok(refreshed) => match store(&refreshed) {
+            Ok(()) => Ok(Some(refreshed)),
+            Err(e) => {
+                crate::logging::failure(&format!(
+                    "storing the refreshed OAuth session failed; keeping it in memory: {e:#}"
+                ));
+                keep_unstored(basis, &refreshed).map(|()| Some(refreshed))
+            }
+        },
+        Err(e) => Err(e),
+    };
+    *last = outcome.as_ref().err().map(SharedFailure::of);
+    REFRESH_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+    outcome
+}
+
+/// Held across a refresh and the store of its result, and holding how the
+/// last refresh failed, if it did; see [`refresh_stored`].
+static REFRESH_LOCK: Mutex<Option<SharedFailure>> = Mutex::new(None);
+
+/// Bumped as each refresh ends, so a caller that waited for one can tell it
+/// ran. Outside the lock, because the caller reads it before taking the lock.
+static REFRESH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+
+/// A refresh failure, kept for the callers that waited on it. `RefreshError`
+/// holds an `anyhow::Error`, which cannot be cloned, so it keeps the
+/// classification and the message.
+struct SharedFailure {
+    refused: bool,
+    message: String,
+}
+
+impl SharedFailure {
+    fn of(e: &RefreshError) -> Self {
+        SharedFailure {
+            refused: e.is_refusal(),
+            message: format!("{e}"),
+        }
+    }
+
+    fn to_error(&self) -> RefreshError {
+        let e = anyhow::anyhow!("{}", self.message);
+        if self.refused {
+            RefreshError::Refused(e)
+        } else {
+            RefreshError::Unavailable(e)
+        }
+    }
+}
+
+/// The session's bundle, refused when this build's Cognito client did not
+/// mint it.
+///
+/// A bundle the store refused earlier outranks the stored one: it is newer,
+/// and the store may hold an expired or gateway-refused bundle, or nothing
+/// readable. See `UNSTORED`.
+fn stored_for(cfg: &OAuthConfig) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    let tokens = match unstored() {
+        Some(tokens) => tokens,
+        None => match current().map_err(classify_read_error)? {
+            Some(tokens) => tokens,
+            None => return Ok(None),
+        },
+    };
+    if tokens.client_id != cfg.client_id {
+        return Err(RefreshError::Refused(anyhow::anyhow!(
+            "stored tokens were minted by app client {:?}, but this build uses {:?}; sign in again",
+            tokens.client_id,
+            cfg.client_id
+        )));
+    }
+    Ok(Some(tokens))
+}
+
+/// Keep `tokens` as [`UNSTORED`], in place of the bundle at generation
+/// `judged` that it was refreshed from.
+///
+/// Refused when the generation has moved since: a sign-in or sign-out landed
+/// while the refresh was out, and this bundle belongs to the session it
+/// replaced. `Unavailable`, so the caller keeps what it has and the next read
+/// starts from the new state. A witness that cannot be read keeps nothing
+/// either: an entry nothing can vouch for would never be served.
+fn keep_unstored(judged: u64, tokens: &OAuthTokens) -> std::result::Result<(), RefreshError> {
+    let mut kept = UNSTORED.lock().map_err(|_| {
+        RefreshError::Unavailable(anyhow::anyhow!("unstored-session lock poisoned"))
     })?;
-    // A keychain write failing says nothing about the session: the token in
-    // hand is good, it just will not survive a restart.
-    store(&refreshed).map_err(RefreshError::Unavailable)?;
-    Ok(Some(refreshed))
+    let witness = crate::account::file_witness().map_err(RefreshError::Unavailable)?;
+    if SESSION_GENERATION
+        .compare_exchange(judged, judged + 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(RefreshError::Unavailable(anyhow::anyhow!(
+            "the session changed while it was being refreshed"
+        )));
+    }
+    SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
+    *kept = Some(Unstored {
+        generation: judged + 1,
+        witness,
+        tokens: tokens.clone(),
+    });
+    Ok(())
 }
 
 /// Classify a failure to read the stored bundle.
@@ -787,6 +1071,73 @@ pub const REDIRECT_PORTS: &[u16] = &[8977, 8978, 8979];
 /// giving up on an interactive login.
 const LOGIN_TIMEOUT_SECS: u64 = 300;
 
+/// The in-flight login's own cancel flag, for [`cancel_login`] to reach.
+///
+/// Five minutes is a long time to be unable to leave a modal, and the common
+/// way to reach that is not a slow user: it is the sign-in page opening in a
+/// browser profile they are not signed into, which they abandon. Without this
+/// the UI could only *look* away from a flow that went on waiting, and any
+/// later success would upgrade an account the user had already declined to
+/// upgrade.
+///
+/// **A registered per-attempt flag, not one global bool, and the difference is
+/// not theoretical.** The first version was a `static AtomicBool` that every
+/// login shared and consumed with `swap`. Review called that out as
+/// single-consumer, and two of this module's own tests then proved it on CI:
+/// running in one process, one test's `login` cleared the flag the other test
+/// had just set, so the cancel was lost and the wait ran to its full deadline.
+/// macOS and Windows failed, Linux passed on scheduling luck. Anything that can
+/// happen between two threads of a test binary can happen between the main
+/// window and the onboarding webview, which share this process too.
+///
+/// Each attempt now owns an `Arc<AtomicBool>` and observes only its own, so a
+/// second attempt can neither swallow the first's cancel nor clear it.
+static CURRENT_LOGIN: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Abandon an interactive login that is still waiting for the browser.
+///
+/// Idempotent and safe to call when none is running: with no attempt
+/// registered there is nothing to set, so a cancel that arrives late lands
+/// nowhere rather than on the next attempt.
+pub fn cancel_login() {
+    if let Ok(current) = CURRENT_LOGIN.lock() {
+        if let Some(flag) = current.as_ref() {
+            flag.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// Registers this attempt's flag for [`cancel_login`], and deregisters it on
+/// the way out however the attempt ends.
+struct CancelScope(Arc<AtomicBool>);
+
+impl CancelScope {
+    fn new() -> Self {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = CURRENT_LOGIN.lock() {
+            *current = Some(Arc::clone(&flag));
+        }
+        Self(flag)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for CancelScope {
+    fn drop(&mut self) {
+        if let Ok(mut current) = CURRENT_LOGIN.lock() {
+            // Only if it is still ours. A second attempt that started while
+            // this one was finishing has already replaced the registration, and
+            // clearing it here would leave that one uncancellable.
+            if current.as_ref().is_some_and(|f| Arc::ptr_eq(f, &self.0)) {
+                *current = None;
+            }
+        }
+    }
+}
+
 const SUCCESS_HTML: &str = "<!doctype html><meta charset=utf-8><title>Signed in</title>\
 <body style=\"font:15px system-ui;margin:4rem auto;max-width:24rem;text-align:center;color:#1a1a1a\">\
 <h1 style=\"font-size:1.1rem\">You're signed in</h1>\
@@ -841,10 +1192,15 @@ impl LoopbackListener {
 
     /// Block until the browser hits `/callback`, validate `state`, and return
     /// the authorization `code`. Ignores unrelated requests (e.g. favicon).
-    pub fn wait_for_code(
+    /// Private, because its `cancel` argument is: a caller outside this module
+    /// has no `CancelScope` to pass and no business making one - the scope is
+    /// created by `login_waiting` so that exactly one attempt is registered
+    /// with `CURRENT_LOGIN` at a time.
+    fn wait_for_code(
         &self,
         expected_state: &str,
         timeout: std::time::Duration,
+        cancel: &CancelScope,
     ) -> Result<String> {
         for listener in &self.listeners {
             listener
@@ -864,6 +1220,13 @@ impl LoopbackListener {
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => return Err(e).context("accepting loopback callback"),
                 }
+            }
+            // Checked on the same 100ms tick the accept loop already runs on,
+            // so a cancel lands within a tick rather than at the deadline.
+            // A plain `load` of this attempt's own flag: there is nothing to
+            // consume, because the flag dies with the attempt.
+            if cancel.cancelled() {
+                bail!("the browser sign-in was stopped from Gate Connect");
             }
             if std::time::Instant::now() >= deadline {
                 bail!("timed out waiting for the login redirect");
@@ -955,13 +1318,57 @@ pub fn login<F>(cfg: &OAuthConfig, candidate_ports: &[u16], open_url: F) -> Resu
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    login_waiting(
+        cfg,
+        candidate_ports,
+        open_url,
+        std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),
+    )
+}
+
+/// [`login`] with the callback deadline as an argument.
+///
+/// A seam, not an API: the deadline is five minutes, and a test that exercises
+/// the paths where no callback ever arrives would otherwise sit through it.
+/// `login` is the only caller outside tests and pins the real value.
+fn login_waiting<F>(
+    cfg: &OAuthConfig,
+    candidate_ports: &[u16],
+    open_url: F,
+    wait_for: std::time::Duration,
+) -> Result<OAuthTokens>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
+    // Registered BEFORE anything the caller can cancel against, which means
+    // before `open_url`. The flag used to be cleared *after* it, directly under
+    // a comment saying a cancel pressed "while the browser was opening must
+    // still stop this attempt" - the code did the opposite of its own sentence
+    // and wiped exactly that cancel. `open_url` is not instant: it hands off to
+    // the desktop's opener, and `xdg-open` with no default handler can block
+    // for seconds. The UI arms its decline the moment the click is sent, so
+    // that window is reachable.
+    //
+    // Nothing is cleared now - the flag is this attempt's own and starts false.
+    let cancel = CancelScope::new();
     let listener = LoopbackListener::bind(candidate_ports)?;
     let req = begin_login(cfg, listener.redirect_uri())?;
     open_url(&req.authorize_url).context("opening the sign-in page in the browser")?;
-    let code = listener.wait_for_code(
-        &req.state,
-        std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),
-    )?;
+    let code = listener.wait_for_code(&req.state, wait_for, &cancel)?;
+    // Checked again after the callback lands, and this is the half that was
+    // missing. `wait_for_code` returning means the browser answered - but the
+    // token exchange and the keychain write are still ahead, and a decline
+    // pressed in that window used to be ignored outright: the login completed,
+    // the account was upgraded, and nothing said so, because the UI had already
+    // closed the dialog and suppresses the error it asked for.
+    //
+    // Refusing here is what makes "declining stops the sign-in" true rather
+    // than merely likely. Nothing has been persisted at this point - `store`
+    // runs below - so abandoning the code is clean; it simply goes unused and
+    // expires.
+    if cancel.cancelled() {
+        bail!("the browser sign-in was stopped from Gate Connect");
+    }
     let tokens = complete_login(cfg, &code, &req.verifier, listener.redirect_uri())?;
     store(&tokens)?;
     Ok(tokens)
@@ -971,12 +1378,141 @@ where
 mod tests {
     use super::*;
 
+    /// A Cognito variable whose repo Variable is unset is baked as `Some("")`,
+    /// and has to read as absent so `from_build_env` returns `None` (the
+    /// API-key fallback) rather than a config with an empty hosted domain.
+    #[test]
+    fn config_value_treats_a_blank_bake_as_absent() {
+        let name = "GATE_COGNITO_TEST_UNSET_FOR_BLANK_BAKE";
+        assert_eq!(config_value(name, Some("")), None);
+        assert_eq!(config_value(name, Some("  ")), None);
+        assert_eq!(config_value(name, None), None);
+        assert_eq!(
+            config_value(name, Some("auth.example")).as_deref(),
+            Some("auth.example")
+        );
+    }
+
+    /// One interactive login at a time, which is what the product has and what
+    /// `cancel_login` means by "the current attempt".
+    ///
+    /// `cargo test` runs these on parallel threads, and without this they
+    /// overlap in a way the app cannot: two attempts register, the later one
+    /// owns the slot, and a `cancel_login()` meant for the first lands on the
+    /// second. That is not a bug in the registration - it is these tests
+    /// inventing a second simultaneous user. Serialising them tests the real
+    /// semantic instead.
+    ///
+    /// Poisoning is stepped over deliberately: a panic in one cancel test must
+    /// fail that test, not cascade into every other one as a `PoisonError`.
+    static LOGIN_TESTS: Mutex<()> = Mutex::new(());
+
+    fn one_login_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        LOGIN_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn cfg() -> OAuthConfig {
         OAuthConfig {
             hosted_domain: "auth.example.test".to_string(),
             client_id: "client123".to_string(),
             scopes: vec!["openid".to_string(), "email".to_string()],
         }
+    }
+
+    /// The cancel path, which shipped with no test at all and had two defects
+    /// that one would have caught.
+    ///
+    /// `login` is driven through its `open_url` seam: the closure runs at the
+    /// exact moment the browser would be handed the URL, so cancelling from
+    /// inside it reproduces "the user pressed decline while the opener was
+    /// still working" - the case the clear used to wipe by running after it.
+    #[test]
+    fn a_cancel_during_the_browser_handoff_stops_the_login() {
+        let _serial = one_login_at_a_time();
+        // `&[0]` binds an ephemeral port, so this needs no fixed port and
+        // cannot collide with a real login or another test.
+        //
+        // Through the deadline seam, so a regression fails in a second rather
+        // than hanging for the real five minutes. That is not hypothetical:
+        // when the cancel flag was one process-global bool, the sibling test
+        // below cleared this one's cancel and this test sat out the whole
+        // deadline before failing - 300s per run, on two of three CI platforms.
+        let err = login_waiting(
+            &cfg(),
+            &[0],
+            |_url| {
+                cancel_login();
+                Ok(())
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .expect_err("a cancelled login must not return tokens");
+
+        assert!(
+            err.to_string().contains("stopped from Gate Connect"),
+            "expected the cancel's own message, got: {err}"
+        );
+    }
+
+    /// A cancel that arrives with no attempt running must not kill the next
+    /// one. With a registered per-attempt flag this is structural - there is
+    /// nothing for the cancel to land on - where the global bool needed it
+    /// cleared on entry and lost races doing so.
+    #[test]
+    fn a_stale_cancel_does_not_kill_the_next_attempt() {
+        let _serial = one_login_at_a_time();
+        cancel_login();
+
+        // The next attempt registers its own flag, which starts false, so the
+        // wait runs and fails on its own terms (nothing ever hits the
+        // callback) rather than on the earlier cancel.
+        let err = login_waiting(
+            &cfg(),
+            &[0],
+            |_url| Ok(()),
+            std::time::Duration::from_millis(150),
+        )
+        .expect_err("no callback arrives here");
+
+        assert!(
+            !err.to_string().contains("stopped from Gate Connect"),
+            "a stale cancel leaked into the next login: {err}"
+        );
+    }
+
+    /// Two attempts in one process do not share a cancel.
+    ///
+    /// The regression these tests were failing on before the flag became
+    /// per-attempt: `cargo test` runs them on parallel threads, one `login`
+    /// cleared the flag another had just set, and the robbed attempt waited out
+    /// its deadline. The same two-attempts-one-process shape is reachable in
+    /// the app, where the main window and the onboarding webview share a
+    /// backend.
+    #[test]
+    fn one_attempts_cancel_does_not_reach_another() {
+        let _serial = one_login_at_a_time();
+        // A first attempt registers, then ends - as an abandoned login does.
+        drop(login_waiting(
+            &cfg(),
+            &[0],
+            |_url| Ok(()),
+            std::time::Duration::from_millis(50),
+        ));
+        // Its late cancel now has nothing to land on.
+        cancel_login();
+
+        let err = login_waiting(
+            &cfg(),
+            &[0],
+            |_url| Ok(()),
+            std::time::Duration::from_millis(150),
+        )
+        .expect_err("no callback arrives here");
+
+        assert!(
+            !err.to_string().contains("stopped from Gate Connect"),
+            "a finished attempt's cancel reached a later one: {err}"
+        );
     }
 
     #[test]
@@ -1085,18 +1621,58 @@ mod tests {
         assert_eq!(t.email().as_deref(), Some("dev@example.test"));
     }
 
-    /// Only a refused or absent credential is a sign-out. An unreachable
-    /// identity provider or an unreadable secret store is not, or every
-    /// offline wake would ask the user to sign in again.
-    #[test]
-    fn only_a_refusal_or_no_bundle_reads_as_signed_out() {
-        let tokens = || OAuthTokens {
+    fn with_id_token(id_token: Option<String>) -> OAuthTokens {
+        OAuthTokens {
             access_token: "a".into(),
             refresh_token: "r".into(),
-            id_token: None,
+            id_token,
             expires_at_unix: 0,
             client_id: String::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn sub_read_from_id_token_payload() {
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"sub":"0b8c1f2e-1111-4222-8333-944455556666","email":"dev@example.test"}"#,
+        );
+        let t = with_id_token(Some(format!("h.{payload}.s")));
+        assert_eq!(
+            t.sub().as_deref(),
+            Some("0b8c1f2e-1111-4222-8333-944455556666")
+        );
+    }
+
+    /// Every malformed shape is `None`, never a panic and never a partial value:
+    /// a wrong sub would merge this install into somebody else's person.
+    #[test]
+    fn sub_is_none_for_malformed_tokens() {
+        let enc = |b: &[u8]| URL_SAFE_NO_PAD.encode(b);
+        for token in [
+            None,
+            Some(String::new()),
+            Some("no-dots-at-all".to_string()),
+            Some("h..s".to_string()),
+            Some("h.!!!not-base64!!!.s".to_string()),
+            Some(format!("h.{}.s", enc(b"not json"))),
+            Some(format!("h.{}.s", enc(br#"{"email":"x@y.z"}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":42}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":""}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":"   "}"#))),
+        ] {
+            assert_eq!(with_id_token(token.clone()).sub(), None, "{token:?}");
+        }
+    }
+
+    fn tokens() -> OAuthTokens {
+        with_id_token(None)
+    }
+
+    /// Round 3, M2: only a refused or absent credential is a sign-out. An
+    /// unreachable identity provider or an unreadable secret store is not, or
+    /// every offline launch would sign the analytics identity out.
+    #[test]
+    fn only_a_refusal_or_no_bundle_reads_as_signed_out() {
         assert!(matches!(
             classify_session(false, || Ok(Some(tokens()))),
             SessionReading::Live(_)

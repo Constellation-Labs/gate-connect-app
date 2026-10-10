@@ -45,12 +45,15 @@ pub fn refresh_session() -> SessionVerdict {
     // an answer is no verdict at all.
     let session = match oauth::ensure_fresh_classified(&cfg) {
         Ok(session) => session,
+        // To the log file as well as stderr: a shipped build has no terminal,
+        // and these lines were the only record of why a restart came up
+        // signed out, or did not.
         Err(e) if e.is_refusal() => {
-            eprintln!("[gate] startup OAuth token refresh was refused: {e}");
+            crate::logging::failure(&format!("startup OAuth token refresh was refused: {e}"));
             return SessionVerdict::NeedsSignIn;
         }
         Err(e) => {
-            eprintln!("[gate] startup OAuth token refresh got no answer: {e}");
+            crate::logging::failure(&format!("startup OAuth token refresh got no answer: {e}"));
             return SessionVerdict::Unavailable;
         }
     };
@@ -62,9 +65,36 @@ pub fn refresh_session() -> SessionVerdict {
     if let (Some(tokens), Ok(Some(gateway))) = (session, account::load_base_url()) {
         match org::probe_session(&gateway, &tokens.access_token) {
             org::SessionProbe::Rejected => {
-                eprintln!("[gate] gateway rejected the stored OAuth session; prompting sign-in");
-                oauth::mark_session_rejected();
-                return SessionVerdict::NeedsSignIn;
+                // A 401 alone is not a verdict: a clock that moved after the
+                // token was stamped keeps a dead token looking fresh, and a
+                // forced refresh recovers that. Same path the data-plane 401
+                // takes, so only a refusal that survives it signs anyone out.
+                crate::logging::failure(&match org::clock_skew_secs() {
+                    Some(skew) if org::clock_skewed() => format!(
+                        "gateway rejected the stored OAuth session; the system clock is \
+                         {skew}s behind the gateway's (negative: ahead); forcing a refresh"
+                    ),
+                    _ => "gateway rejected the stored OAuth session; forcing a refresh".to_string(),
+                });
+                return match reverify_session() {
+                    // `force_refresh` stored the new bundle, or kept it in
+                    // memory when the store refused it, and `live_session`
+                    // serves it either way, so the engine seeds itself from it
+                    // below like any healthy start.
+                    Recheck::Recovered(_) => SessionVerdict::Healthy,
+                    // Already recorded via `mark_session_rejected`.
+                    Recheck::Dead => {
+                        crate::logging::failure(
+                            "gateway rejected the OAuth session after a forced refresh; \
+                             prompting sign-in",
+                        );
+                        SessionVerdict::NeedsSignIn
+                    }
+                    // Identity provider or gateway unreachable: no verdict, and
+                    // an offline moment must never sign anyone out. The runtime
+                    // 401 paths re-verify once the network is back.
+                    Recheck::Unchanged => SessionVerdict::Healthy,
+                };
             }
             org::SessionProbe::Accepted(orgs) => {
                 // Session is live, but a stored org that dropped out of the
@@ -159,8 +189,8 @@ pub fn reverify_session() -> Recheck {
             return Recheck::Unchanged;
         }
     };
-    // The forced refresh stored a bundle of its own: that one is what the
-    // probe judges.
+    // The forced refresh replaced the bundle, in the store or in memory: that
+    // one is what the probe judges.
     let judged = oauth::session_generation();
     let Ok(Some(gateway)) = account::load_base_url() else {
         return Recheck::Unchanged;
@@ -175,7 +205,7 @@ pub fn reverify_session() -> Recheck {
             dead_unless_replaced(judged)
         }
         // Unreachable or a non-auth error: no verdict. The forced refresh
-        // still happened and its token is stored, so a caller that re-seeds
+        // still happened and its token is what `live_session` serves now, so a caller that re-seeds
         // routing on `Recovered` simply doesn't - the next 30s tick picks the
         // new token up through `live_session` anyway.
         org::SessionProbe::Unavailable => Recheck::Unchanged,

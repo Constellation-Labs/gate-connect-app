@@ -166,6 +166,17 @@ export GATE_PROXY_DEBUG=1
 
 PASS=0
 FAIL=0
+# Every `run_tool` that passed, as `label/mode`. Read by the must-have-run check
+# at the end of the script, which is what makes a skip a failure.
+RAN=""
+# Every `run_tool` that started, passed or not, as `label/mode`. A harness that
+# started and failed has already counted its own FAIL, so the must-have-run
+# check leaves it alone rather than counting it twice.
+ATTEMPTED=""
+# Auth modes whose whole phase was abandoned after counting one FAIL for it (the
+# OAuth login failing). Their harnesses never start, and the must-have-run check
+# does not add a FAIL per tool on top of that one.
+ABORTED_MODES=""
 
 # Launch a tool (output to a file, never the step's pipe) and poll the capture
 # until the expected request shows up or we time out. We deliberately do NOT
@@ -385,7 +396,7 @@ stop_relay() {
 # refuses unless `proxy::engine_proxy_url()` is Some. Only `proxy enable`
 # makes it so - it writes the system-proxy snapshot and the engine port, and
 # `proxy relay` (the relay) writes neither. The other two tools keep using
-# the relay and are untouched by this: the exported NO_PROXY is
+# the relay and are untouched by this: the exported NO_PROXY starts
 # `localhost,127.0.0.1,::1`, which exempts both the relay and the mocks.
 #
 # Enable also trusts the CA and points the system proxy at the engine. What
@@ -707,9 +718,9 @@ stop_engine() {
   ENGINE_ON=""
 }
 
-# The macOS/Windows foreground host's stop puts tools whose config names its
-# relay back on their own settings (`revert_stranded_configs_for_quit`), so they
-# do not dial a dead loopback port afterwards. Nothing else here can see that:
+# The macOS/Windows foreground host's stop takes Gate out of every tool's
+# config (`snapshot_and_disable_everything_for_exit`, as the app's quit does),
+# so none of them dials a dead loopback port afterwards. Nothing else here can see that:
 # run_tool disconnects every tool before stop_engine. So leave one relay-routed
 # tool connected across the stop and check it came back unrouted.
 #
@@ -1072,22 +1083,31 @@ oauth_login() {
   wait "$lpid"
 }
 
-# run_tool <label> <slug> <path-needle> <mode> [expected-context] -- <invoke cmd...>
+# run_tool <label> <slug> <path-needle> <mode> [expected-context] [client=<slug>] -- <invoke cmd...>
 #
 # `expected-context` is positional rather than an `EXPECTED_CONTEXT=... run_tool`
 # prefix: on bash < 5.1 (macOS ships 3.2.57 as /bin/bash) an assignment prefix on
 # a FUNCTION call persists after the function returns, so the value would leak
 # into every later call in the same shell and demand the 1M beta of tools that
-# never send it.
+# never send it. `client=` is spelled the same way and for the same reason.
+#
+# `client=` overrides the `x-gate-client` value to assert, and `client=` with
+# nothing after it skips that assertion. It defaults to `$slug`, which is right
+# wherever the tool is relay-routed (the marker in the base URL is the slug) or
+# its User-Agent has been captured.
 run_tool() {
   local label="$1" slug="$2" needle="$3" mode="$4"
   shift 4
-  local expected_context=""
-  if [ "$1" != "--" ]; then
-    expected_context="$1"
+  local expected_context="" expected_client="$slug"
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+    case "$1" in
+      client=*) expected_client="${1#client=}" ;;
+      *) expected_context="$1" ;;
+    esac
     shift
-  fi
+  done
   [ "$1" = "--" ] && shift
+  ATTEMPTED="$ATTEMPTED $label/$mode"
   echo "::group::$label ($mode)"
   TOOL_OUT="$WORK/$slug-$mode.out" # per-tool/phase so the diagnostics step keeps each one
   : > "$CAPTURE"
@@ -1100,10 +1120,14 @@ run_tool() {
     ckpt "[$label/$mode] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
     ckpt "[$label/$mode] asserting capture"
+    # The CLI's tool name is also the `x-gate-client` value the gateway should
+    # record, so `$expected_client` defaults to it and one argument asserts the
+    # attribution too.
     if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" \
-      "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context"; then
+      "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context" "$expected_client"; then
       echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
+      RAN="$RAN $label/$mode"
     else
       echo "FAIL: $label did not reach the gateway as expected ($mode)"
       FAIL=$((FAIL + 1))
@@ -1146,8 +1170,9 @@ run_relay_tools() {
 
   # --- Codex: apikey mode → relay base + /v1, POSTs /v1/responses. Talks to the
   #     relay over plaintext http now, so the old custom-CA problem
-  #     (openai/codex#9526) no longer applies. Guarded on install - codex isn't
-  #     on every runner in the matrix.
+  #     (openai/codex#9526) no longer applies. Installed on every runner and
+  #     expected everywhere, so the install guard is not a sanctioned skip: a
+  #     missing CLI falls through to the must-have-run FAIL at the end.
   if command -v codex >/dev/null 2>&1; then
     mkdir -p "$HOME/.codex"
     printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
@@ -1244,14 +1269,22 @@ run_engine_tools() {
     mkdir -p "$HOME/.openclaw"
     printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1","apiKey":"sk-ant-e2e-dummy"}}}}' \
       > "$HOME/.openclaw/openclaw.json"
-    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" -- \
+    # `client=` with nothing after it: OpenClaw is proxy-routed, so there is no
+    # base-URL marker and attribution rests entirely on its User-Agent, which
+    # nobody here has captured. The gateway detects OpenClaw from body markers
+    # and has no UA signal at all, which is evidence its agent string may not
+    # spell `openclaw`. Asserting it on that premise would turn this row red
+    # with no product bug behind it. Capture the real User-Agent, add it to the
+    # table in `proxy/mod.rs`, then drop this override.
+    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" client= -- \
       openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 
   # --- Hermes: Python OpenAI-compatible agent, PROXY-routed like OpenClaw.
   #     gate-connect writes HTTPS_PROXY / HTTP_PROXY / NO_PROXY / HERMES_CA_BUNDLE
-  #     into ~/.hermes/.env and does not touch config.yaml at all, so the seeded
-  #     base_url below stays CANONICAL and the engine catches the socket
+  #     into ~/.hermes/.env, and touches config.yaml only to add
+  #     `x-gate-tool: hermes` under model.extra_headers. The seeded base_url
+  #     below therefore stays CANONICAL and the engine catches the socket
   #     whichever provider config wins. HERMES_CA_BUNDLE is required rather than
   #     nice-to-have: hermes installs into a venv, so httpx/requests use a
   #     pip-installed certifi that knows nothing about the OS trust store.
@@ -1286,6 +1319,11 @@ run_engine_tools() {
     # sk-or-. Anything else resolves to "provider 'custom' resolved without
     # credentials" and hermes exits before sending a request.
     export OPENROUTER_API_KEY="sk-or-e2e-dummy"
+    # Attribution is asserted, unlike OpenClaw above. Hermes' User-Agent is
+    # python-httpx and names nothing, so what names it is the x-gate-tool
+    # header connect wrote into config.yaml, which the engine reads and turns
+    # into x-gate-client. This is the only run that proves that header leaves a
+    # real Hermes and arrives, so it must not be skipped with `client=`.
     run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
       hermes -z "ping" --model openai/gpt-4o-mini
   fi
@@ -1334,6 +1372,7 @@ else
   echo "::endgroup::"
   echo "FAIL: oauth login did not complete; skipping the OAuth phase"
   FAIL=$((FAIL + 1))
+  ABORTED_MODES="$ABORTED_MODES oauth"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1360,6 +1399,79 @@ else
   sed 's/^/    /' "$AUDIT_LOG" 2>/dev/null || true
   FAIL=$((FAIL + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# Must-have-run: every harness this OS is expected to cover has to have PASSED,
+# in both auth modes. Each tool above guards itself (CLI not installed, no model
+# in the catalog, engine not up) and skips with a notice, which is right for a
+# diagnosis and wrong for a required check: a PR that kept the engine from
+# starting would skip claude-code, openclaw and hermes and stay green. Here a
+# skip becomes a FAIL naming the tool.
+#
+# The one declared absence is Hermes on Windows, which the workflow does not
+# install (install.ps1 has no browser-skip switch); the gateway manifest
+# publishes the same gap as an exception. A new absence goes here, with its
+# reason, or it fails.
+# ---------------------------------------------------------------------------
+EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw hermes"
+[ "$OS" = "Windows" ] && EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw"
+# A harness that started and failed, or a mode whose login failed, has already
+# counted its FAIL above; only one that never reached `run_tool` is counted here.
+for mode in api-key oauth; do
+  case " $ABORTED_MODES " in *" $mode "*) continue ;; esac
+  for tool in $EXPECTED_TOOLS; do
+    case " $RAN " in *" $tool/$mode "*) continue ;; esac
+    case " $ATTEMPTED " in *" $tool/$mode "*) continue ;; esac
+    echo "FAIL: $tool never ran in $mode mode on $OS (skipped by its guard)"
+    FAIL=$((FAIL + 1))
+  done
+done
+
+# ---------------------------------------------------------------------------
+# Result file: the same per-tool, per-mode outcome as above, as JSON the
+# workflow uploads as an artifact. It is the stable contract for anything that
+# reads these runs (the gateway's `last_verified` refresh), so readers never
+# parse log wording. Shape:
+#   {"os":"Linux","commit":"<sha>","ref":"<ref>","finished_at":"<UTC>",
+#    "passed":true,"harnesses":{"codex":{"api-key":"pass","oauth":"pass"},...}}
+# A tool that never passed in a mode is "fail", whatever the reason.
+#
+# `os` is `uname`'s reading - Linux, Darwin or Windows - not the matrix label the
+# artifact is named after (ubuntu-22.04, macos-latest, windows-latest).
+# `passed` is the whole run, not the harness map: it is false when any check in
+# this script failed, the audit and restore checks included, so it can be false
+# while every harness reads "pass".
+#
+# Readers must trust only runs triggered by a push to main. The workflow also
+# runs on pull_request, where `commit` is GitHub's synthetic merge SHA, `ref` is
+# refs/pull/<n>/merge, and the PR's own copy of this script is what wrote the
+# file - so a PR run proves nothing about any released commit.
+# ---------------------------------------------------------------------------
+RESULT="$WORK/real-tools-result.json"
+# Git allows `"` in a branch name (a workflow_dispatch run can carry one), and
+# `\` would need escaping too were it ever allowed, so escape both for JSON.
+ref_json="${GITHUB_REF:-}"
+ref_json="${ref_json//\\/\\\\}"
+ref_json="${ref_json//\"/\\\"}"
+{
+  printf '{"os":"%s","commit":"%s","ref":"%s","finished_at":"%s","passed":%s,"harnesses":{' \
+    "$OS" "${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)}" "$ref_json" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAIL" -eq 0 ] && echo true || echo false)"
+  sep=""
+  for tool in $EXPECTED_TOOLS; do
+    printf '%s"%s":{' "$sep" "$tool"
+    msep=""
+    for mode in api-key oauth; do
+      case " $RAN " in *" $tool/$mode "*) r="pass" ;; *) r="fail" ;; esac
+      printf '%s"%s":"%s"' "$msep" "$mode" "$r"
+      msep=","
+    done
+    printf '}'
+    sep=","
+  done
+  printf '}}\n'
+} > "$RESULT"
+echo "result: $(cat "$RESULT")"
 
 ckpt "all phases finished; reached end of script"
 echo "----------------------------------------"

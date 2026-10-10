@@ -456,9 +456,10 @@ async fn goes_to_the_provider_when_the_engine_is_gone() {
     assert!(seen.ends_with("\r\n\r\nbody"), "{seen}");
 }
 
-/// A pay-as-you-go tool sends no provider credential, so with the app
-/// closed it gets an error naming the fix, not a request its provider will
-/// refuse. Slugs Gate never serves pay-as-you-go still go direct.
+/// A pay-as-you-go request with no provider credential (Codex's PAYG block
+/// sends none) gets an error naming the fix with the app closed, not a request
+/// its provider will refuse. Slugs Gate never serves pay-as-you-go still go
+/// direct.
 #[tokio::test]
 async fn a_payg_request_gets_an_error_not_a_credentialless_request() {
     let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
@@ -487,6 +488,96 @@ async fn a_payg_request_gets_an_error_not_a_credentialless_request() {
     assert!(String::from_utf8(seen.await.unwrap())
         .unwrap()
         .starts_with("GET /api/x "));
+}
+
+/// On a pay-as-you-go account a tool that brings its own key still goes direct
+/// under it: OpenCode always does, and only the engine was swapping it for
+/// Gate's. Refusing it would break a tool that works without Gate.
+#[tokio::test]
+async fn a_payg_account_request_with_its_own_key_goes_direct() {
+    let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let port = start_relay_with(services(Some(dead_port()), table(origin_port), true)).await;
+
+    let reply = roundtrip(
+        port,
+        b"POST /__gate/t/opencode/anthropic/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+          x-api-key: sk-ant-own\r\nContent-Length: 2\r\n\r\n{}",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    let seen = String::from_utf8(seen.await.unwrap()).unwrap();
+    assert!(seen.contains("x-api-key: sk-ant-own\r\n"), "{seen}");
+}
+
+/// A Gate key is not the provider's: sent direct it would hand the Gate key to
+/// the provider, which refuses it anyway. It gets the pay-as-you-go error, and
+/// so does an empty bearer.
+#[tokio::test]
+async fn a_payg_request_with_a_gate_key_or_an_empty_bearer_is_refused() {
+    let (origin_port, _seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let port = start_relay_with(services(Some(dead_port()), table(origin_port), true)).await;
+
+    for credential in [
+        &b"Authorization: Bearer sk-gw-abc"[..],
+        b"Authorization: Bearer ",
+    ] {
+        let mut request =
+            b"POST /__gate/t/codex/anthropic/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n".to_vec();
+        request.extend_from_slice(credential);
+        request.extend_from_slice(b"\r\nContent-Length: 2\r\n\r\n{}");
+        let reply = roundtrip(port, &request).await;
+        assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
+    }
+}
+
+/// The credential the PAYG check reads is judged on the head that is sent,
+/// in every shape the tools use and the ones a request could be crafted in.
+#[test]
+fn the_plan_says_whether_a_provider_credential_is_sent() {
+    let t = table(1);
+    let target = "/__gate/t/opencode/anthropic/v1/messages";
+    let credential =
+        |headers: &[(&str, &str)]| plan11(target, &hdrs(headers), &t).unwrap().credential;
+    // Own keys, in both slots and either case of the scheme.
+    assert!(credential(&[("Authorization", "Bearer sk-proj-own")]));
+    assert!(credential(&[("authorization", "bearer sk-proj-own")]));
+    assert!(credential(&[("x-api-key", "sk-ant-own")]));
+    // A value under another scheme is still a value.
+    assert!(credential(&[("Authorization", "Basic dXNlcg==")]));
+    // No token at all.
+    assert!(!credential(&[]));
+    assert!(!credential(&[("Authorization", "Bearer")]));
+    assert!(!credential(&[("x-api-key", "  ")]));
+    // A Gate key is never a provider credential, in either slot.
+    assert!(!credential(&[("Authorization", "Bearer sk-gw-abc")]));
+    assert!(!credential(&[("x-api-key", "sk-gw-abc")]));
+    // A header the request itself names as hop-by-hop is not sent, so it does
+    // not count.
+    assert!(!credential(&[
+        ("x-api-key", "sk-ant-own"),
+        ("Connection", "x-api-key")
+    ]));
+}
+
+/// A Gate key is dropped from the head in any header, scheme, case or
+/// position, including beside a real key and in a second `Authorization`. The
+/// real key still goes, and still counts.
+#[test]
+fn a_gate_key_never_reaches_the_provider() {
+    let t = table(1);
+    let headers = hdrs(&[
+        ("x-api-key", "sk-ant-own"),
+        ("Authorization", "Bearer sk-gw-first"),
+        ("Authorization", "Bearer SK-GW-second"),
+        ("Authorization", "Bearersk-gw-glued"),
+        ("Authorization", "Basic \"sk-gw-quoted\""),
+        ("x-goog-api-key", "sk-gw-elsewhere"),
+    ]);
+    let plan = plan11("/__gate/t/opencode/anthropic/v1/messages", &headers, &t).unwrap();
+    let head = head_text(&plan);
+    assert!(!head.to_ascii_lowercase().contains("sk-gw-"), "{head}");
+    assert!(head.contains("x-api-key: sk-ant-own\r\n"), "{head}");
+    assert!(plan.credential);
 }
 
 /// A relay of ours on the engine port gets the connection, byte for byte,
@@ -975,11 +1066,17 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
     assert!(quiet.is_err(), "an idle splice ends");
     assert!(started.elapsed() < Duration::from_secs(5));
 
+    // The busy half gets its own, longer idle window. With the 300ms one, a
+    // byte every 100ms left a 3x margin, and a loaded CI runner stretching one
+    // sleep past 300ms made the splice close as idle - correctly - and the test
+    // fail (seen on macOS). A byte every 50ms against 1s is a 20x margin, and
+    // 45 of them still run past two idle periods in total.
+    let busy_idle = Duration::from_secs(1);
     let (mut client, mut tool) = pair().await;
     let (mut engine, mut gate) = pair().await;
     let talk = tokio::spawn(async move {
-        for _ in 0..6 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        for _ in 0..45 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
             tool.write_all(b"x").await.unwrap();
             let mut one = [0u8; 1];
             gate.read_exact(&mut one).await.unwrap();
@@ -988,7 +1085,7 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
         drop(tool);
         drop(gate);
     });
-    splice(&mut client, &mut engine, idle, not_retiring())
+    splice(&mut client, &mut engine, busy_idle, not_retiring())
         .await
         .expect("a splice that keeps moving runs to its close");
     talk.await.unwrap();
@@ -1065,4 +1162,28 @@ async fn a_proof_with_trailing_bytes_is_not_trusted() {
     .await;
     assert!(reply.starts_with("HTTP/1.1 502"), "{reply}");
     assert!(!reply.contains("forged"), "{reply}");
+}
+
+/// A tool on Gate models names Gate's own route, which has no provider behind
+/// it: with the app closed it gets a 503 saying so, not to be retried, and
+/// nothing reaches any origin.
+#[tokio::test]
+async fn the_gate_models_route_says_gate_connect_is_closed() {
+    let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let port = start_relay(Some(dead_port()), table(origin_port)).await;
+
+    let reply = roundtrip(
+        port,
+        b"POST /__gate/t/codex/gate/v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+          Content-Length: 2\r\n\r\n{}",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
+    assert!(reply.contains("X-Should-Retry: false\r\n"), "{reply}");
+    assert!(reply.contains("Gate models"), "{reply}");
+    assert!(
+        reply.contains("\"code\":\"gate_connect_not_running\""),
+        "{reply}"
+    );
+    drop(seen);
 }

@@ -96,19 +96,29 @@ jobs:
           # Inlined into the frontend bundle by Vite (beforeBuildCommand). Absent
           # ⇒ analytics stays a no-op, so the build still succeeds without it.
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          # Inlined the same way. A tag with a `-` suffix is a pre-release, and
+          # only a pre-release lists the staging and dev gateways
+          # (GATEWAY_SERVERS in src/lib/config.ts). The same expression marks
+          # the GitHub release `prerelease` below, so the bundle and the
+          # release agree on what they are.
+          VITE_GATE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
           # Cognito OAuth client config, baked into the binary at compile time
           # via `option_env!` (crates/core/src/oauth.rs). Public client config,
           # not secrets, so these are repo Variables. Absent ⇒ the app falls
           # back to the legacy API-key flow. GATE_COGNITO_SCOPES is optional;
           # the code defaults to "openid email profile aws.cognito.signin.user.admin".
-          # Both pools are baked in; the app picks prod vs staging at runtime by
-          # the selected gateway host (STAGING_GATEWAY_HOST in oauth.rs).
+          # All three pools are baked in; the app picks prod, staging or dev at
+          # runtime by the selected gateway host (STAGING_GATEWAY_HOST and
+          # DEV_GATEWAY_HOST in account.rs).
           GATE_COGNITO_HOSTED_DOMAIN: ${{ vars.GATE_COGNITO_HOSTED_DOMAIN }}
           GATE_COGNITO_CLIENT_ID: ${{ vars.GATE_COGNITO_CLIENT_ID }}
           GATE_COGNITO_SCOPES: ${{ vars.GATE_COGNITO_SCOPES }}
           GATE_COGNITO_HOSTED_DOMAIN_STAGING: ${{ vars.GATE_COGNITO_HOSTED_DOMAIN_STAGING }}
           GATE_COGNITO_CLIENT_ID_STAGING: ${{ vars.GATE_COGNITO_CLIENT_ID_STAGING }}
           GATE_COGNITO_SCOPES_STAGING: ${{ vars.GATE_COGNITO_SCOPES_STAGING }}
+          GATE_COGNITO_HOSTED_DOMAIN_DEV: ${{ vars.GATE_COGNITO_HOSTED_DOMAIN_DEV }}
+          GATE_COGNITO_CLIENT_ID_DEV: ${{ vars.GATE_COGNITO_CLIENT_ID_DEV }}
+          GATE_COGNITO_SCOPES_DEV: ${{ vars.GATE_COGNITO_SCOPES_DEV }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Gate Connect ${{ github.ref_name }}'
@@ -118,7 +128,11 @@ jobs:
           # generation; the other legs find and reuse the existing draft.
           generateReleaseNotes: true
           releaseDraft: true
-          prerelease: false
+          # A pre-release is kept out of /releases/latest, which is what the
+          # updater reads, so a stable install can never auto-update into a
+          # build that offers staging and dev. Publishing an `-rc` draft as
+          # Latest by hand used to be one click away from exactly that.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
       # Tauri's AppImage bundler pulls libwayland-client/cursor/egl/server
       # into the AppDir via the GTK/WebKit dependency chain, even though

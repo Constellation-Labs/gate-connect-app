@@ -1,0 +1,141 @@
+import { describe, expect, it } from "vitest";
+import { dashboardLinks, dashboardOrigin, viewActivityApps } from "./dashboard";
+import { SECTION_CLIENTS, paneClients } from "./groups";
+
+describe("dashboardOrigin", () => {
+  it("maps the production gateway to the production dashboard", () => {
+    expect(dashboardOrigin("https://gateway.constellationgate.ai")).toBe(
+      "https://app.constellationgate.ai",
+    );
+  });
+
+  it("keeps the environment suffix, which is the whole point", () => {
+    // The bug this module exists to fix: a staging gateway used to hand out
+    // production dashboard links from five call sites.
+    expect(dashboardOrigin("https://gateway-staging.constellationgate.ai")).toBe(
+      "https://app-staging.constellationgate.ai",
+    );
+  });
+
+  it("maps an environment nobody has added yet, without another edit here", () => {
+    expect(dashboardOrigin("https://gateway-dev.constellationgate.ai")).toBe(
+      "https://app-dev.constellationgate.ai",
+    );
+  });
+
+  it("tolerates a trailing slash and a path on the gateway URL", () => {
+    expect(dashboardOrigin("https://gateway.constellationgate.ai/")).toBe(
+      "https://app.constellationgate.ai",
+    );
+  });
+
+  it.each([
+    ["a local dev gateway, which has no dashboard", "http://localhost:3000"],
+    ["an https localhost", "https://localhost:3000"],
+    ["a host outside constellationgate.ai", "https://gateway.evil.example.com"],
+    ["a constellationgate host that is not a gateway", "https://app.constellationgate.ai"],
+    ["a deeper subdomain the rule was not written for", "https://gateway.eu.constellationgate.ai"],
+    ["a lookalike suffix", "https://gateway.notconstellationgate.ai"],
+    ["an unparseable value", "not a url"],
+    ["an empty string", ""],
+  ])("returns null for %s", (_label, input) => {
+    expect(dashboardOrigin(input)).toBeNull();
+  });
+
+  it("returns null rather than guessing when there is no account yet", () => {
+    // `Account` is null before the first read lands, and on a failed keychain
+    // read. Neither is a licence to pick an environment.
+    expect(dashboardOrigin(null)).toBeNull();
+    expect(dashboardOrigin(undefined)).toBeNull();
+  });
+});
+
+describe("dashboardLinks", () => {
+  const links = dashboardLinks("https://gateway-staging.constellationgate.ai")!;
+
+  it("builds every destination on the matching environment", () => {
+    expect(links).toMatchObject({
+      root: "https://app-staging.constellationgate.ai/",
+      apiKeys: "https://app-staging.constellationgate.ai/api-keys",
+      policies: "https://app-staging.constellationgate.ai/policies",
+      savings: "https://app-staging.constellationgate.ai/token-savings",
+      // Support is the Overview page: the dashboard has no support route, the
+      // support control is a floating button in its corner (2026-09-07).
+      support: "https://app-staging.constellationgate.ai/overview",
+    });
+  });
+
+  it("percent-encodes a request id into the message link", () => {
+    expect(links.message("req/1 2")).toBe(
+      "https://app-staging.constellationgate.ai/messages/req%2F1%202",
+    );
+  });
+
+  it("filters Messages to the apps and installation a card draws", () => {
+    // The contract the dashboard reads: a comma list of `client_tool` names,
+    // ANDed with `device`, over the feed's own 24h window.
+    const url = new URL(links.messages({ apps: ["claude-desktop", "claude-web"], device: "inst 1" }));
+    expect(url.pathname).toBe("/messages");
+    expect(url.searchParams.get("app")).toBe("claude-desktop,claude-web");
+    expect(url.searchParams.get("device")).toBe("inst 1");
+    expect(url.searchParams.get("timeRange")).toBe("24h");
+  });
+
+  it("leaves out a Messages filter that has no value", () => {
+    expect(links.messages({ apps: ["codex"], device: null })).toBe(
+      "https://app-staging.constellationgate.ai/messages?app=codex&timeRange=24h",
+    );
+  });
+
+  it("scopes Security to an installation, or to none", () => {
+    expect(links.security({ device: "a/b" })).toBe(
+      "https://app-staging.constellationgate.ai/security?device=a%2Fb",
+    );
+    expect(links.security({ device: null })).toBe("https://app-staging.constellationgate.ai/security");
+  });
+
+  it("gives every link a path, because a bare origin is rejected by the ACL", () => {
+    // `glob::Pattern` matches `https://*.constellationgate.ai/*` against the raw
+    // string, and a bare origin has no `/` for the literal separator. A link
+    // that fails this is a button that silently does nothing.
+    const every = [links.root, links.apiKeys, links.policies, links.savings, links.support, links.message("x"), links.messages({ apps: [] }), links.security({})];
+    for (const url of every) {
+      expect(new URL(url).pathname.length, url).toBeGreaterThan(0);
+      expect(url.startsWith("https://app-staging.constellationgate.ai/"), url).toBe(true);
+    }
+  });
+
+  it("is null for a gateway with no dashboard, so callers must handle it", () => {
+    expect(dashboardLinks("http://localhost:3000")).toBeNull();
+  });
+});
+
+describe("viewActivityApps", () => {
+  it("links a section pane to every sender its card reads, tool installed or not", () => {
+    // The card reads the whole section with or without the config tool, so the
+    // link does too: otherwise it would drop the desktop app and the website.
+    for (const tool of ["claude-code", null]) {
+      expect(viewActivityApps({ machineKnown: true, clients: paneClients("claude", tool) })).toEqual(
+        SECTION_CLIENTS.claude,
+      );
+    }
+    expect(viewActivityApps({ machineKnown: true, clients: paneClients("chatgpt", "codex") })).toEqual(
+      SECTION_CLIENTS.chatgpt,
+    );
+  });
+
+  it("links a tool pane outside any section to that tool", () => {
+    expect(viewActivityApps({ machineKnown: true, clients: paneClients("opencode", "opencode") })).toEqual([
+      "opencode",
+    ]);
+  });
+
+  it("has nothing for a pane with no per-app reading", () => {
+    expect(viewActivityApps({ machineKnown: true, clients: paneClients("openai-api", null) })).toBeNull();
+  });
+
+  it("has nothing while the gateway does not know this machine", () => {
+    // The link is scoped to the install; without one it would be org-wide.
+    expect(viewActivityApps({ machineKnown: false, clients: paneClients("claude", "claude-code") })).toBeNull();
+  });
+});

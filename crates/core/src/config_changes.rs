@@ -1,6 +1,6 @@
 //! When Gate last changed each tool's configuration file.
 //!
-//! The app's reopen check (`agent_needs_reopen` in `src-tauri`) asks whether a running tool started before the last change
+//! [`crate::reopen`] asks whether a running tool started before the last change
 //! to its configuration, because a tool reads that file once, at startup. It
 //! used to take the answer from the file's mtime, and the mtime moves on any
 //! edit to the file - including every edit the tool makes to itself. Claude
@@ -20,11 +20,14 @@
 //! compares the file with what Gate wrote, so a changed proxy reads as Not
 //! protected on the row.
 //!
-//! Keyed by the path as displayed, which is the form `config_location` returns.
+//! **Two writers can lose a stamp.** The app and the CLI both write here, and a
+//! stamp is a read, an insert and a write with no lock between them, so two
+//! changes that land at once can keep only one. The one lost is a change a
+//! running process missed with no reopen notice for it: the same "no evidence,
+//! no claim" outcome as a missing record, accepted because overlapping writes
+//! need a CLI connect racing the app's own pass.
 //!
-//! **Not locked.** The app and the CLI can both connect tools, and two records
-//! racing lose one stamp. That can only drop a reopen notice, never raise a
-//! false one, which is the same failure a missing record already has.
+//! Keyed by the path as displayed, which is the form `config_location` returns.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -79,10 +82,10 @@ fn record(path: &Path) {
         crate::primitives::write_file(&store_path()?, body.as_bytes(), 0o600)
     });
     if let Err(e) = saved {
-        eprintln!(
-            "[gate] could not record the change to {}: {e:#}",
+        crate::logging::failure(&format!(
+            "could not record the change to {}: {e:#}",
             path.display()
-        );
+        ));
     }
 }
 
@@ -96,7 +99,7 @@ fn load() -> Result<BTreeMap<String, u64>> {
     // which would stop config changes raising a reopen notice for good. Losing
     // the old stamps costs the same as having none.
     Ok(serde_json::from_str(&raw).unwrap_or_else(|e| {
-        eprintln!("[gate] discarding unparsable {}: {e}", path.display());
+        crate::logging::failure(&format!("discarding unparsable {}: {e}", path.display()));
         BTreeMap::new()
     }))
 }

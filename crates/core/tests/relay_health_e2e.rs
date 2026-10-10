@@ -55,6 +55,7 @@ fn relay_health_proves_itself_and_tracks_the_intercept_flag() {
     let engine = engine::start(
         EngineConfig {
             gateway_base_url: "https://gateway.example.com".into(),
+            billing_mode: Default::default(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
             org_id: String::new(),

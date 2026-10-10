@@ -1,0 +1,204 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { AlertBanner, NoteBanner, PaneNote, ReopenAlert, RoutingBanner } from "./banners";
+
+afterEach(cleanup);
+
+/**
+ * The pane's reopen card, which is the window's only surface for a pending
+ * reopen since the shell banner was removed.
+ *
+ * Unit-level because the branch that removed the banner took the redundancy
+ * with it: e2e proves the card is reachable, and these prove what it says when
+ * it gets there - in particular the degraded case, which is the one no frame
+ * draws and the one a sweep produces on a real machine.
+ */
+describe("ReopenAlert", () => {
+  const props = {
+    name: "Claude Code",
+    onReopen: () => {},
+  };
+
+  it("names the tool in the sentence, and announces itself", () => {
+    render(<ReopenAlert {...props} routeInUse="api.anthropic.com" requestedRoute="gw.example" />);
+
+    // The rail carries the bare phrase, so the card's job is to say which tool
+    // - it is the only surface that does on a single-member section.
+    expect(screen.getByText("Reopen Claude Code to finish")).toBeTruthy();
+    // Raised by a background sweep with nothing the user did behind it. Silence
+    // was what the deleted shell banner's `role="status"` used to prevent.
+    expect(screen.getByRole("status")).toBeTruthy();
+  });
+
+  it("draws both routes when the verdict established both", () => {
+    render(<ReopenAlert {...props} routeInUse="api.anthropic.com" requestedRoute="gw.example" />);
+
+    expect(screen.getByText("api.anthropic.com")).toBeTruthy();
+    expect(screen.getByText("gw.example")).toBeTruthy();
+  });
+
+  /**
+   * AG-570 asks for the route in use and the requested route, and the card used
+   * to infer them from the config file when the sweep could not say. It was
+   * caught being wrong - a tool with no Gate values anywhere for a week, under a
+   * card claiming it was still on the gateway - so a missing half now drops the
+   * pair rather than guessing at it. Principle 6: a figure is a measurement.
+   */
+  it.each([
+    ["no route in use", { routeInUse: null, requestedRoute: "gw.example" }],
+    ["no requested route", { routeInUse: "api.anthropic.com", requestedRoute: null }],
+    ["neither", { routeInUse: null, requestedRoute: null }],
+  ])("names no endpoint at all when the sweep gave %s", (_label, routes) => {
+    render(<ReopenAlert {...props} {...routes} />);
+
+    // The phrase and the action survive; only the claim about traffic goes.
+    expect(screen.getByText("Reopen Claude Code to finish")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close tool" })).toBeTruthy();
+    expect(screen.queryByText(/In use:/)).toBeNull();
+    expect(screen.queryByText(/Requested:/)).toBeNull();
+  });
+
+  it("offers the close, because Gate cannot start a CLI again", () => {
+    const onReopen = vi.fn();
+    render(<ReopenAlert {...props} onReopen={onReopen} />);
+
+    // "Close tool", not "Reopen Claude Code": the button raises the close
+    // confirmation, and a label promising the reopen promised the one thing
+    // this flow never does.
+    screen.getByRole("button", { name: "Close tool" }).click();
+
+    expect(onReopen).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills the close as primary, as `PaneNote`'s action is", () => {
+    render(<ReopenAlert {...props} />);
+    expect(screen.getByRole("button", { name: "Close tool" }).className).toContain(
+      "bg-base-primary",
+    );
+  });
+});
+
+/**
+ * The topbar's fraction, which is the half of the 2026-09-23 change that no
+ * test covered.
+ *
+ * It is also the half that deviates from a drawn frame: `228:85990` draws
+ * `Routed · 4 of 4 Apps`, routed over requested. These pin the replacement so
+ * a later "match the frame" pass fails a test rather than quietly reverting a
+ * decision someone made on purpose.
+ */
+describe("RoutingBanner's fraction", () => {
+  it("counts apps routed, out of apps available", () => {
+    // Two on and both routed, on a rail of eight.
+    render(
+      <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
+    );
+    expect(screen.getByText("Gate Connect is protecting you")).toBeTruthy();
+    expect(screen.getByText("Protected")).toBeTruthy();
+    expect(screen.getByText("2 of 8 Apps")).toBeTruthy();
+  });
+
+  it("counts outcome, so the digits agree with the label beside them", () => {
+    // Two on, one routed. The numerator moved from switched-on to routed on
+    // 2026-09-30, when the "on" suffix went: "2 of 8 Apps" beside "Not
+    // protected" counted neither the protected nor the unprotected apps.
+    render(
+      <RoutingBanner protectedCount={1} totalCount={2} availableCount={8} />,
+    );
+    expect(screen.getByText("Gate Connect is partly routing your apps")).toBeTruthy();
+    expect(screen.getByText("Not protected")).toBeTruthy();
+    expect(screen.getByText("1 of 8 Apps")).toBeTruthy();
+    expect(screen.queryByText(/Apps on/)).toBeNull();
+  });
+
+  it("prints 0 of M with nothing switched on, in the grey none state", () => {
+    // The reading a full rail with nothing on most needs, and the one the old
+    // `showsFraction` suppressed along with the meaningless "0 of 0". The
+    // state is the drawn grey one (`1390:14024`): a muted label, not amber.
+    render(
+      <RoutingBanner protectedCount={0} totalCount={0} availableCount={8} />,
+    );
+    expect(screen.getByText("No apps are routed")).toBeTruthy();
+    const label = screen.getByText("Not routed");
+    expect(label.className).toContain("text-base-muted-foreground");
+    expect(label.className).not.toContain("text-amber-600");
+    expect(screen.getByText("0 of 8 Apps")).toBeTruthy();
+  });
+
+  it("says nothing about a ratio when the rail is empty", () => {
+    // "0 of 0" is a ratio with both halves meaningless, and that suppression
+    // is the one this change kept.
+    render(
+      <RoutingBanner protectedCount={0} totalCount={0} availableCount={0} />,
+    );
+    expect(screen.getByText("No apps are routed")).toBeTruthy();
+    expect(screen.queryByText(/of 0 Apps/)).toBeNull();
+  });
+});
+
+describe("AlertBanner", () => {
+  const props = {
+    title: "Couldn’t connect this tool",
+    body: "Click Connect again.",
+    on: false,
+    switchLabel: "Try Codex again",
+    onToggle: () => {},
+    onDismiss: () => {},
+  };
+
+  it("carries a failed write's underlying message behind Details", () => {
+    render(<AlertBanner {...props} details="failed to write ~/.codex/config.toml" />);
+    expect(screen.getByText("Details")).toBeTruthy();
+    expect(screen.getByText("failed to write ~/.codex/config.toml")).toBeTruthy();
+  });
+
+  it("draws no Details without one", () => {
+    render(<AlertBanner {...props} />);
+    expect(screen.queryByText("Details")).toBeNull();
+  });
+});
+
+/**
+ * The shell note: amber, because its one caller - the browser-certificate note -
+ * means for a browser what `ReopenAlert` means for a tool.
+ */
+describe("NoteBanner", () => {
+  const props = { title: "Browsers already open need reopening", body: "Quit and reopen.", onDismiss: () => {} };
+
+  it("draws the amber warning tile", () => {
+    const { container } = render(<NoteBanner {...props} />);
+    expect(container.querySelector(".from-amber-50.border-amber-300")).not.toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(props.body);
+  });
+});
+
+/**
+ * The pane's reason card. Its action is optional - most reasons have no fix
+ * the pane can run - and is held while routing is busy, so a click cannot
+ * start a second write over the first.
+ */
+describe("PaneNote", () => {
+  const props = { title: "Claude isn’t fully protected", body: "Claude Code isn’t routed." };
+
+  it("draws no button without an action", () => {
+    render(<PaneNote {...props} />);
+    expect(screen.getByRole("status").textContent).toContain(props.body);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("runs its action on click", () => {
+    const onClick = vi.fn();
+    render(<PaneNote {...props} action={{ label: "Route it", onClick }} />);
+    screen.getByRole("button", { name: "Route it" }).click();
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables its action while busy", () => {
+    const onClick = vi.fn();
+    render(<PaneNote {...props} action={{ label: "Route it", onClick, busy: true }} />);
+    const button = screen.getByRole("button", { name: "Route it" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    button.click();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});

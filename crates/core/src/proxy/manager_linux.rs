@@ -65,6 +65,14 @@ impl ProxyManager {
         self.client.try_lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
+    /// Whether the daemon is intercepting. Asked through [`status`](Self::status)
+    /// here, unlike the other platforms: the answer is a daemon round-trip
+    /// either way, and this is not on a quit path, since quitting the GUI
+    /// leaves the daemon running.
+    pub fn is_running(&self) -> bool {
+        self.status().map(|s| s.running).unwrap_or(false)
+    }
+
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
@@ -125,10 +133,20 @@ impl ProxyManager {
             // is no PAC listener.
             pac_port: None,
             ca_trusted: ca::is_trusted()?,
-            ca_nss_trusted: ca::nss_ca_trusted(),
-            ca_nss_writes: ca::nss_writes(),
+            // The stores the browsers read, which `ca::is_trusted` above does
+            // not look at: it reads the system anchor alone, and the two
+            // disagreeing is the whole of "curl works, the browsers don't". Served from what
+            // the last write recorded rather than probed - `status` is polled,
+            // and `certutil` does not belong on a polled path (see the field).
+            // The outcome alone: the copy switches on the variant, and the
+            // per-store refusals behind it are the report's business, not this
+            // snapshot's - `status` is polled and every poll would clone them.
+            ca_nss_trust: ca::recorded_nss_trust().map(|r| r.outcome),
+            ca_nss_written_at: ca::nss_written_at(),
+            browser_proxy_channel: system_proxy::browser_proxy_channel(),
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
+            relay_base_url: crate::proxy::relay_base_url(),
             // No forwarder on Linux: the daemon outlives the GUI, which is the
             // failure the forwarder exists to cover elsewhere.
             forwarder_answering: None,
@@ -197,6 +215,7 @@ impl ProxyManager {
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
             &crate::account::org_id_for_injection(),
+            account.billing_mode,
             ca.cert_pem(),
             ca.key_pem(),
             &domains,
@@ -350,6 +369,13 @@ impl ProxyManager {
     /// Toggle a domain. If the proxy is on, push the new rule set to the daemon
     /// live - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
+        self.set_domain_quiet(slug, enabled)?;
+        self.status()
+    }
+
+    /// [`set_domain`](Self::set_domain) without the status it returns, for a
+    /// caller that would discard it.
+    pub fn set_domain_quiet(&self, slug: &str, enabled: bool) -> Result<()> {
         let domains = config::set_enabled(slug, enabled)?;
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
         // Adopt a running daemon when this process has no connection of its
@@ -372,9 +398,7 @@ impl ProxyManager {
             // wedge the toggle; the next status reflects reality.
             self.push_intercept(client, &domains);
         }
-        // Released before `status`, which takes the same lock.
-        drop(guard);
-        self.status()
+        Ok(())
     }
 
     /// Push a rotated Gate API key into the running daemon, if any - it
@@ -396,6 +420,7 @@ impl ProxyManager {
                     api_key,
                     &crate::oauth::access_token_for_injection(),
                     &crate::account::org_id_for_injection(),
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -428,6 +453,7 @@ impl ProxyManager {
                     api_key,
                     "",
                     &crate::account::org_id_for_injection(),
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -483,6 +509,7 @@ impl ProxyManager {
                     &account.api_key,
                     oauth_token,
                     &crate::account::org_id_for_injection(),
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -514,6 +541,7 @@ impl ProxyManager {
                     &account.api_key,
                     &crate::oauth::access_token_for_injection(),
                     org_id,
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -522,6 +550,27 @@ impl ProxyManager {
                     crate::proxy::relay::load_persisted_port(),
                 );
             }
+        }
+    }
+
+    /// Push a changed billing mode into the running daemon, if any. There is no
+    /// separate update message on Linux: `SetIntercept` carries the mode, and
+    /// the daemon applies it live to an already-running engine, so this folds
+    /// into the same re-send the other refreshers use. Reads the mode from disk
+    /// rather than taking it as an argument, so the daemon can never be told a
+    /// mode the account does not actually hold.
+    pub fn refresh_mode(&self) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            self.push_intercept(client, &domains);
         }
     }
 
@@ -541,6 +590,7 @@ impl ProxyManager {
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
             &crate::account::org_id_for_injection(),
+            account.billing_mode,
             ca.cert_pem(),
             ca.key_pem(),
             domains,
@@ -612,9 +662,10 @@ impl ProxyManager {
         Ok(was_routing)
     }
 
-    /// Record routing as off after an untrust that stopped it, so the next
-    /// launch does not re-enable routing from the stored intent and ask to
-    /// trust a new root. Best-effort: the untrust has already happened.
+    /// Record routing as off after an untrust that stopped it, so the stored
+    /// intent keeps saying what is true right now (routing follows the app, so
+    /// the next launch turns it back on regardless). Best-effort: the untrust
+    /// has already happened.
     fn record_routing_off(was_routing: bool) {
         if was_routing {
             if let Err(e) = crate::proxy::intent::set_intent(false) {

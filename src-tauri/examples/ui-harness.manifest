@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  The application manifest for src-tauri/examples/ui-harness.rs, on Windows.
+
+  tauri-build embeds this same dependency (its windows-app-manifest.xml) into
+  the package's BINARIES, through embed-resource's `rustc-link-arg-bins`. An
+  example is not a binary target, so it gets no manifest, and a process with no
+  manifest is given Common Controls 5.82 from System32 instead of the 6.0
+  side-by-side assembly. The desktop library imports `TaskDialogIndirect`
+  (tauri-runtime-wry's message dialog), which only 6.0 exports, so the loader
+  refuses the exe before `main` with STATUS_ENTRYPOINT_NOT_FOUND - which Git
+  Bash reports as a bare exit 127. src-tauri/build.rs links this file into
+  examples to close that gap.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

@@ -1,0 +1,383 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  closeRunningAgents,
+  reopenRunningAgents,
+  runningAgents,
+  routingVerdicts,
+} from "./api";
+import type { Verdict } from "./api";
+import { track, trackError } from "./analytics";
+import {
+  allSettled,
+  isResting,
+  nextStage,
+  REOPEN_IDLE_WATCH_MS,
+  reopenKey,
+  reopenTools,
+  type ReopenPresence,
+  type ReopenStage,
+  type ReopenTool,
+} from "./reopen";
+
+/**
+ * What happens after a tool's config is rewritten while that tool is running.
+ *
+ * A running app read its configuration at launch, so the new route does not
+ * apply to it until it restarts. Gate can close it but **cannot reopen it** -
+ * every tool in the registry is a terminal program whose shell session Gate does
+ * not own, which `RunningAgent.can_reopen` reports rather than this file
+ * assuming. That is the whole reason this is a conversation rather than
+ * something done quietly: closing an editor mid-session is the user's call, not
+ * ours, and the user is the only one who can start it again.
+ *
+ * Two stages: offer and work. The offer is the one question: its primary is
+ * the *passive* option ("I will reopen later") and the destructive one is
+ * deliberately the secondary. It used to be followed by a second confirmation
+ * before anything was killed; the frame (`App/Codex/apply-changes`) asks once,
+ * and so does this.
+ *
+ * **The work stage watches rather than assumes.** Closing a process proves
+ * nothing about the route that replaces it, so each tool is followed from
+ * closing to reopened to verified, off the same two probes the rail uses. A row
+ * only reads verified once a *new* process is up and the sweep has answered for
+ * it - AG-566 AC 8, and the reason a closed tool does not quietly count as done
+ * even though `verdict_for` would happily call its config `on`.
+ *
+ * Deliberately not part of `useRouting`. That hook's prompt is a **gate**: it
+ * blocks a write until answered. This is the opposite - it runs after a
+ * successful write and can be walked away from at any point without changing
+ * what was saved.
+ */
+
+/** How often the work stage re-reads the process table and the sweep while Gate
+ *  is the one acting.
+ *
+ *  Two cadences, because the two waits are different lengths: while Gate is
+ *  acting the row should move under the reader, and while it is waiting for
+ *  someone to open a terminal it should not walk the process table twenty times
+ *  a minute for an answer that arrives when it arrives. The slower half is
+ *  `REOPEN_IDLE_WATCH_MS`, which lives in `lib/reopen` because both shells keep
+ *  looking on the same cadence once this dialog has been dismissed. */
+const WATCH_MS = 3000;
+
+export type RunningAppsStage =
+  /** Affected apps are running; offer to close them. `closing` while the close
+   *  request for exactly this offer is in flight, which is what the dialog's
+   *  spinner reads: on the stage rather than beside it, so an offer that
+   *  replaces this one mid-close does not inherit the spinner. */
+  | { kind: "offer"; tools: ReopenTool[]; slugs?: string[]; closing?: boolean }
+  /** Signalled. Each tool is now followed to its own conclusion. */
+  | { kind: "work"; tools: ReopenTool[]; slugs?: string[] };
+
+export interface RunningApps {
+  stage: RunningAppsStage | null;
+  /**
+   * Probe, and open the sequence only if something is actually running.
+   *
+   * `slugs` are the tools whose configs the write actually touched. Omitting
+   * them asks about every tool, which only the master toggle means.
+   */
+  offerAfterChange: (slugs?: string[]) => Promise<void>;
+  closeApps: () => Promise<void>;
+  /** Move one row, for an action the shell owns: a retried write, a tool put
+   *  back on its own defaults. Scoped to one slug on purpose - AG-566 AC 10
+   *  requires that retrying one tool repeats nothing for another. */
+  markStage: (slug: string, stage: ReopenStage, error?: string) => void;
+  /** Re-read the probes now rather than on the next tick, for a row's Retry
+   *  verification. */
+  checkNow: () => Promise<void>;
+  dismiss: () => void;
+}
+
+export function useRunningApps({
+  onError,
+  onNothingRunning,
+  nameFor,
+}: {
+  onError?: (err: unknown) => void;
+  /**
+   * The scan found no process for the tools it was asked about.
+   *
+   * Called instead of opening a dialog, because a dialog about nothing is worse
+   * than silence - but silence alone is what made the reopen card's own button
+   * look broken. The card is built from a verdict, the verdict is a reading
+   * taken at some earlier moment, and by the time somebody presses the button
+   * the tool may already have been reopened or quit. An empty scan is the
+   * answer to that: the invitation is stale, so the caller re-reads rather than
+   * leaving it on screen over a tool that is not running.
+   */
+  onNothingRunning?: (slugs?: string[]) => void;
+  /** The tool's product name for a slug, which the shell reads off
+   *  `list_tools`. The scan reports process names ("claude"), and every surface
+   *  of this flow is a list of tools read by someone who knows it as Claude
+   *  Code. */
+  nameFor?: (slug: string) => string | undefined;
+} = {}): RunningApps {
+  const [stage, setStage] = useState<RunningAppsStage | null>(null);
+  /**
+   * The stage, mirrored where the watch can read it.
+   *
+   * Every move goes through `commit` rather than a `setStage` updater, and the
+   * ref is why: the close signals and then immediately looks, and React has not
+   * re-rendered in between. Reading state through the render would have that
+   * first look decide the operation had not started yet, which is exactly the
+   * moment it needs to be right.
+   */
+  const stageRef = useRef<RunningAppsStage | null>(null);
+  const commit = useCallback((next: RunningAppsStage | null) => {
+    stageRef.current = next;
+    setStage(next);
+  }, []);
+  /** One tool moved, the rest left exactly as they were. */
+  const commitTools = useCallback(
+    (map: (tool: ReopenTool) => ReopenTool) => {
+      const current = stageRef.current;
+      if (current?.kind !== "work") return;
+      commit({ ...current, tools: current.tools.map(map) });
+    },
+    [commit],
+  );
+  /** How many ticks each tool has spent in its current stage. Kept out of the
+   *  stage object because it is bookkeeping for the watch, not something any
+   *  surface draws. */
+  const waited = useRef(new Map<string, number>());
+
+  const names = useRef(nameFor);
+  useEffect(() => {
+    names.current = nameFor;
+  }, [nameFor]);
+
+  const nothingRunning = useRef(onNothingRunning);
+  useEffect(() => {
+    nothingRunning.current = onNothingRunning;
+  }, [onNothingRunning]);
+
+  const nameMap = useCallback((slugs: string[]): Map<string, string> => {
+    const map = new Map<string, string>();
+    for (const slug of slugs) {
+      const name = names.current?.(slug);
+      if (name) map.set(slug, name);
+    }
+    return map;
+  }, []);
+
+  const verdictMap = useCallback(async (): Promise<Map<string, Verdict>> => {
+    try {
+      return new Map((await routingVerdicts()).map((v) => [v.slug, v]));
+    } catch (err) {
+      // A sweep that will not answer leaves the rows where they are, which the
+      // watch already reads as "not verified yet". Louder handling here would
+      // turn a slow probe into a failure.
+      trackError(err, "close_agents");
+      return new Map();
+    }
+  }, []);
+
+  /**
+   * Called after a config write that succeeded, with the tools it changed.
+   * Nothing running means nothing to close, and a dialog saying so would be a
+   * dialog about nothing.
+   *
+   * A failed probe stays silent rather than defaulting to showing: the popover
+   * defaults the other way, but it is choosing whether to show *advice*, and
+   * this sequence offers to kill processes. Guessing wrong here means offering
+   * to close apps that may not be open.
+   */
+  const offerAfterChange = useCallback(
+    async (slugs?: string[]) => {
+      try {
+        // Narrowed to what actually changed. A master toggle passes nothing and
+        // still offers everything, because it moved every tool's route; a single
+        // app's toggle moved only its own, and naming the others would ask to
+        // kill work for no reason.
+        const { agents } = await runningAgents(slugs);
+        if (agents.length === 0) {
+          nothingRunning.current?.(slugs);
+          return;
+        }
+        // The verdict is read here rather than in the dialog because the two
+        // routes it carries are the point of the step: "reopen required"
+        // without them does not say what reopening would change.
+        const verdicts = await verdictMap();
+        const tools = reopenTools(
+          agents,
+          nameMap(agents.map((a) => a.slug)),
+          verdicts,
+        );
+        if (tools.length === 0) {
+          // Same answer as an empty scan: every process the walk yielded was
+          // one no slug claims, so there is no tool here to offer anything
+          // about.
+          nothingRunning.current?.(slugs);
+          return;
+        }
+        waited.current = new Map();
+        commit({ kind: "offer", tools, slugs });
+        track("routing_notice_shown");
+      } catch (err) {
+        trackError(err, "close_agents");
+      }
+    },
+    [commit, nameMap, verdictMap],
+  );
+
+  const markStage = useCallback(
+    (slug: string, next: ReopenStage, error?: string) => {
+      for (const t of stageRef.current?.tools ?? []) {
+        if (t.slug === slug) waited.current.set(t.key, 0);
+      }
+      commitTools((t) => (t.slug === slug ? { ...t, stage: next, error } : t));
+    },
+    [commitTools],
+  );
+
+  /**
+   * One pass of the watch: where is each tool's process, and what does the
+   * sweep say about the ones that are back.
+   *
+   * Both probes are read for the whole set rather than per row, for the reason
+   * `routing_health` gives about its own: two rows in one pass must not be able
+   * to disagree about shared infrastructure.
+   */
+  const tick = useCallback(async () => {
+    const current = stageRef.current;
+    if (current?.kind !== "work") return;
+    const slugs = [...new Set(current.tools.map((t) => t.slug))];
+    let presence = new Map<string, ReopenPresence>();
+    try {
+      const { agents } = await runningAgents(slugs);
+      // Per row, not per slug: with the Code tab and a terminal `claude` both
+      // on screen, one coming back must not read as the other having come back.
+      presence = new Map(
+        current.tools.map(({ key }) => {
+          const mine = agents.filter((a) => reopenKey(a) === key);
+          if (mine.length === 0) return [key, "gone" as ReopenPresence];
+          return [
+            key,
+            mine.some((a) => a.needs_reopen) ? "stale" : "fresh",
+          ] as [string, ReopenPresence];
+        }),
+      );
+    } catch (err) {
+      // The scan is the half that says whether the tool is even open. Without
+      // it nothing can be concluded, so the pass is skipped rather than
+      // resolved on the sweep alone.
+      trackError(err, "close_agents");
+      return;
+    }
+    const verdicts = await verdictMap();
+    commitTools((tool) => {
+      const at = (waited.current.get(tool.key) ?? 0) + 1;
+      waited.current.set(tool.key, at);
+      const verdict = verdicts.get(tool.slug);
+      const stage = nextStage(
+        tool,
+        verdict,
+        presence.get(tool.key) ?? "gone",
+        at,
+      );
+      if (stage !== tool.stage) waited.current.set(tool.key, 0);
+      return {
+        ...tool,
+        stage,
+        running: presence.get(tool.key) !== "gone",
+        // Kept current: the routes move as the tool comes back, and a card still
+        // naming the pre-close pair would describe a moment that has passed.
+        routeInUse: verdict?.route_in_use ?? tool.routeInUse,
+        requestedRoute: verdict?.requested_route ?? tool.requestedRoute,
+      };
+    });
+  }, [verdictMap, commitTools]);
+
+  const tickRef = useRef(tick);
+  tickRef.current = tick;
+
+  const watching = stage?.kind === "work" && !allSettled(stage.tools);
+  /** Is Gate itself doing something, or is it waiting for the user to open a
+   *  tool? The first deserves the fast cadence; the second does not. */
+  const acting =
+    stage?.kind === "work" && stage.tools.some((t) => !isResting(t.stage));
+  useEffect(() => {
+    if (!watching) return;
+    const id = setInterval(
+      () => void tickRef.current(),
+      acting ? WATCH_MS : REOPEN_IDLE_WATCH_MS,
+    );
+    return () => clearInterval(id);
+  }, [watching, acting]);
+
+  const checkNow = useCallback(async () => {
+    await tickRef.current();
+  }, []);
+
+  const closeApps = useCallback(async () => {
+    const offer = stageRef.current;
+    if (offer?.kind !== "offer" || offer.closing) return;
+    const { tools, slugs } = offer;
+    // The offer stays up, its close button spinning, until the signal has been
+    // sent: the frame (`App/Codex/applying-changes`) draws the dialog through
+    // the close rather than handing it straight to the rail.
+    const closing: RunningAppsStage = { ...offer, closing: true };
+    commit(closing);
+    /** Hand over to the watch, unless another offer has replaced this one
+     *  while the close was in flight: that one is a question the user has not
+     *  answered yet, and overwriting it would take it off screen unasked. */
+    const toWork = (stageFor: (t: ReopenTool) => ReopenTool) => {
+      if (stageRef.current !== closing) return;
+      waited.current = new Map();
+      commit({ kind: "work", slugs, tools: tools.map(stageFor) });
+    };
+    try {
+      // The same filter the offer was built from, narrowed to the rows on
+      // screen. Killing a wider set than the one the user agreed to would
+      // signal processes they were never shown.
+      const closed = await closeRunningAgents([...new Set(tools.map((t) => t.slug))]);
+      track("agents_closed", { count: closed });
+      // Not "done": the signal was sent, and whether the process went, came
+      // back and routes is what the watch is for. The rows Gate can relaunch go
+      // to `reopening`; the rest wait for the user.
+      toWork((t) => ({
+        ...t,
+        stage: t.canReopen ? "reopening" : "awaiting_reopen",
+      }));
+    } catch (err) {
+      onError?.(err);
+      trackError(err, "close_agents");
+      // Every row failed together: the command signals the whole set, so
+      // nothing here can say which one it stopped at.
+      const detail = err instanceof Error ? err.message : String(err);
+      toWork((t) => ({ ...t, stage: "close_failed" as ReopenStage, error: detail }));
+      return;
+    }
+    // Ask for the reopen only where something said it could be reopened, so a
+    // set of CLIs makes no call at all rather than one that returns 0. The
+    // backend waits for the old instances to exit before launching, which is
+    // why this is awaited and not fired alongside the close. Asked even when a
+    // newer offer took over: these processes are closed either way, and the
+    // user agreed to Gate putting them back.
+    const reopenable = [
+      ...new Set(tools.filter((t) => t.canReopen).map((t) => t.slug)),
+    ];
+    if (reopenable.length > 0) {
+      // Failing to put an app back is not a failed close: the close already
+      // happened, the routing change already landed, and the row's own watch
+      // is what decides whether it came back. Reported, not thrown.
+      await reopenRunningAgents(reopenable).catch((err) => {
+        onError?.(err);
+        trackError(err, "close_agents");
+      });
+    }
+    await tickRef.current();
+  }, [onError, commit]);
+
+  const dismiss = useCallback(() => commit(null), [commit]);
+
+  return {
+    stage,
+    offerAfterChange,
+    closeApps,
+    markStage,
+    checkNow,
+    dismiss,
+  };
+}

@@ -46,6 +46,18 @@ pub fn enable() -> Result<(ProxyState, Vec<Warning>)> {
     if let Err(e) = intent::set_intent(true) {
         warnings.push(Warning::new("routing_intent", e));
     }
+    // The forwarder first, ahead of the restore below. Every quit drains it,
+    // which on macOS removes its launch agent, so after a logout or a reboot
+    // nothing holds the relay port until something starts it again - and the
+    // restore points relay tools at that port before `manager().enable()` gets
+    // to it. When the enable then fails (a declined certificate prompt, an
+    // engine that cannot bind), the forwarder is what keeps those tools
+    // answering, direct, rather than pointed at nothing. Only logged: the
+    // enable repeats this start and reports a failure its own way.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Err(e) = proxy::forwarder::ensure_running() {
+        eprintln!("gate proxy: starting the forwarder before the restore failed: {e:#}");
+    }
     // Restore every provider that was on when routing was last turned off -
     // *before* enabling - so the engine comes back up routing the user's
     // prior selection rather than bare. A no-op (no snapshot) on a first
@@ -77,9 +89,9 @@ pub fn enable() -> Result<(ProxyState, Vec<Warning>)> {
 /// away with that. What reverting costs is a restart of every running tool, for
 /// no change in where its traffic goes.
 ///
-/// The quit-and-disconnect choice still runs the full sweep
-/// ([`provider::snapshot_and_disable_everything`]), because that one really is
-/// the user asking Gate out of the path.
+/// A quit still runs the full sweep
+/// ([`provider::snapshot_and_disable_everything_for_exit`]), because the app
+/// closing is the user asking Gate out of the path.
 ///
 /// The intent clears last - explicit "off" is sticky across restarts, so the
 /// startup auto-enable leaves the machine in passthrough.

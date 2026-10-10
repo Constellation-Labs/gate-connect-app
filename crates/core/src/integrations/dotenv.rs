@@ -84,6 +84,21 @@ fn assigns(line: &str, key: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('='))
 }
 
+/// True if `line` assigns `key` the way python-dotenv reads one: any `export`
+/// prefix and whitespace on either side of the key. Readers use this, so they
+/// see what Hermes sees. The writers keep [`assigns`], so a line spelled
+/// loosely is never taken for one of ours; a caller that needs to know whether
+/// such a line overrides one of ours compares the two reads.
+fn assigns_loosely(line: &str, key: &str) -> bool {
+    let l = line.trim_start();
+    let l = l
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map_or(l, str::trim_start);
+    l.strip_prefix(key)
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
 /// A line split into its content and its own terminator, so a line we rewrite
 /// keeps the ending it had. Returns an empty terminator for a final line with
 /// no newline at all.
@@ -94,14 +109,36 @@ fn split_terminator(line: &str) -> (&str, &str) {
         .unwrap_or((line, ""))
 }
 
-/// Strip whitespace and one layer of surrounding quotes, which is how a dotenv
-/// reader sees a value. Shared with [`read_var`] on purpose: the comparison
-/// that decides a line of ours is stale has to be the same one that decides the
-/// tool has drifted, or a correct line gets "repaired" on every single connect.
+/// A raw value as python-dotenv reads it: a quoted value is what is between
+/// its quotes, whatever follows the closing one; an unquoted value ends at a
+/// `#` that follows whitespace, which starts a comment. Shared with
+/// [`read_var`] on purpose: the comparison that decides a line of ours is
+/// stale has to be the same one that decides the tool has drifted, or a
+/// correct line gets "repaired" on every single connect.
+///
+/// `${VAR}` is left as written. python-dotenv expands it and this does not,
+/// so a caller that has to know what the tool sees treats a value holding one
+/// as unknown rather than reading it literally.
 fn unquote(raw: &str) -> String {
-    raw.trim()
-        .trim_matches(|c| c == '"' || c == '\'')
-        .to_string()
+    let trimmed = raw.trim_start();
+    if let Some(quote) = trimmed.chars().next().filter(|c| matches!(c, '"' | '\'')) {
+        let inner = &trimmed[1..];
+        return match inner.find(quote) {
+            Some(end) => inner[..end].to_string(),
+            // Unterminated: no closing quote to stop at, so the line as a whole.
+            None => inner.trim_end().to_string(),
+        };
+    }
+    let mut end = trimmed.len();
+    let mut after_space = false;
+    for (i, c) in trimmed.char_indices() {
+        if c == '#' && after_space {
+            end = i;
+            break;
+        }
+        after_space = c.is_whitespace();
+    }
+    trimmed[..end].trim_end().to_string()
 }
 
 /// The value an assignment line carries, read the way [`read_var`] reads one.
@@ -154,6 +191,12 @@ fn dominant_newline(body: &str) -> &'static str {
 /// in the returned record. Reports what was added separately from what was
 /// refreshed: disconnect removes the former, and only the former.
 pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> Result<Applied> {
+    // A line break in a value is a second line, and a second line is any
+    // assignment at all - `no_proxy=*` among them. Values here can carry text
+    // from a user-editable file, so this refuses rather than trusting callers.
+    if let Some((key, _)) = vars.iter().find(|(_, v)| v.contains(['\r', '\n'])) {
+        anyhow::bail!("refusing to write {key}: its value spans more than one line");
+    }
     let file_created = !path.exists();
     let body = if file_created {
         String::new()
@@ -220,8 +263,9 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
         // Correct the first assignment in place and drop any others. Collapsing
         // is what makes this converge: a duplicate assignment of a key that is
         // ours is a line we wrote, and leaving a stale second copy behind means
-        // a last-wins reader keeps using it while `read_var` reports the fresh
-        // one and status reads Connected.
+        // a last-wins reader keeps using it. `read_var` reads last-wins now as
+        // well, so it would report the stale copy and status would read
+        // Drifted on every pass, with the repair never landing.
         lines[hits[0]] = rewrite_assignment(&lines[hits[0]], value);
         for &i in hits[1..].iter().rev() {
             lines.remove(i);
@@ -255,23 +299,57 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
 /// Remove exactly the keys named, and the file too when we created it and
 /// nothing but blank lines is left.
 pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> Result<()> {
-    if !path.exists() || keys.is_empty() {
+    let owned: Vec<Owned> = keys
+        .iter()
+        .map(|key| Owned {
+            key: key.clone(),
+            value: None,
+        })
+        .collect();
+    remove_owned(path, &owned, file_created)
+}
+
+/// Remove the lines of ours among `owned`, and the file too when we created it
+/// and nothing but blank lines is left.
+///
+/// A recorded value narrows it to the lines holding that value, when any does:
+/// a second assignment of the key with another value is a line somebody else
+/// added, and a last-wins reader may be using it. When none holds it - the
+/// user edited our line - every assignment goes, which is what taking back a
+/// key we added has always meant. `None` is ownership by key alone.
+///
+/// Line endings are kept per line, as `add_vars` keeps them: rebuilding with
+/// `lines()` turned a CRLF file into LF on every removal.
+pub(crate) fn remove_owned(path: &Path, owned: &[Owned], file_created: bool) -> Result<()> {
+    if !path.exists() || owned.is_empty() {
         return Ok(());
     }
     let existing =
         fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let kept: Vec<&str> = existing
-        .lines()
-        .filter(|l| !keys.iter().any(|k| assigns(l, k)))
-        .collect();
+    let lines: Vec<&str> = existing.split_inclusive('\n').collect();
+    let doomed = |line: &str| {
+        owned.iter().any(|o| {
+            if !assigns(line, &o.key) {
+                return false;
+            }
+            let Some(value) = &o.value else {
+                return true;
+            };
+            let held_somewhere = lines
+                .iter()
+                .any(|l| assigns(l, &o.key) && assigned_value(l).as_deref() == Some(value));
+            !held_somewhere || assigned_value(line).as_deref() == Some(value.as_str())
+        })
+    };
+    let kept: Vec<&str> = lines.iter().copied().filter(|l| !doomed(l)).collect();
 
     if file_created && kept.iter().all(|l| l.trim().is_empty()) {
         return crate::config_changes::remove(path);
     }
 
-    let mut body = kept.join("\n");
+    let mut body = kept.concat();
     if !body.is_empty() && !body.ends_with('\n') {
-        body.push('\n');
+        body.push_str(dominant_newline(&existing));
     }
     crate::config_changes::write(path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
@@ -279,14 +357,40 @@ pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> R
 
 /// The value assigned to `key`, if the file defines it. Surrounding quotes are
 /// stripped so a value we wrote bare compares equal to one the user quoted.
+///
+/// Read as python-dotenv reads it, because the reader that matters is Hermes:
+/// the LAST assignment wins, and `KEY =value` counts. Taking the first, or
+/// only the tight spelling, let a line added after Gate's change what Hermes
+/// used while status kept reading Gate's own.
 pub(crate) fn read_var(path: &Path, key: &str) -> Result<Option<String>> {
+    read_last_of(path, &[key])
+}
+
+/// Whether some line assigns `key` exactly `value`, matched the way the
+/// writers match a line of ours.
+pub(crate) fn holds(path: &Path, key: &str, value: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let body = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(body
+        .lines()
+        .any(|l| assigns(l, key) && assigned_value(l).as_deref() == Some(value)))
+}
+
+/// The value of whichever of `keys` is assigned LAST in the file. With one key
+/// that is [`read_var`]; with two it is what a dotenv loader leaves in a
+/// case-insensitive environment, where differently cased keys are one
+/// variable and each later line overwrites the earlier.
+pub(crate) fn read_last_of(path: &Path, keys: &[&str]) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
     let body = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(body
         .lines()
-        .find(|l| assigns(l, key))
+        .rev()
+        .find(|l| keys.iter().any(|key| assigns_loosely(l, key)))
         .and_then(assigned_value))
 }
 
@@ -294,7 +398,99 @@ pub(crate) fn read_var(path: &Path, key: &str) -> Result<Option<String>> {
 mod tests {
     use super::*;
 
-    fn tmp() -> std::path::PathBuf {
+    #[test]
+    fn a_value_with_a_line_break_is_refused() {
+        let dir = std::env::temp_dir().join(format!("gate-dotenv-nl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        let err = add_vars(&path, &[("NO_PROXY", "a\nno_proxy=*".into())], &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("more than one line"), "{err:#}");
+        assert!(!path.exists(), "nothing may be written");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_last_of_takes_the_later_line() {
+        let dir = std::env::temp_dir().join(format!("gate-dotenv-last-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "no_proxy=first\nOTHER=x\nNO_PROXY=second\n").unwrap();
+        assert_eq!(
+            read_last_of(&path, &["no_proxy", "NO_PROXY"])
+                .unwrap()
+                .as_deref(),
+            Some("second")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn values_are_read_as_python_dotenv_reads_them() {
+        // An unquoted value ends at a `#` after whitespace; a quoted one is
+        // what is between its quotes, whatever follows.
+        for (line, value) in [
+            ("K=* # mine", "*"),
+            ("K=a#b", "a#b"),
+            ("K=\"x y\" # c", "x y"),
+            ("K='a # b'", "a # b"),
+            ("K=  v  ", "v"),
+            ("K=${STAR}", "${STAR}"),
+        ] {
+            assert_eq!(assigned_value(line).as_deref(), Some(value), "{line}");
+        }
+    }
+
+    #[test]
+    fn remove_owned_takes_only_gates_line_and_keeps_crlf() {
+        let (_store, path) = tmp();
+        fs::write(&path, "no_proxy=mine\r\nKEY=v\r\nno_proxy=gate\r\n").unwrap();
+        remove_owned(&path, &[wrote("no_proxy", "gate")], false).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "no_proxy=mine\r\nKEY=v\r\n",
+            "the user's line and the CRLF endings stay"
+        );
+        assert!(holds(&path, "no_proxy", "mine").unwrap());
+        assert!(!holds(&path, "no_proxy", "gate").unwrap());
+    }
+
+    #[test]
+    fn read_var_reads_as_python_dotenv_does() {
+        // Hermes loads .env with python-dotenv: the last assignment wins and
+        // whitespace around the key is allowed. A reader that took Gate's own
+        // first line here reported a value Hermes was not using.
+        let dir = std::env::temp_dir().join(format!("gate-dotenv-loose-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "no_proxy=gate\nno_proxy =*\n").unwrap();
+        assert_eq!(read_var(&path, "no_proxy").unwrap().as_deref(), Some("*"));
+        std::fs::write(&path, "no_proxy=gate\nexport  no_proxy=mine\n").unwrap();
+        assert_eq!(
+            read_var(&path, "no_proxy").unwrap().as_deref(),
+            Some("mine")
+        );
+        // Still a key, not a prefix of one.
+        std::fs::write(&path, "no_proxy_extra=x\n").unwrap();
+        assert_eq!(read_var(&path, "no_proxy").unwrap(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Holds the app-support redirect for one test, and clears it on drop.
+    ///
+    /// `add_vars` and `remove_vars` stamp `config-changes.json` under the
+    /// app-support dir, so without the redirect every run of these tests
+    /// stamped the developer's real one. The redirect is process-global, hence
+    /// `crate::env::path_env_lock`, released after the override is cleared.
+    struct Store(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for Store {
+        fn drop(&mut self) {
+            crate::env::set_app_support_dir_for_tests(None);
+        }
+    }
+
+    fn tmp() -> (Store, std::path::PathBuf) {
+        let lock = crate::env::path_env_lock();
         let mut p = std::env::temp_dir();
         p.push(format!(
             "gate-dotenv-{}-{:?}",
@@ -303,7 +499,8 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
-        p.join(".env")
+        crate::env::set_app_support_dir_for_tests(Some(p.join("app-support")));
+        (Store(lock), p.join(".env"))
     }
 
     /// A key a previous connect wrote, with the value it left on disk.
@@ -316,7 +513,7 @@ mod tests {
 
     #[test]
     fn adds_only_missing_keys_and_never_clobbers_the_users() {
-        let path = tmp();
+        let (_store, path) = tmp();
         // The user already routes through a corporate proxy and has a key.
         fs::write(
             &path,
@@ -372,7 +569,7 @@ mod tests {
     /// is why it has to be passed in rather than inferred here.
     #[test]
     fn a_stale_value_of_ours_is_refreshed_and_the_users_is_not() {
-        let path = tmp();
+        let (store, path) = tmp();
         fs::write(
             &path,
             "OPENROUTER_API_KEY=sk-user\nHTTPS_PROXY=http://127.0.0.1:9977\nHERMES_CA_BUNDLE=/old/ca.pem\n",
@@ -414,8 +611,10 @@ mod tests {
         // unattended re-connect would look like a repair.
         assert!(!applied.refreshed.contains(&"HERMES_CA_BUNDLE".to_string()));
 
-        // The same staleness on a key the user owns is left alone.
-        let path = tmp();
+        // The same staleness on a key the user owns is left alone. A fresh
+        // file, so the first one's hold on the store goes first.
+        drop(store);
+        let (_store, path) = tmp();
         fs::write(&path, "HTTPS_PROXY=http://corp:3128\n").unwrap();
         let applied = add_vars(
             &path,
@@ -434,7 +633,7 @@ mod tests {
 
     #[test]
     fn a_file_we_created_is_removed_again() {
-        let path = tmp();
+        let (_store, path) = tmp();
         let applied = add_vars(
             &path,
             &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())],
@@ -453,7 +652,7 @@ mod tests {
 
     #[test]
     fn a_file_we_created_survives_if_the_user_added_to_it() {
-        let path = tmp();
+        let (_store, path) = tmp();
         let applied = add_vars(
             &path,
             &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())],
@@ -474,7 +673,7 @@ mod tests {
 
     #[test]
     fn recognises_export_and_quoted_forms() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "export HTTPS_PROXY=\"http://corp:3128\"\n").unwrap();
         // `export`-prefixed counts as already set.
         let applied = add_vars(
@@ -503,7 +702,7 @@ mod tests {
     /// while the line still holds what we left there.
     #[test]
     fn a_value_the_user_edited_is_no_longer_ours() {
-        let path = tmp();
+        let (_store, path) = tmp();
         // We wrote :9977 on a previous connect. The user has since repointed it
         // at a proxy of their own, on the same key.
         fs::write(&path, "HTTPS_PROXY=http://127.0.0.1:8080\n").unwrap();
@@ -532,7 +731,7 @@ mod tests {
     /// A sidecar written before values were recorded still repairs, once.
     #[test]
     fn a_key_owned_without_a_recorded_value_is_refreshed_once() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "HTTPS_PROXY=http://127.0.0.1:9977\n").unwrap();
 
         let legacy = Owned {
@@ -566,7 +765,7 @@ mod tests {
     /// launch: rule 1 broken in a way no Unix test could see.
     #[test]
     fn a_crlf_file_keeps_its_line_endings() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(
             &path,
             "OPENROUTER_API_KEY=sk-user\r\nHTTPS_PROXY=http://127.0.0.1:9977\r\n",
@@ -596,11 +795,11 @@ mod tests {
     /// This was the one case that did not converge. With the correct value
     /// first and a stale copy after it, the old exact-line check found a
     /// matching line and skipped: a last-wins reader kept using the stale copy
-    /// while `read_var`, which takes the first, reported the fresh one, so
+    /// while `read_var`, which then took the first, reported the fresh one, so
     /// status read Connected and the unattended repair never ran again.
     #[test]
     fn a_duplicate_assignment_of_ours_collapses() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(
             &path,
             "HTTPS_PROXY=http://127.0.0.1:45981\nUSER_KEY=v\nHTTPS_PROXY=http://127.0.0.1:9977\n",
@@ -646,7 +845,7 @@ mod tests {
     /// change that never happened.
     #[test]
     fn an_export_line_of_ours_keeps_its_form() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "export HTTPS_PROXY=\"http://127.0.0.1:9977\"\n").unwrap();
 
         let applied = add_vars(
@@ -680,7 +879,7 @@ mod tests {
     /// A file with no trailing newline gains one line, not a joined line.
     #[test]
     fn a_file_without_a_trailing_newline_is_appended_to_cleanly() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "USER_KEY=v").unwrap();
 
         add_vars(&path, &[("NO_PROXY", "localhost".into())], &[]).unwrap();

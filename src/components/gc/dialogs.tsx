@@ -1,0 +1,2127 @@
+import { useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { Icon } from "./Icon";
+import { providerMarkFor } from "./ProviderMark";
+import { ErrorDetails } from "./banners";
+import { Skeleton } from "./base";
+import { isPinned, pinnedModels } from "../../lib/modelCompatibility";
+import { brandMarkFor } from "./BrandMark";
+import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
+import { MAX_GATE_MODELS } from "../../lib/toolModels";
+import type { ReopenTool } from "../../lib/reopen";
+import { REOPEN_STAGE_DETAIL } from "../../lib/reopen";
+import {
+  Modal,
+  ModalCheckbox,
+  ModalField,
+  ModalNote,
+  ModalOption,
+  ModalSteps,
+  ModalSubject,
+} from "./Modal";
+
+/**
+ * The concrete dialogs, each a thin composition of `Modal`. Copy lives here
+ * rather than in the shell so it stays next to the design it came from and the
+ * shell only supplies names and handlers.
+ *
+ * Routing flows: switch organization, organization switched, review config,
+ * apply changes, use a Gate model.
+ * Settings flows: rename device, replace API key, disconnect Gate, reset, and
+ * the diagnostics report.
+ *
+ * Presentational throughout: nothing here calls `lib/api`. The one value it
+ * takes from there is `DEVICE_NAME_MAX_LENGTH`, a number the backend owns -
+ * a second copy of it here would be a limit that could drift out of step
+ * with the one that actually truncates.
+ */
+
+export interface DialogApp {
+  name: string;
+  /** 20px product mark, for the dialog's 36px tile. Falls back to a cube. */
+  icon?: ReactNode;
+}
+
+/**
+ * A tool in the reopen flow, with the mark the shell holds for it.
+ *
+ * The reopen model itself comes from `lib/reopen`, unchanged: the dialogs, the
+ * pane's reopen card all draw the same rows, and a dialog-shaped
+ * copy of them is how two surfaces end up disagreeing about one tool.
+ */
+export type DialogReopenTool = ReopenTool & {
+  /** 20px product mark, for the dialog's 36px tile. Falls back to a cube. */
+  icon?: ReactNode;
+};
+
+function toolLabel(tools: DialogReopenTool[]): string {
+  return tools.length === 1 ? tools[0].name : "these apps";
+}
+
+function toolIcon(tool: DialogReopenTool): ReactNode {
+  return tool.icon ?? <Icon name="cube" size={20} />;
+}
+
+/**
+ * Whether this row has routes to draw at all.
+ *
+ * Callers ask BEFORE rendering the `mt-1` wrapper around the pair, rather than
+ * leaving it to what `RoutePair` renders. A wrapper around an element that
+ * renders `null` still takes its margin, and since the text column is a flex
+ * item the `mt-1` cannot collapse, so every reopen row gained a dead 4px in
+ * shipped builds - on the one dialog whose height was the reported bug.
+ *
+ * **The caller's check is the contract; `RoutePair`'s own is a backstop.** With
+ * every current call site asking first, the component's early return is
+ * unreachable - it is there so a future caller that forgets renders nothing
+ * rather than a broken pair, not because the two checks share the work. Read
+ * the pair that way round and neither looks redundant.
+ */
+function routesShown(tool: DialogReopenTool): boolean {
+  return (
+    import.meta.env.DEV && Boolean(tool.routeInUse) && Boolean(tool.requestedRoute)
+  );
+}
+
+/**
+ * The two routes for one tool, when the sweep established both.
+ *
+ * **Development builds only.** AG-566 AC 1 asks the offer step to name the route
+ * in use and the route requested, and it was built to. The frame does not draw
+ * it: `130:58427` gives Codex a name, one description line and an `OPEN` pill,
+ * and nothing else. The file wins on what ships (CLAUDE.md, standing instruction
+ * 2026-08-26), so this is gated rather than deleted - the pair is genuinely
+ * useful when you are debugging which endpoint a tool is actually on, and it is
+ * the fastest way to see that a reopen did what it claimed.
+ *
+ * It also cost the most at tray width: two absolute URLs under a 352px row wrap
+ * to five lines apiece and push the buttons off the popover.
+ *
+ * `import.meta.env.DEV` is false in every `vite build`, the same seam the
+ * gateway picker uses (`NewUiApp`), so no shipped build can render this.
+ *
+ * Omitted rather than half-drawn even in dev: a guessed endpoint is a claim
+ * about where the user's traffic is going, made on the screen where they came to
+ * check exactly that. Sans, not mono - identifier *values* are sans here
+ * (design, 2026-09-04), and these are endpoints rather than machine output.
+ */
+function RoutePair({ tool }: { tool: DialogReopenTool }) {
+  if (!routesShown(tool)) return null;
+  return (
+    // `break-words`, not `break-all`: at tray width `break-all` split hostnames
+    // mid-token ("gateway-stag / ing.constellationgate.ai"), which is unreadable
+    // for the one string on screen that has to be read exactly.
+    <p className="break-words">
+      In use: <span className="font-medium text-base-foreground">{tool.routeInUse}</span>
+      {" · "}
+      Requested:{" "}
+      <span className="font-medium text-base-foreground">{tool.requestedRoute}</span>
+    </p>
+  );
+}
+
+function appIcon(app: DialogApp): ReactNode {
+  return app.icon ?? <Icon name="cube" size={16} />;
+}
+
+export interface DialogOrganization {
+  id: string;
+  name: string;
+  /** Two-letter avatar, e.g. "AE". */
+  initials: string;
+  /** Secondary line, e.g. "12 members - Free plan". */
+  meta: string;
+}
+
+export function SwitchOrganizationDialog({
+  organizations,
+  selectedId,
+  currentId,
+  busy,
+  onSelect,
+  onCancel,
+  onConfirm,
+}: {
+  organizations: DialogOrganization[];
+  selectedId: string;
+  /** The org this device already uses. While it is the one selected the primary
+   * is refused - the drawn dialog mutes it - because confirming a no-op switch
+   * would fire the whole switch sequence to change nothing. */
+  currentId?: string;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
+  onSelect: (id: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      icon="usersRound"
+      title="Switch organization"
+      width={512}
+      subtitle="Select where this device sends activity and uses Gate credits"
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      primary={{
+        label: busy ? "Working…" : "Switch organization",
+        onClick: onConfirm,
+        disabled:
+          busy || (currentId !== undefined && selectedId === currentId),
+      }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <div
+        role="radiogroup"
+        aria-label="Organization"
+        className="flex flex-col gap-3"
+      >
+        {organizations.map((org) => (
+          <ModalOption
+            key={org.id}
+            initials={org.initials}
+            name={org.name}
+            meta={org.meta}
+            selected={org.id === selectedId}
+            onSelect={() => onSelect(org.id)}
+          />
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+export interface DialogGatewayServer {
+  label: string;
+  url: string;
+}
+
+/**
+ * The environment switch, for people working on Gate itself.
+ *
+ * Confirmed rather than applied on the click, and it spells out the three
+ * consequences: `switch_gateway` forgets the stored key, disconnects managed
+ * tools and stops the engine, which pins the gateway URL when it starts, so the
+ * app relaunches into a clean session. Destructive weighting for that reason -
+ * the popover's version is a ConfirmPanel with the same sentence.
+ */
+export function SwitchGatewayDialog({
+  servers,
+  selectedUrl,
+  currentUrl,
+  busy,
+  onSelect,
+  onCancel,
+  onConfirm,
+}: {
+  servers: DialogGatewayServer[];
+  selectedUrl: string;
+  /** The account's current server, so the dialog can refuse a no-op switch. */
+  currentUrl: string;
+  busy?: boolean;
+  onSelect: (url: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      tone="warning"
+      icon="globe"
+      title="Change gateway server"
+      subtitle="Point this device at another Gate environment."
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{
+        label: busy ? "Switching..." : "Switch and relaunch",
+        onClick: onConfirm,
+        destructive: true,
+        disabled: busy || selectedUrl === currentUrl,
+      }}
+      onDismiss={onCancel}
+    >
+      <div
+        role="radiogroup"
+        aria-label="Gateway server"
+        className="flex flex-col gap-3"
+      >
+        {servers.map((server) => (
+          <ModalOption
+            key={server.url}
+            initials={server.label.slice(0, 2).toUpperCase()}
+            name={server.label}
+            meta={server.url}
+            selected={server.url === selectedUrl}
+            onSelect={() => onSelect(server.url)}
+          />
+        ))}
+      </div>
+      <ModalNote>
+        <p className="font-medium text-base-foreground">
+          Switching starts a fresh session.
+        </p>
+        <p className="mt-1">
+          This forgets your key, disconnects tools and restarts Gate Connect.
+        </p>
+      </ModalNote>
+    </Modal>
+  );
+}
+
+/**
+ * The one-time offer to move a pasted key onto Constellation sign-in.
+ *
+ * Shown once to accounts that predate OAuth or took the key path deliberately;
+ * `lib/oauthOffer.ts` remembers the answer whichever way the user leaves. The
+ * decline is not a "Not now": a pasted key is a supported choice and the copy
+ * says so, which is the popover's `OAuthOffer` argument and its copy.
+ *
+ * The offer is unsolicited, so nothing destructive-looking is needed to keep
+ * focus off the accept: `Modal` opens focus on the first control in the button
+ * row, and that is the decline.
+ */
+export function OAuthOfferDialog({
+  secretStore,
+  busy,
+  error,
+  onSignIn,
+  onKeepKey,
+  onDismissOffer,
+}: {
+  /** "the keychain" / "Credential Manager", named per platform. */
+  secretStore: string;
+  busy?: boolean;
+  error?: ReactNode;
+  onSignIn: () => void;
+  onKeepKey: () => void;
+  /** Escape. Separate from `onKeepKey` because it is not an answer: a stray
+   *  keypress must be able to close this without spending the one-time offer.
+   *  Defaults to the decline for callers with no such distinction to make.
+   *
+   *  Escape and the close button, precisely - `Modal` passes `onDismiss` to
+   *  `useFocusTrap` and to `closeButton`, and its scrim has no click handler. */
+  onDismissOffer?: () => void;
+}) {
+  return (
+    <Modal
+      icon="shieldCheck"
+      title="Sign in instead of pasting a key"
+      subtitle={`Your session lives in ${secretStore} and renews itself. No key to rotate.`}
+      // The decline works mid-flow, and that is the whole point of it.
+      //
+      // It used to be guarded as `() => !busy && onKeepKey()`, on the reasoning
+      // that a decline landing mid-flow "would close the offer over a browser
+      // sign-in that is still going to finish". The goal was right and the
+      // mechanism was not: the button went on rendering as a live control and
+      // silently did nothing, while the primary was disabled and `onDismiss`
+      // was undefined - so for the five minutes `LOGIN_TIMEOUT_SECS` allows,
+      // this dialog had no working exit at all, and the way to discover that
+      // was to press the one button that looked available and watch nothing
+      // happen.
+      //
+      // `onKeepKey` now cancels the login first (see `NewUiApp`), which is what
+      // makes declining honest: the flow stops rather than continuing under a
+      // closed dialog and upgrading an account the user just declined to
+      // upgrade.
+      secondary={{
+        label: "Keep using my API key",
+        onClick: onKeepKey,
+      }}
+      primary={{
+        label: busy ? "Waiting for browser..." : "Sign in with Constellation",
+        onClick: onSignIn,
+        disabled: busy,
+      }}
+      onDismiss={onDismissOffer ?? onKeepKey}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Keeping your key changes nothing. Switch anytime under Connection in
+        Settings.
+      </p>
+      {error}
+    </Modal>
+  );
+}
+
+export function OrganizationSwitchedDialog({
+  organizationName,
+  onDone,
+}: {
+  organizationName: string;
+  onDone: () => void;
+}) {
+  return (
+    <Modal
+      tone="success"
+      icon="circleCheck"
+      title="Organization switched"
+      subtitle={`Gate Connect is now using ${organizationName}`}
+      primary={{ label: "Done", onClick: onDone }}
+      onDismiss={onDone}
+      width={512}
+    >
+      <ModalNote>
+        <p className="font-medium text-base-foreground">
+          Your local routing is unchanged.
+        </p>
+        <p className="mt-1">
+          New activity and PAYG usage will appear under {organizationName}.
+        </p>
+      </ModalNote>
+    </Modal>
+  );
+}
+
+export function ReviewConfigDialog({
+  app,
+  /** What Gate found, e.g. "API base URL: https://api.openai.com/v1". */
+  existingConfig,
+  /** What Gate would write in its place - the loopback relay this tool's config
+   * would be pointed at. Absent when no relay port has been bound yet, in which
+   * case the row is omitted rather than guessed at. */
+  gateRoute,
+  /** The file that gets rewritten, e.g. "/Users/x/.codex/config.toml".
+   *
+   * AG-564 asks the warning to name the tool *and* the configuration location.
+   * Naming the file is also the transparency this product trades on: the user can
+   * go and read it, which is a stronger reassurance than any sentence about what
+   * Gate does or does not touch. Omitted when no single file names it. */
+  configLocation,
+  onKeep,
+  onReplace,
+}: {
+  app: DialogApp;
+  existingConfig: string;
+  gateRoute?: string | null;
+  configLocation?: string | null;
+  onKeep: () => void;
+  onReplace: () => void;
+}) {
+  return (
+    <Modal
+      tone="warning"
+      icon="triangleAlert"
+      title={`Review ${app.name} configuration`}
+      // Typographic apostrophe, as drawn (`130:57448`).
+      subtitle="Gate found settings that it didn’t create. They will not be replaced without your approval"
+      secondary={{ label: "Keep existing config", onClick: onKeep }}
+      primary={{ label: "Replace config and protect", onClick: onReplace }}
+      onDismiss={onKeep}
+    >
+      <ModalSubject
+        icon={appIcon(app)}
+        title="Existing custom configuration"
+        description={existingConfig}
+        pill={{ label: "Detected", tone: "amber" }}
+      />
+      {/* What replaces it. Approving an overwrite without being shown the
+          replacement is approving a value you cannot see - and this is the one
+          screen where the user is asked to hand their tool's routing to us. */}
+      {gateRoute && (
+        <ModalSubject
+          icon={appIcon(app)}
+          title="What Gate would write instead"
+          description={gateRoute}
+          pill={{ label: "Gate route", tone: "green" }}
+        />
+      )}
+      {configLocation && (
+        <ModalNote>
+          <p className="font-medium text-base-foreground">
+            The file that changes:
+          </p>
+          {/* Mono, like every other identifier in this UI. `break-all` because a
+              home-directory path overflows the 600px dialog on any real machine. */}
+          <p className="mt-1 break-all text-base-xs">
+            {configLocation}
+          </p>
+        </ModalNote>
+      )}
+      <ModalNote>
+        <p className="font-medium text-base-foreground">If Gate takes over:</p>
+        <p className="mt-1">
+          Gate Connect saves a private snapshot of these settings, replaces only
+          the routing fields, and keeps the credential in your operating system
+          keychain.
+        </p>
+        <p className="mt-3">
+          Your configuration is restored when you turn protection off,
+          disconnect Gate Connect, or do a complete reset.
+        </p>
+      </ModalNote>
+    </Modal>
+  );
+}
+
+/**
+ * The reopen conversation's one question: which running tools are still on
+ * their old route, and what happens if they are left that way. "Yes, close
+ * affected apps" closes them straight away; there is no second confirmation,
+ * because the frame (`App/Codex/apply-changes`) draws none.
+ *
+ * Note the button weighting: the frame (`1336:13885`) draws "Close affected
+ * apps" filled red on the left and "I will reopen later" filled blue on the
+ * right, so the destructive action is the *secondary* and initial focus goes to
+ * the safe one. While the close is in flight (`closing`) the red button spins
+ * and reads "Closing apps", and neither button nor Escape does anything: the
+ * frame (`App/Codex/applying-changes`) dims both.
+ *
+ * Each row carries what AG-566 AC 1 asks of this step: the route the tool is
+ * using now, the route its saved configuration asks for, that it is running,
+ * and who can reopen it. The last one is read from the backend
+ * (`RunningAgent.can_reopen`) rather than written into the copy.
+ */
+export function ApplyChangesDialog({
+  tools,
+  closing = false,
+  onCloseApps,
+  onReopenLater,
+}: {
+  tools: DialogReopenTool[];
+  closing?: boolean;
+  onCloseApps: () => void;
+  onReopenLater: () => void;
+}) {
+  const mine = tools.filter((t) => t.canReopen);
+  return (
+    <Modal
+      tone="warning"
+      icon="triangleAlert"
+      title="Apply changes to running apps?"
+      subtitle="Your configuration is saved. One final step makes the change active"
+      // `destructive` on the SECONDARY also moves initial focus onto the
+      // primary, which is the safe choice here. Without it the trap fell to
+      // the first focusable and that is this button, so Enter landed on
+      // closing the user's apps.
+      secondary={{
+        label: closing ? "Closing apps" : "Yes, close affected apps",
+        onClick: onCloseApps,
+        destructive: true,
+        busy: closing,
+      }}
+      primary={{
+        label: "No, I will reopen later",
+        onClick: onReopenLater,
+        disabled: closing,
+      }}
+      onDismiss={closing ? undefined : onReopenLater}
+    >
+      {/* Drawn here rather than with `ModalSubject` and `ModalNote`, because
+          this frame (`1336:13885`) sizes both differently from the dialogs that
+          share them: a 36px tile around a 20px glyph, a 12px muted description,
+          a `green-200` pill, a bordered note in foreground ink, and 12px
+          between them rather than the body's 16. */}
+      <div className="flex flex-col gap-3">
+        {tools.map((tool) => (
+          <div
+            key={tool.key}
+            className="flex items-center gap-3 rounded-md border border-base-border p-3"
+          >
+            <span
+              aria-hidden
+              className="flex size-9 shrink-0 items-center justify-center rounded-control border border-base-border bg-base-card text-base-foreground"
+            >
+              {toolIcon(tool)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
+                {tool.name}
+              </p>
+              {/* No per-row sentence about who reopens. The frame draws none
+                  (name, description, pill), and the note below already says it,
+                  for the whole set at once. Reading `can_reopen` from the
+                  backend rather than assuming it in copy is untouched by this:
+                  the note is where that sentence lives. */}
+              <p className="truncate text-base-xs leading-4 text-base-muted-foreground">
+                {REOPEN_STAGE_DETAIL.reopen_required}
+              </p>
+              {routesShown(tool) && (
+                <div className="mt-1 text-base-xs leading-4 text-neutral-600">
+                  <RoutePair tool={tool} />
+                </div>
+              )}
+            </div>
+            {/* `mono/label-12` on `green-200` / `green-800`, 24px tall
+                (`1336:13900`). Not `ModalSubject`'s green pill, which is
+                `green-100` / `green-900` at 20px: that one has not been checked
+                against the review dialog's own frame, so it is left alone
+                rather than assumed to be this. */}
+            <span className="shrink-0 rounded-control bg-green-200 px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label text-green-800">
+              Open
+            </span>
+          </div>
+        ))}
+        {/* Two lines, the first medium, both in foreground ink (`1336:13903`).
+            The frame draws only the nobody-reopens case; the other two keep
+            its shape. */}
+        <div className="rounded-md border border-base-border bg-base-background p-3 text-sm leading-5 text-base-foreground">
+          <p className="font-medium">
+            {mine.length === tools.length
+              ? "Gate Connect will close and reopen them."
+              : mine.length === 0
+                ? "Gate Connect can close these apps, but cannot reopen them."
+                : `Gate Connect will reopen ${joinNames(mine.map((t) => t.name))}.`}
+          </p>
+          {mine.length < tools.length && (
+            <p>
+              {mine.length === 0
+                ? `You can keep working and reopen ${toolLabel(tools)} yourself.`
+                : "The rest you reopen yourself."}
+            </p>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * The whole state of this install as text. Shown before it is copied, never
+ * copied blind - `screens/Diagnostics.tsx` argues the point and it still holds:
+ * this app installs a root certificate, runs a local proxy and holds a
+ * credential, so a button that silently loads the clipboard with an unseen
+ * description of that setup is the opposite of the reassurance it is meant to
+ * provide.
+ */
+export function DiagnosticsDialog({
+  report,
+  collecting,
+  copied,
+  onCopy,
+  onClose,
+}: {
+  /** Pre-built by `lib/diagnosticsReport`. */
+  report: string;
+  /** The probes are still running, so `report` is the placeholder rather than
+   *  the report. Copy is disabled while this is true: the button was live over
+   *  "Collecting diagnostics...", so a user who pressed it early got that
+   *  sentence on the clipboard and no way to tell it apart from the real thing
+   *  once it was pasted somewhere else. */
+  collecting?: boolean;
+  /** Flips the primary button's label after a successful copy. */
+  copied?: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      // `ClipboardList`, as `363:9030` draws it and as the Settings row that
+      // opens this dialog already used. The 2026-08-26 glyph sweep corrected
+      // the rows and never followed into the dialogs.
+      icon="clipboardList"
+      // Neutral, but drawn at the 600px tile (`363:9029`): 44px with a 24px
+      // glyph. Tile size follows the width here, not the tone.
+      tile="lg"
+      title="Diagnostics report"
+      // The drawn subtitle reads "this installed" - a typo, kept corrected.
+      subtitle="The state of this install, as text you can hand to someone else"
+      secondary={{ label: "Close", onClick: onClose }}
+      primary={{
+        label: copied ? "Copied" : "Copy report",
+        onClick: onCopy,
+        disabled: collecting,
+      }}
+      onDismiss={onClose}
+    >
+      {/* `mono/body-14` (`363:9120`), not the 12/16 this rendered: the report is
+       * the one screen a user reads a wall of text on. */}
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-sm leading-5 text-base-foreground">
+        {report}
+      </pre>
+    </Modal>
+  );
+}
+
+/**
+ * The row's selection mark, which is the visible half of the mode (design,
+ * 2026-09-04).
+ *
+ * Multiple draws the frame's square checkbox: square is what a multi-select
+ * reads as, and an unchecked box is the affordance that says the row is one of
+ * several being assembled. Single draws a circle-check on the highlighted model
+ * and *nothing* on the others - there is no box to tick when clicking a row
+ * moves the highlight, and an empty one would promise a set the app cannot hold.
+ */
+function ModelPickerMark({
+  multiple,
+  selected,
+}: {
+  multiple: boolean;
+  selected: boolean;
+}) {
+  if (!multiple) {
+    return selected ? (
+      <Icon name="circleCheck" size={20} className="shrink-0 text-base-primary" />
+    ) : (
+      <span aria-hidden className="size-5 shrink-0" />
+    );
+  }
+  return selected ? (
+    <span
+      aria-hidden
+      className="flex size-5 shrink-0 items-center justify-center rounded-xs border border-base-primary"
+    >
+      <Icon name="check" size={14} className="text-base-primary" />
+    </span>
+  ) : (
+    <span aria-hidden className="size-5 shrink-0 rounded-xs border border-base-input" />
+  );
+}
+
+/** One selectable Gate model. */
+export interface GateModelOption {
+  /** Canonical id, e.g. `anthropic/claude-opus-5`. Rendered sans: the frames
+   *  draw every identifier in the UI face, and design confirmed on 2026-09-04
+   *  that this is deliberate - mono is reserved for eyebrows and pill labels. */
+  id: string;
+  /** Who makes the model, for the glyph, the provider filter and grouping in the
+   *  reader's head. */
+  vendor: string;
+  /** The gateway's display name ("Mistral Large"), which search matches
+   *  alongside the id: nobody types `mistral-large` to find it. Optional
+   *  because the catalogue already falls back to the id when discovery gave
+   *  none (`adaptModels`), and a row without one still searches by id. */
+  name?: string;
+  /** Capabilities the gateway advertises. */
+  tags: string[];
+}
+
+/**
+ * The search box, as words.
+ *
+ * Lower-cased, with the separators an id is written in (`-`, `_`, `/`, `.`)
+ * read as spaces, so "mistral large", "mistral-large" and "Mistral Large" are
+ * the same query. Empty when nothing was typed.
+ */
+export function searchWords(query: string): string[] {
+  return query.toLowerCase().split(/[\s\-_/.]+/).filter((w) => w.length > 0);
+}
+
+/**
+ * Does every word of the search appear somewhere in this model?
+ *
+ * "Contains words", not a prefix or an exact id: each word has to be found in
+ * the id, the display name or the vendor, in any order, so "large mistral"
+ * finds `mistralai/mistral-large` and "opus" finds every Opus. The staging
+ * catalogue is several hundred rows and the ids are the gateway's, not the
+ * user's vocabulary; a search that only knew the id sent people to type
+ * `mistral-large` (alpha.13 feedback, 2026-10-07).
+ */
+export function matchesSearch(
+  model: { id: string; vendor: string; name?: string },
+  words: string[],
+): boolean {
+  if (words.length === 0) return true;
+  const haystack = `${model.id} ${model.name ?? ""} ${model.vendor}`
+    .toLowerCase()
+    .replace(/[\-_/.]+/g, " ");
+  return words.every((w) => haystack.includes(w));
+}
+
+/**
+ * Choosing which Gate model an app runs on (Figma 139:66117, `card/choose-model`).
+ *
+ * A centred 600px dialog with a search field, a provider filter, a count line and
+ * a scrolling list - not the dropdown anchored to the Change model button that an
+ * earlier revision of this comment described. That mattered once the catalogue
+ * turned out to hold 344 models rather than the eleven the frame draws: a list
+ * that long is unusable without search, which is presumably why the design has
+ * one.
+ *
+ * **Model ids stay canonical.** The frame draws a `gate/...` namespace
+ * (`gate/opus 5`, `gate/kimi-k3`) which no catalogue serves; the real ids are
+ * `provider/model` (`anthropic/claude-opus-5`). Rendering the drawn ids would put
+ * a fabricated catalogue in front of the user, which is the same argument the
+ * zeroed metrics make.
+ *
+ * **Two selection modes**, and they behave differently on purpose (design,
+ * 2026-09-04). `multiple` draws a checkbox per model and waits: nothing is
+ * written until `Apply selections`, and that button refuses until the draft is
+ * a different set from what is already applied. Single-select draws no
+ * checkboxes and no footer buttons at all - a circle-check marks the
+ * highlighted model, clicking another moves the highlight and applies
+ * immediately, closing the dialog.
+ *
+ * That also settles which of the file's two contradictory annotations holds:
+ * auto-apply is the single case, confirmation the multiple one. AG-589 settled
+ * multi-select as the design and 139:66117 draws the radios of the single-model
+ * era, so a reader diffing against that frame is looking at the older state of
+ * the *multiple* mode rather than at this one - everything around the control
+ * still comes from it.
+ *
+ * `multiple={false}` has no call site yet: nothing in the backend says which
+ * tools are single-model, since `model_ids` is a list for every tool.
+ */
+export function ModelPickerDialog({
+  appName,
+  appSlug,
+  models,
+  loading,
+  failure,
+  selectedIds,
+  multiple = true,
+  onSave,
+  onDismiss,
+}: {
+  /** Named in the subtitle, as the frame does. */
+  appName: string;
+  /** Tool slug, which is what compatibility is keyed on. */
+  appSlug: string | null;
+  models: GateModelOption[];
+  /** The catalogue has not landed. Distinct from an empty one, which is a real
+   *  answer: a gateway with no platform provider accounts offers nothing, and
+   *  saying "no models" while the list is still coming would be a claim we have
+   *  not earned. */
+  loading?: boolean;
+  /** The catalogue could not be read, in the gateway's own words. Distinct again
+   *  from empty: "we could not ask" is not "there are none". */
+  failure?: string | null;
+  /** Already-chosen ids, in the user's order. */
+  selectedIds: string[];
+  /**
+   * Whether this app may run on several models at once.
+   *
+   * Drives the interaction, not just the glyph - see the component doc.
+   * Defaults to the multiple case, which is what every tool does today.
+   */
+  multiple?: boolean;
+  /** The whole set, applied on Save. A set is not a sequence of independent
+   *  clicks - AG-590 requires the final model not be removable without choosing
+   *  another - so it is confirmed once rather than written per toggle, and
+   *  Cancel is a real cancel. */
+  onSave: (ids: string[]) => void;
+  onDismiss: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [vendor, setVendor] = useState("all");
+  /** The dialog opens on its search field: with a catalogue this long, typing is
+   *  the first thing to do. */
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  /** Seeded from the stored set so Cancel is a real cancel. */
+  const [draft, setDraft] = useState<string[]>(selectedIds);
+
+  const vendors = useMemo(
+    () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => a.localeCompare(b)),
+    [models],
+  );
+
+  /**
+   * Models to float to the top, in development only.
+   *
+   * A convenience for whoever is testing: reach a model known to work without
+   * scrolling the catalogue. `pinnedModels` returns nothing in a shipped build,
+   * so a released app orders the list exactly as the gateway returned it.
+   */
+  const pinned = useMemo(() => pinnedModels(appSlug), [appSlug]);
+
+  /**
+   * Chosen models with no row to clear them from (AG-592).
+   *
+   * They have to be listed, or the set contains something the user cannot reach:
+   * a model that renders no row has no checkbox to clear and no way out except
+   * abandoning the whole selection. Shown at the top, marked, and removable,
+   * which is the recovery the ticket asks for.
+   *
+   * Keyed on catalogue membership. The picker used to hold back models the
+   * compatibility table said the app could not use, which was a second way to
+   * have no row; every model the gateway lists is offered now (team decision,
+   * 2026-10-07), so a catalogue drop is the only way left. Search and the
+   * vendor filter are deliberately not considered: narrowing the view must not
+   * make a chosen model look unavailable.
+   */
+  const missing = useMemo(() => {
+    const reachable = new Set(models.map((m) => m.id));
+    // Derived from the DRAFT, not from what is stored: clearing one has to make
+    // the row go, and deriving from the stored set left it on screen still
+    // marked enabled while the footer count disagreed. Its absence afterwards is
+    // also what satisfies "an unavailable model cannot be selected" - there is no
+    // row left to re-check.
+    return draft.filter((id) => !reachable.has(id));
+  }, [models, draft]);
+
+  const shown = useMemo(() => {
+    const words = searchWords(query);
+    const matched = models
+      .filter(
+        (m) =>
+          (vendor === "all" || m.vendor === vendor) &&
+          matchesSearch(m, words),
+      )
+      // "Current models will sort alphabetically, left to right using their
+      // provider. Example. Anthropic > DeepSeek > Moonshot" - written on the
+      // `App / Select multiple models (Opencode)` section, read 2026-08-26. By
+      // provider first, then by id so a provider's own models hold a stable
+      // order rather than falling back to whatever the gateway listed.
+      .sort((a, b) => a.vendor.localeCompare(b.vendor) || a.id.localeCompare(b.id));
+
+    // The chosen rows float above that ordering, and the dev pin list above
+    // the rest (team decision, 2026-10-07: "keep the selected ones on top").
+    // Plain partitions rather than a boolean sort, so the alphabetical rule
+    // still holds within each group.
+    //
+    // Partitioned on the selection as it was when the dialog OPENED
+    // (`selectedIds`), not on the live draft. Reordering off the draft moved a
+    // row out from under the pointer: halfway down a few hundred rows, checking
+    // one sent it to the top out of view and slid the next row into the spot
+    // just clicked, so a quick second click checked a model nobody read
+    // (review, #427). The applied set is on top every time the picker opens,
+    // and a row stays where it is while it is being checked or cleared.
+    const picked = new Set(selectedIds);
+    const chosenRows = matched.filter((m) => picked.has(m.id));
+    const rest = matched.filter((m) => !picked.has(m.id));
+    const pinnedRows = rest.filter((m) => isPinned(m, pinned));
+    const others = rest.filter((m) => !isPinned(m, pinned));
+    return [...chosenRows, ...pinnedRows, ...others];
+  }, [models, query, vendor, pinned, selectedIds]);
+
+  /**
+   * One selectable row.
+   *
+   * A function rather than a copy of the markup per call site, so a row cannot
+   * drift between them in the one control this dialog exists for.
+   *
+   * Every row is identical. The list carries no ranking of its own: what the
+   * catalogue offers is offered, and the chosen rows and the dev pin list
+   * change the order without changing how a row is drawn.
+   */
+  const renderRow = (model: (typeof models)[number]) => {
+    const selected = chosen.includes(model.id);
+    // At the limit, a row not already chosen cannot be added: drawn faded
+    // (`1420:34662`) and refusing the click, so the set cannot pass what the
+    // backend accepts. Clearing any chosen row frees a slot.
+    const blocked = multiple && !selected && atLimit;
+    return (
+      <button
+        key={model.id}
+        type="button"
+        role={multiple ? "checkbox" : "radio"}
+        aria-checked={selected}
+        disabled={blocked}
+        onClick={() => choose(model.id)}
+        className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50 ${
+          // The frame marks the chosen row with the muted ground and a real
+          // border rather than a primary outline, at 4px; the unchosen rows
+          // draw at 8px (`1410:31859`). That contradicts the 2026-09-04 card
+          // rule (inner cards are 4px); the frame is enforced as drawn
+          // (2026-10-02), and the rule is the question for design.
+          selected
+            ? "rounded-control border-base-border bg-gray-50"
+            : "rounded-md border-transparent enabled:hover:bg-gray-50"
+        }`}
+      >
+        <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+          {providerMarkFor(model.vendor) ?? <Icon name="cube" size={16} />}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm leading-5 text-base-foreground">
+          {model.id}
+        </span>
+        <ModelPickerMark multiple={multiple} selected={selected} />
+      </button>
+    );
+  };
+
+
+  const chosen = draft;
+  /**
+   * AG-590's "the final model cannot be removed" is enforced on Save, not on the
+   * row.
+   *
+   * The row used to refuse to clear when it was the last one. That cannot coexist
+   * with the frame's "Clear selections", which exists precisely to empty the set, and
+   * the two ways out the ticket names - choose another, or return to App default -
+   * are both still reachable from an empty draft.
+   *
+   * What the ticket is protecting is the *saved* state: a tool whose source is
+   * Gate and whose model list is empty has nothing to be served with. Disabling
+   * Save while the draft is empty protects exactly that, and it does it at the
+   * moment the state would actually be written rather than by making a checkbox
+   * refuse the click that led there. Cancel still leaves the stored set untouched.
+   */
+  const emptyDraft = draft.length === 0;
+  /** The draft holds as many models as an app can use. */
+  const atLimit = draft.length >= MAX_GATE_MODELS;
+
+  /**
+   * Whether the draft is a different set from the one already applied.
+   *
+   * `Apply selections` refuses until it is (design, 2026-09-04: "if they open
+   * the modal after selections are applied, then the apply button is
+   * disabled"). Compared as a set rather than a sequence because order is the
+   * user's, not the selection's - reordering the same models is not a change to
+   * write.
+   */
+  const changed = useMemo(() => {
+    if (draft.length !== selectedIds.length) return true;
+    const applied = new Set(selectedIds);
+    return draft.some((id) => !applied.has(id));
+  }, [draft, selectedIds]);
+
+  /** One row's click. Single-select is the whole interaction: it replaces the
+   *  set and closes, so there is nothing left for a footer to confirm. */
+  const choose = (id: string) => {
+    if (!multiple) {
+      onSave([id]);
+      return;
+    }
+    setDraft((d) =>
+      d.includes(id)
+        ? d.filter((x) => x !== id)
+        : d.length >= MAX_GATE_MODELS
+          ? d
+          : [...d, id],
+    );
+  };
+
+  return (
+    <Modal
+      // `Icon / Boxes` (`1410:31859`): the three-box glyph, matching the Gate
+      // option on the App pane's card (2026-10-02).
+      icon="boxes"
+      tile="lg"
+      // Plural in the multiple mode, which the current picker frame
+      // (`1410:31859`) draws. Design pointed at the singular `665:18405` on
+      // 2026-09-16, when the control was a single choice; the frame has
+      // since been redrawn around the multi-select and is enforced as drawn
+      // (2026-10-02). The single mode keeps the singular.
+      title={multiple ? "Choose Gate models" : "Choose a Gate model"}
+      subtitle={`${appName} will be able to use these models`}
+      closeButton
+      secondary={
+        multiple && !loading && !failure
+          ? { label: "Cancel", onClick: onDismiss }
+          : undefined
+      }
+      primary={
+        multiple && !loading && !failure
+          ? {
+              label: "Apply selections",
+              onClick: () => onSave(draft),
+              // Gate cannot serve a model nobody enabled, so an empty set is not
+              // a saveable state. This is where AG-590's "the final model cannot
+              // be removed" is enforced - see `emptyDraft`. `changed` is the
+              // other half: an untouched dialog has nothing to apply.
+              // A set stored before the limit existed can open over it; it
+              // has to come down to the limit before it can be applied, and
+              // the counter says by how much.
+              disabled: emptyDraft || !changed || draft.length > MAX_GATE_MODELS,
+            }
+          : undefined
+      }
+      footerStart={
+        multiple && !loading && !failure && models.length > 0 ? (
+          // `1410:31315`: a text link across from Cancel. Empties the draft
+          // only; nothing is written until Apply, and an empty draft cannot be
+          // applied, so this cannot leave the app with no model.
+          <button
+            type="button"
+            onClick={() => setDraft([])}
+            disabled={emptyDraft}
+            className="rounded-control text-sm font-medium leading-5 text-base-primary underline-offset-2 enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            Clear selections
+          </button>
+        ) : undefined
+      }
+      onDismiss={onDismiss}
+      initialFocus={searchRef}
+    >
+      {loading ? (
+        <div className="flex flex-col gap-1" aria-busy>
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-9" />
+          ))}
+        </div>
+      ) : failure ? (
+        <ModalNote>
+          <p className="font-medium text-base-foreground">
+            Gate could not list its models
+          </p>
+          <p className="mt-1">
+            Nothing changed. Close this and try again.
+          </p>
+        </ModalNote>
+      ) : models.length === 0 ? (
+        <ModalNote>
+          <p className="font-medium text-base-foreground">
+            No models to choose from yet
+          </p>
+          <p className="mt-1">
+            This gateway has no models, so apps keep their own.
+          </p>
+        </ModalNote>
+      ) : (
+        <>
+          {/* Search and provider filter (Figma 665:18408). Both are client-side
+           *  over the catalogue already in hand - the endpoint takes no query, and
+           *  413 rows filter faster than a round trip.
+           *
+           *  The two controls are drawn as different things and are not a pair:
+           *  the field is an `Input` (4px, on the `base/background` fill every
+           *  input in the file carries), the filter is a `Button` instance
+           *  (`Variant=Outline, Size=default`, so 8px on white with the moulded
+           *  elevation). Giving them one shared treatment is what made them look
+           *  wrong together. */}
+          <div className="flex items-center gap-3">
+            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-control border border-base-input bg-base-background px-3 shadow-base-xs transition-colors focus-within:border-base-primary">
+              <Icon
+                name="search"
+                size={16}
+                className="shrink-0 text-base-muted-foreground"
+              />
+              <input
+                ref={searchRef}
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search models"
+                aria-label="Search models"
+                className="w-full bg-transparent text-sm leading-5 text-base-foreground outline-none placeholder:text-base-muted-foreground"
+              />
+            </label>
+            {/* A native `select` under the drawn Button's clothes: `appearance-none`
+             *  plus our own chevron, because the frame draws `Icon / ChevronDown`
+             *  at 20px and the platform's own double-arrow is what was showing.
+             *  Native rather than a custom listbox - it keeps the OS menu, the
+             *  type-ahead and the touch behaviour on all three platforms, and
+             *  this is a filter over 50 providers where those matter. */}
+            <div className="relative shrink-0">
+              <select
+                value={vendor}
+                onChange={(e) => setVendor(e.target.value)}
+                aria-label="Provider"
+                className="h-9 w-full appearance-none whitespace-nowrap rounded-md border border-base-input bg-base-card py-0 pl-3 pr-9 text-sm font-medium leading-5 tracking-button-sm text-base-foreground shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              >
+                <option value="all">All providers</option>
+                {vendors.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+              <Icon
+                name="chevronDown"
+                size={20}
+                aria-hidden
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base-foreground"
+              />
+            </div>
+          </div>
+
+          {/* How much of the limit the draft uses (`1410:31315`: "2 of 4 models
+            * selected"). It replaced "Showing N of M models", a count of the
+            * catalogue that said nothing about the choice being made; the
+            * set-aside line below still says what the list leaves out. */}
+          {multiple && (
+            <p className="text-base-xs leading-4 text-base-muted-foreground">
+              {draft.length} of {MAX_GATE_MODELS} models selected
+            </p>
+          )}
+
+          {/* What a set of several actually does, said only once there is one
+            * (AG-888).
+            *
+            * The dialog offered a checkbox per model and never explained the
+            * rule, so the reasonable reading was the one the ticket reached:
+            * "the app takes one model, so anything past the first is
+            * ignored". It is not. The set is written into the tool's own
+            * config (`tool_models.rs`): it becomes the list the tool's own
+            * model picker offers, and the first entry is the model the tool
+            * starts on. That is what lets several Codex sessions on several
+            * models keep their own choices instead of collapsing onto one.
+            *
+            * So this sentence carries the two facts the checkboxes cannot:
+            * where the set shows up, and which model the app starts on. It
+            * also says what happens to anything outside the set, because the
+            * answer changed: the Gate route (`gate_served.rs`) refuses it
+            * rather than rewriting it onto the first entry.
+            *
+            * It does **not** call the starting model "the first in the list".
+            * `draft` is selection order - `choose` appends - and the rows
+            * render in catalogue order inside their vendor groups, so
+            * `draft[0]` is routinely not the first row on screen: check GPT-5
+            * and then a Claude model and the list draws Claude on top while
+            * the app starts on GPT-5. The value is right, the phrase pointed at
+            * an ordering this dialog never shows and offers no way to change,
+            * so it names the model and stops. */}
+          {multiple && draft.length > 1 && (
+            <p className="text-base-xs leading-4 text-base-muted-foreground">
+              {appName}&apos;s own model picker lists exactly these, starting on{" "}
+              <span className="font-medium text-base-foreground">{draft[0]}</span>.
+              Gate refuses a request for any other model.
+            </p>
+          )}
+
+          {missing.length > 0 && (
+            <ul className="flex flex-col gap-px">
+              {missing.map((id) => {
+                if (!multiple) {
+                  return (
+                    <li
+                      key={id}
+                      className="flex w-full items-center gap-3 rounded-control border border-amber-300 bg-amber-50 px-3 py-2"
+                    >
+                      <Icon
+                        name="triangleAlert"
+                        size={16}
+                        className="shrink-0 text-amber-700"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm leading-5 text-amber-900">
+                        {id}
+                      </span>
+                      <span className="shrink-0 text-base-2xs uppercase leading-4 tracking-label text-amber-800">
+                        Unavailable
+                      </span>
+                    </li>
+                  );
+                }
+                return (
+                  <li key={id}>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked
+                      onClick={() => setDraft((d) => d.filter((x) => x !== id))}
+                      className="flex w-full items-center gap-3 rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-left"
+                    >
+                      <Icon
+                        name="triangleAlert"
+                        size={16}
+                        className="shrink-0 text-amber-700"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm leading-5 text-amber-900">
+                        {id}
+                      </span>
+                      <span className="shrink-0 text-base-2xs uppercase leading-4 tracking-label text-amber-800">
+                        Unavailable
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {shown.length === 0 ? (
+            <ModalNote>
+              <p>No model matches that search.</p>
+            </ModalNote>
+          ) : (
+            // The frame draws the rows inside a bordered card and scrolls them
+            // within it, so the edge of the list stays visible when it runs past
+            // the fold. The inner element scrolls, not the border, so that edge
+            // holds still while the contents move.
+            //
+            // The card gives way before the dialog body does. It used to be a
+            // fixed 22rem, so on a short window the body scrolled as well and
+            // the note under the list sat behind a second scrollbar (alpha.13
+            // feedback, 2026-10-07). `min-h-32` is the floor it shrinks to;
+            // the body scrolls only past that.
+            <div className="flex min-h-32 flex-col rounded-md border border-base-border p-2">
+              <div
+                role={multiple ? "group" : "radiogroup"}
+                aria-label="Gate model"
+                className="flex min-h-0 max-h-[22rem] flex-col overflow-y-auto"
+              >
+                {/* One flat list, by provider then id, with the chosen rows
+                  * floated to the top and the dev pin list under them. No
+                  * headings: the catalogue decides what is offered, and this
+                  * dialog does not second-guess it. */}
+                {shown.map(renderRow)}
+              </div>
+            </div>
+          )}
+
+          {/* AG-590 asks that the set be stated before confirmation, and that the
+           *  cost consequence be stated with it. The set is stated above - the
+           *  checked rows, and the counter above them - so this carries the
+           *  consequence alone. It said the number a third time until the count
+           *  row gained one, and a figure repeated three ways reads as three
+           *  facts to reconcile rather than one.
+           *
+           *  An empty draft is the exception, and says what is needed instead:
+           *  it became reachable when "Clear selections" arrived, and a disabled Save
+           *  with no sentence beside it is a dead end. */}
+          {multiple && (
+            <ModalNote>
+              {emptyDraft ? (
+                <>
+                  <p className="font-medium text-base-foreground">No models enabled</p>
+                  <p className="mt-1">
+                    Choose at least one model, or cancel and return the app to App
+                    default.
+                  </p>
+                </>
+              ) : (
+                <p>
+                  Requests for the models enabled here consume Gate credits.
+                  Gate never uses a model you have not enabled.
+                </p>
+              )}
+            </ModalNote>
+          )}
+        </>
+      )}
+    </Modal>
+  );
+}
+
+export function UseGateModelDialog({
+  app,
+  vendor,
+  modelIds,
+  /** Pre-formatted balance, e.g. "$10.25 available". */
+  credits,
+  onKeepAppDefault,
+  onUseGateCredits,
+}: {
+  app: DialogApp;
+  /** Who makes the model, shown only when there is one to attribute (Figma
+   *  130:48278 draws "Anthropic" above the id). */
+  vendor: string;
+  /**
+   * Every model this switch enables, in the user's order (AG-590).
+   *
+   * One entry draws the frame exactly: vendor mark, vendor, id, PAYG pill.
+   * Several stack the ids in the same row with the mark dropped - a column of
+   * marks would imply each id belongs to the one beside it, which is only true
+   * by accident, and the row is where the reader is already looking for what
+   * they are about to pay for. It replaces an "Also enabled" note that put half
+   * the set in one place and half in another.
+   */
+  modelIds: string[];
+  credits: string;
+  onKeepAppDefault: () => void;
+  onUseGateCredits: () => void;
+}) {
+  const single = modelIds.length === 1;
+  return (
+    <Modal
+      icon="layers"
+      tile="lg"
+      title={`Use a Gate model for ${app.name}?`}
+      // Drawn as "Your next requests will use..." (130:48278). The write lands
+      // in the app's config, which it reads when it starts, so the requests
+      // that spend are its next session's rather than the next ones.
+      subtitle={`${app.name}'s next session will use Constellation Gate PAYG credits`}
+      secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
+      primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
+      onDismiss={onKeepAppDefault}
+      // 130:48278 draws this one narrower than the picker; 512 is one of the
+      // four widths the file uses.
+      width={512}
+    >
+      {single ? (
+        <ModalSubject
+          // 20px, not the 16 the other marks take: 130:48325 draws this one
+          // larger inside its wrapper.
+          icon={providerMarkFor(vendor, 20) ?? <Icon name="cube" size={20} />}
+          title={vendor}
+          description={modelIds[0]}
+          variant="identity"
+          pill={{ label: "PAYG", tone: "neutral" }}
+        />
+      ) : (
+        // The same row, holding a set. No mark: one glyph cannot stand for
+        // several vendors, and repeating it per line would say each id is that
+        // vendor's when the set is usually mixed.
+        <div className="flex items-start gap-3 rounded-md border border-base-border p-3">
+          <ul className="flex min-w-0 flex-1 flex-col gap-1">
+            {modelIds.map((id) => (
+              <li
+                key={id}
+                className="truncate text-sm leading-5 text-base-foreground"
+              >
+                {id}
+              </li>
+            ))}
+          </ul>
+          <span className="shrink-0 rounded-sm border border-base-border px-2 py-1 font-mono text-base-2xs leading-4 text-neutral-700">
+            PAYG
+          </span>
+        </div>
+      )}
+
+      {/* Credits and the reassurance are one block, as the frame draws them
+       * (130:48302): the balance is the thing being spent and the sentence is
+       * what limits the commitment, so they belong to each other rather than
+       * reading as two unrelated notes. */}
+      <div className="rounded-md bg-gray-50 p-3">
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden
+            className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-neutral-700"
+          >
+            <Icon name="creditCard" size={20} />
+          </span>
+          <p className="flex-1 text-sm leading-5 text-neutral-600">
+            Gate credits:
+          </p>
+          <p className="shrink-0 text-sm font-medium leading-5 text-base-foreground">
+            {credits}
+          </p>
+        </div>
+        <p className="mt-3 text-sm leading-5 text-neutral-600">
+          Gate writes these into {app.name}&apos;s config. Return to App default
+          anytime to undo.
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Rename the device. Shows the current name read-only above the new one so the
+ * user can see what they are replacing rather than trusting the label. Focus
+ * opens on the editable field, not the read-only one above it.
+ */
+export function RenameDeviceDialog({
+  currentName,
+  newName,
+  busy,
+  onNewNameChange,
+  onCancel,
+  onRename,
+}: {
+  currentName: string;
+  newName: string;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
+  onNewNameChange: (next: string) => void;
+  onCancel: () => void;
+  onRename: () => void;
+}) {
+  const field = useRef<HTMLInputElement>(null);
+  return (
+    <Modal
+      // `Monitor` (`143:70310`), matching the Device row that opens this. The
+      // 2026-08-26 sweep fixed the row and left the dialog on the near-miss.
+      icon="monitor"
+      tile="sm"
+      title="Rename your device"
+      width={480}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      primary={{
+        label: busy ? "Working…" : "Rename device",
+        onClick: onRename,
+        disabled: busy || !newName.trim(),
+      }}
+      onDismiss={busy ? undefined : onCancel}
+      initialFocus={field}
+    >
+      <ModalField label="Current device name" value={currentName} readOnly />
+      <ModalField
+        label="New device name"
+        value={newName}
+        onChange={onNewNameChange}
+        maxLength={DEVICE_NAME_MAX_LENGTH}
+        inputRef={field}
+      />
+    </Modal>
+  );
+}
+
+/**
+ * Replace the API key.
+ *
+ * `177:74869` labels the second field "New device name", copy-pasted from the
+ * rename dialog. Shipped as "New API key" by explicit decision (2026-08-26),
+ * standing as the named exception to "the file wins": the drawn label would put
+ * a wrong word on the one screen where the user handles a credential. Raised
+ * with the designer.
+ */
+export function ReplaceApiKeyDialog({
+  currentKeyMasked,
+  newKey,
+  busy,
+  onNewKeyChange,
+  onCancel,
+  onReplace,
+}: {
+  currentKeyMasked: string;
+  newKey: string;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
+  onNewKeyChange: (next: string) => void;
+  onCancel: () => void;
+  onReplace: () => void;
+}) {
+  const field = useRef<HTMLInputElement>(null);
+  return (
+    <Modal
+      icon="key"
+      tile="sm"
+      title="Replace API key"
+      width={480}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      primary={{
+        label: busy ? "Working…" : "Replace key",
+        onClick: onReplace,
+        disabled: busy || !newKey.trim(),
+      }}
+      onDismiss={busy ? undefined : onCancel}
+      initialFocus={field}
+    >
+      <ModalField
+        label="Current API key"
+        value={currentKeyMasked}
+        readOnly
+      />
+      <ModalField
+        label="New API key"
+        value={newKey}
+        onChange={onNewKeyChange}
+        placeholder="sk-gw..."
+        inputRef={field}
+      />
+    </Modal>
+  );
+}
+
+/**
+ * Turning on OpenCode also turns on the shell environment channel.
+ *
+ * Not in the Figma: OpenCode's coupling to the environment channel has no frame,
+ * and the alternative to a dialog is a click that silently rewrites machine-wide
+ * settings.
+ *
+ * **The variables are not how OpenCode routes**, and the body must not say they
+ * are. `integrations/opencode.rs` rewrites `provider.<id>.options.baseURL` to
+ * the loopback relay for every provider it knew at connect time, needing neither
+ * a variable nor the CA. What that snapshot cannot cover is a provider added
+ * afterwards, one outside the allowlist, or one skipped as local - the
+ * environment is what carries that traffic, which is why OpenCode asks for the
+ * channel (`useRouting.ts`, the `opencode-env` doc). The body said "OpenCode has
+ * no gateway setting of its own, so Gate routes it with your machine's proxy
+ * variables" for months, against that comment; AG-893's review caught it.
+ *
+ * Informational in tone, not destructive: nothing is being replaced or removed,
+ * so the primary is the plain one and it says what it turns on. Focus stays on
+ * the primary for the same reason - `useFocusTrap`'s `initialFocus` is for the
+ * dialogs where the safe answer is "no".
+ *
+ * **It carries the CA line**, which was stated nowhere at all.
+ * `NODE_EXTRA_CA_CERTS` adds Gate's interception certificate to the trust roots
+ * of every Node process started afterwards - a larger fact than "git and curl
+ * go through Gate", and the harder one to discover. Settings says it too, on
+ * the row that owns the control; this dialog says it at the moment a click is
+ * about to cause it.
+ *
+ * **Shared because the tray needs it too, and did not have it.** `useRouting`
+ * raises this prompt for whichever shell called `setAppRouted`, and awaits a
+ * promise only a rendered dialog resolves. The tray routed OpenCode through that
+ * same call while drawing only the drift and trust prompts, so the switch span
+ * forever and the toggle never completed - a deadlock that cleared only when the
+ * popover unmounted. Lived inline in `NewUiApp` until then; a second copy is how
+ * the tray would fall behind again.
+ */
+export function OpenCodeEnvDialog({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      tone="neutral"
+      // No terminal glyph in the set; `squareCode` is the closest thing to the
+      // shell this dialog is about.
+      icon="squareCode"
+      // Names the effect, not a control: the Settings row this used to point
+      // at ("Command-line tools", AG-893) went on 2026-10-01, and the rail's
+      // "Terminal tools" row before it, so there is no label left to borrow.
+      title="Route OpenCode and your terminal through Gate?"
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{ label: "Turn on", onClick: onConfirm }}
+      onDismiss={onCancel}
+    >
+      {/* Why OpenCode asks, then what saying yes reaches. The first sentence
+          used to claim the variables are how Gate routes OpenCode, which the
+          component doc above explains is false. Shortened on 2026-10-09,
+          keeping all three qualifiers: existing providers stay on OpenCode's
+          settings, only tools that read the variables, only Node programs
+          started afterwards. An earlier drawn ending, "...that
+          reads them, not OpenCode", was cut on 2026-09-04 as contradicting the
+          clause before it; with the clause corrected the cut still stands,
+          since naming git, curl and npm carries the breadth on its own. */}
+      <p className="text-sm leading-5 text-neutral-600">
+        Providers you already set up keep OpenCode&apos;s own settings. Ones you
+        add later route through your proxy variables, which apply to any
+        command-line tool that reads them, git, curl and npm included, and make
+        Node programs you start afterwards trust Gate&apos;s certificate.
+      </p>
+      {/* AG-895. The ticket reads "toggling OpenCode asks me to close Codex",
+          and the literal claim does not survive the code - every caller of
+          `offerAfterChange` is scoped to the slugs that wrote. The suspicion
+          under it is right, though, and this is where it belongs: turning
+          OpenCode on DOES reach other tools, through the machine-wide
+          variables, and it reaches only the ones started afterwards. A
+          process's environment is fixed when it is spawned.
+
+          Nothing else says it. The reopen machinery is what normally would,
+          and it is structurally silent here: `env-proxy` is not a process, so
+          `ReopenEvidence::process_names_known` is false for it and
+          `reopen_pending` declines to claim anything. So the terminal that is
+          already open keeps going direct, indefinitely, with every surface in
+          the app reporting the channel as on.
+
+          Weighted, like the certificate sentence in the untrust dialog and the
+          trust prompt's hint: it is the line that decides whether the person
+          gets what they just asked for. */}
+      <p className="mt-3 text-sm font-medium leading-5 text-base-foreground">
+        Terminals and tools already open aren&apos;t covered until you reopen them.
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * End the signed-in session. Red tone and a primary that names what it does,
+ * because it stops this device talking to Gate.
+ *
+ * The drawn copy says protection turns off, apps stop routing and the API key is
+ * removed from the keychain. That describes Reset, which is a separate row on the
+ * same screen; this one sits under "Active session" and ends the session, leaving
+ * the account and the tools' configs alone. Copy corrected to match what it does
+ * rather than shipping two destructive actions that claim the same consequences.
+ * Raised with the designer.
+ */
+export function DisconnectGateDialog({
+  busy,
+  onCancel,
+  onDisconnect,
+}: {
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
+  onCancel: () => void;
+  onDisconnect: () => void;
+}) {
+  return (
+    <Modal
+      tone="danger"
+      icon="triangleAlert"
+      // 32px with a 16px glyph (`143:70620`), like its two 480px siblings -
+      // the red tile the build drew at 44 was the loudest of the tile misses.
+      tile="sm"
+      title="Disconnect Gate?"
+      width={480}
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{
+        label: busy ? "Working…" : "Yes, disconnect Gate",
+        onClick: onDisconnect,
+        destructive: true,
+        disabled: busy,
+      }}
+      onDismiss={busy ? undefined : onCancel}
+      edge="danger"
+    >
+      {/* `164:73502` reads "Protection turns off, your apps stop routing through
+       * Gate, and your API key is removed from the keychain" - which describes
+       * Reset, the row below this one on the same screen. Corrected by explicit
+       * decision (2026-08-26), the second named exception to "the file wins":
+       * disconnecting ends the session and touches no keychain item, so the
+       * drawn sentence promises a change this action does not make. The ink is
+       * still the frame's `base/foreground`; only the words are ours. */}
+      <p className="text-sm leading-5 text-base-foreground">
+        This device signs out of Gate and stops sending activity. Your apps keep
+        their current configuration, and signing back in restores routing.
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * The most destructive action in the app, and the only one gated by an
+ * acknowledgement. It spells out its three consequences rather than asserting
+ * they exist, and the primary stays refused until the checkbox is ticked.
+ */
+export function ResetGateConnectDialog({
+  acknowledged,
+  busy,
+  onAcknowledgedChange,
+  onCancel,
+  onReset,
+}: {
+  acknowledged: boolean;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
+  onAcknowledgedChange: (next: boolean) => void;
+  onCancel: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <Modal
+      tone="danger"
+      icon="triangleAlert"
+      title="Reset Gate Connect"
+      width={544}
+      subtitle="This removes Gate Connect setup from this device."
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      primary={{
+        label: busy ? "Working…" : "Reset Gate Connect",
+        onClick: onReset,
+        destructive: true,
+        disabled: busy || !acknowledged,
+      }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <ModalSteps
+        label="What happens next:"
+        steps={[
+          {
+            title: "Routing turns off",
+            description:
+              "Managed tools return to their saved pre_gate configurations.",
+          },
+          {
+            title: "Tools disconnect",
+            description: "No app on this device remains protected by Gate.",
+          },
+          {
+            title: "Account and keys are removed",
+            description:
+              "Your local sign-in, organization, and keychain credentials are cleared.",
+          },
+        ]}
+      />
+      <ModalCheckbox
+        checked={acknowledged}
+        onChange={onAcknowledgedChange}
+        label="I understand that setup will restart on this device"
+      />
+    </Modal>
+  );
+}
+
+/**
+ * What the diagnostic channel actually sends, and what it never sends.
+ *
+ * **Nothing renders this today.** Its Settings row was removed on 2026-08-27
+ * for being undrawn, which took AG-603's only surface with it. Kept rather than
+ * deleted because the list itself is the expensive part - it is written from
+ * what `analytics.ts` actually sends, not from the ticket's field list - and
+ * because the criterion has not been withdrawn, only left without a door.
+ *
+ * Opened from a link inside the share-diagnostics row's own description rather
+ * than from a row of its own: the file draws two rows under Diagnostics, and a
+ * disclosure about a setting reads better as part of that setting's sentence
+ * than as furniture beside it.
+ *
+ * AG-603 asks for a "What is collected" list that opens without changing the
+ * setting - so this is read-only and its only action closes it.
+ *
+ * The lists are written from `lib/analytics.ts` rather than from the ticket. The
+ * ticket enumerates fields for an upload that does not exist yet (installation
+ * name, verification state, event-delivery state, notification permission); the
+ * channel that *does* exist is PostHog, sending a closed set of event names, a
+ * filtered prop allowlist, classified error titles, and two coarse
+ * super-properties. Describing the ticket's list would be describing something
+ * Gate does not do, on the one screen whose whole job is telling the truth about
+ * what leaves the machine.
+ */
+export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal
+      tone="neutral"
+      icon="info"
+      title="What Gate Connect collects"
+      // Four lists now, and the subtitle can only generalise over them by
+      // understating one. The first is gated on the diagnostics toggle; the
+      // second rides every routed request whatever it says; the fourth is sent
+      // only on an explicit Send. So the subtitle says where the line is rather
+      // than claiming one rule: automatic collection can carry the account id
+      // after sign-in, so it says what is and is not in it, not that it is
+      // anonymous.
+      subtitle="Automatic collection never includes your name, email or keys. Reports you send carry more."
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+    >
+      <CollectedDataScroller />
+    </Modal>
+  );
+}
+
+/**
+ * The lists, in their own scroll region.
+ *
+ * Four blocks do not fit: the window's floor is 800px tall, `Modal` puts no
+ * ceiling on its panel and no scroll behind it, and the full disclosure runs
+ * past both. `DiagnosticsDialog` already solves this the same way for the
+ * report `<pre>` - the long thing scrolls inside itself and the dialog keeps
+ * its buttons on screen. The `gap-4` moves onto this element because the notes
+ * are its children now, not the modal body's.
+ */
+function CollectedDataScroller() {
+  return (
+    <div className="flex max-h-96 flex-col gap-4 overflow-y-auto">
+      <CollectedDataLists Wrapper={ModalNote} />
+    </div>
+  );
+}
+
+/**
+ * The sent / never-sent lists, shared by the two dialogs that disclose them:
+ * "What Gate Connect collects" above, and the send-one-report dialog below.
+ *
+ * One copy on purpose. Two would drift, and these are the claims the product's
+ * reassurance rests on - the moment the disclosure the user reads before opting
+ * in and the one they read before sending disagree, neither can be trusted.
+ *
+ * `Wrapper` because the callers used to frame it differently - the onboarding
+ * step passed its own card until the redraw moved the lists out of that step,
+ * leaving `ModalNote` the only wrapper in use. Kept rather than inlined because
+ * the next caller is as likely to be a pane as a dialog, and the content is what
+ * is shared, not the chrome.
+ */
+export function CollectedDataLists({
+  Wrapper,
+}: {
+  Wrapper: (props: { children: ReactNode }) => ReactNode;
+}) {
+  return (
+    <>
+      <Wrapper>
+        <p className="font-medium text-base-foreground">Sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          {/* AG-960. The install id is the PostHog distinct id from the first
+              event. While sharing is on, pairing adds the organization id (the
+              group the install funnel is counted by), and a Constellation
+              sign-in joins the install to the account's opaque id (the Cognito
+              sub the dashboard already uses). An API key is never tied to a
+              person: its creator need not be the one at this machine. This
+              dialog is reached from Settings, where there is a switch rather
+              than a question, so the copy names the switch. */}
+          <li>
+            A device id made on this machine. Once you sign in, and while
+            sharing is on, your organization id too, and your account id with
+            Constellation sign-in. Never your name or email.
+          </li>
+          {/* AG-960's opt-out record: at most once per install (a marker the
+              core claims), on the onboarding No and Skip as well as the
+              Settings switch, filed under the account's id (or the device id)
+              with the organization when known. "The first time" is what keeps
+              the sentence true after a second opt-out, which sends nothing. */}
+          <li>
+            The first time you say no, or turn sharing off later, one final note
+            says so, tied to your organization and account when known.
+          </li>
+          <li>App version and operating system.</li>
+          <li>
+            Which action happened, from a fixed list: routing on or off, an app
+            connected, a setup step, an update. Never free text.
+          </li>
+          <li>
+            A short label per action: which app or provider, and on or off.
+          </li>
+          <li>
+            A short error title, like &ldquo;keychain denied&rdquo;. The full message
+            stays here.
+          </li>
+          {/* Errors only, and it says so: this rides a failure and no other
+              event. The device name is deliberately left out of the error
+              context, and the organization id rides only as the group named
+              in the first bullet, never as a field here. */}
+          <li>
+            On a failure: your OS version, installed tools, and whether routing and
+            the event stream were on. Not what you were doing.
+          </li>
+        </ul>
+      </Wrapper>
+      {/* A third list, and deliberately not folded into the first. Everything
+          above is gated on the diagnostics toggle; these two headers ride every
+          routed request whatever that toggle says, because they are routing
+          metadata rather than telemetry. Leaving them out of this dialog while
+          the app started sending them would make the page that exists to be
+          trusted the one place that understated what leaves the machine. */}
+      <Wrapper>
+        <p className="font-medium text-base-foreground">
+          Sent with your traffic, whatever this setting says
+        </p>
+        <ul className="mt-1 list-disc pl-4">
+          {/* The header rides every routed request whatever the diagnostics
+              answer is. The gateway stores it with each request
+              (`gateway_requests.machine_id`, beside the request's `user_id`),
+              which is how the activity view groups by machine, so the copy says
+              so rather than claiming it is linked to nobody. What it does not
+              do is join this device's diagnostic data to a person. */}
+          <li>
+            The same device id, stored with each request your account sends, to
+            group your activity by machine. It grants no access.
+          </li>
+          <li>
+            Which app sent the request, when Gate can tell: Claude Code, Codex and
+            so on. Unknown apps go unlabelled.
+          </li>
+        </ul>
+      </Wrapper>
+      <Wrapper>
+        <p className="font-medium text-base-foreground">Never sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>Prompts or model responses.</li>
+          <li>API keys, credentials, or anything from your keychain.</li>
+          <li>The contents of any config file.</li>
+          <li>The text of an error, as opposed to its classification.</li>
+        </ul>
+      </Wrapper>
+      {/* The fourth list, and the reason the three above could stay short.
+          Automatic collection carries no name, email or paths; a report the
+          user sends from Settings carries both, because a support thread that
+          cannot see the gateway address or find the account is a thread that
+          cannot answer the question. Listing it here rather than only in the
+          Send dialog is the point: the disclosure has to be complete on the
+          screen that claims to be the disclosure, not only on the one screen
+          where the extra data is about to leave. */}
+      <Wrapper>
+        <p className="font-medium text-base-foreground">
+          Only in a report you send yourself
+        </p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>
+            Your email, organization name and id, so support can find your
+            account.
+          </li>
+          <li>
+            Where Gate keeps its files, and the gateway, proxy and relay addresses
+            in use.
+          </li>
+          <li>
+            Installed tools, their routing status, and agents running when you sent
+            it.
+          </li>
+        </ul>
+      </Wrapper>
+    </>
+  );
+}
+
+/**
+ * A failed send, shown inside the dialog that attempted it.
+ *
+ * Mirrors `setup.tsx`'s `SetupError` rather than reaching for `ModalNote`: a
+ * refusal the user has to act on is not a note, and `role="alert"` is what gets
+ * it read out. Not lifted into a shared component, because the two live on
+ * different surfaces and one six-line div is a smaller cost than a third module
+ * for both to import.
+ */
+function DialogError({ children }: { children: ReactNode }) {
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Where a send has got to. Four states, because each one owns a different pair
+ * of buttons and the dialog is the only place any of them is visible.
+ *
+ * `sending` is its own state rather than a boolean beside `confirm` so the
+ * dialog can refuse to be dismissed while a request is in flight: closing
+ * mid-send would drop the reference on the floor for a report that did arrive,
+ * which is the one outcome the user cannot recover from.
+ */
+export type SendDiagnosticsState =
+  | { kind: "confirm" }
+  | { kind: "sending" }
+  | { kind: "sent"; reference: string }
+  | { kind: "failed"; title: string; hint: string; raw?: string };
+
+/**
+ * Send one diagnostics report (AG-603).
+ *
+ * The field list comes first and the send is second, which is the criterion's
+ * order and also the only order that makes sense: this is the dialog that says
+ * what is about to leave the machine, so it has to say it before the button that
+ * sends it exists.
+ *
+ * **There is no message field, deliberately.** The criterion says the report
+ * does not include the support message, and the way to guarantee that is to
+ * never offer somewhere to type one - a box we promised not to send would be a
+ * box the user fills in and expects to be read. The support message goes in the
+ * support thread, with the reference pasted into it.
+ *
+ * Undrawn: the Figma has no frame for this dialog (AG-603 was blocked on AG-602's
+ * handoff). Geometry follows `DiagnosticsDialog`, which is the neighbouring
+ * 600px report dialog, so the two entrances to the same data match.
+ */
+export function SendDiagnosticsDialog({
+  state,
+  copied,
+  onSend,
+  onCopyReference,
+  onClose,
+}: {
+  state: SendDiagnosticsState;
+  /** Flips the reference's copy button, as `DiagnosticsDialog` does. */
+  copied?: boolean;
+  onSend: () => void;
+  onCopyReference: () => void;
+  onClose: () => void;
+}) {
+  const sent = state.kind === "sent";
+  const sending = state.kind === "sending";
+  return (
+    <Modal
+      icon="share2"
+      tile="lg"
+      title={sent ? "Diagnostics sent" : "Send diagnostics now"}
+      subtitle={
+        sent
+          ? "Paste this reference into your support request."
+          : "Sends one report. Your sharing setting doesn’t change."
+      }
+      secondary={
+        sent
+          ? { label: "Close", onClick: onClose }
+          : { label: "Cancel", onClick: onClose, disabled: sending }
+      }
+      primary={
+        sent
+          ? { label: copied ? "Copied" : "Copy reference", onClick: onCopyReference }
+          : {
+              // With the ellipsis, like every other in-flight label in this
+              // file ("Working…"). Without it the button read as a state the
+              // dialog had arrived at rather than one it was passing through.
+              label: sending
+                ? "Sending…"
+                : state.kind === "failed"
+                  ? "Retry"
+                  : "Send",
+              onClick: onSend,
+              disabled: sending,
+            }
+      }
+      // Unskippable while the request is in flight - see `SendDiagnosticsState`.
+      onDismiss={sending ? undefined : onClose}
+    >
+      {sent ? (
+        <>
+          {/* Sans, not mono. A reference is an identifier *value*, and design
+           * settled those as sans on 2026-09-04; mono here would be the
+           * eyebrow-only rule broken for the one string the user has to read
+           * character by character. Medium and 16 carry that job instead.
+           *
+           * No `tracking-heading-16`: that is `heading/16`'s -1%, and this is a
+           * value, not a heading. `text-base` carries `copy/16`'s -2% in its own
+           * fontSize tuple, which is the pair that belongs together. */}
+          <div className="rounded-md border border-base-border bg-gray-50 p-4 text-base font-medium leading-6 text-base-foreground">
+            {state.reference}
+          </div>
+          <ModalNote>
+            The report is on its way. Routing was not interrupted.
+          </ModalNote>
+        </>
+      ) : (
+        <>
+          {state.kind === "failed" && (
+            <DialogError>
+              <p className="font-medium">{state.title}</p>
+              <p className="mt-1">{state.hint}</p>
+              {/* The hint is `classifyError`'s fallback, which points to
+                * "the details below" - and there were no
+                * details below. The classifier had the raw message all along;
+                * this dialog was the one surface that dropped it on the way in.
+                * Same disclosure `ErrorBanner` and the setup screen use, so the
+                * copy behaves the same way wherever that sentence appears. */}
+              <ErrorDetails raw={state.raw} title={state.title} />
+            </DialogError>
+          )}
+          <CollectedDataScroller />
+        </>
+      )}
+    </Modal>
+  );
+}
+/**
+ * The reopen flow's rows, with their product marks.
+ *
+ * Here, next to `DialogReopenTool`, because this is the module that owns the
+ * shape it builds - and because BOTH shells draw this flow. The window had the
+ * marks while the tray did not: `TrayApp` passed `runningApps.stage.tools`
+ * straight through, so the cube fallback fired and the tray listed Claude Code
+ * and Codex behind a generic glyph while the window, same flow and same moment,
+ * drew their real marks.
+ *
+ * It lived in `BrandMark` for a while, which made a leaf presentational module
+ * import a type from this one.
+ * `lib/reopen` is not the home either, tempting as it looks: it owns the model
+ * and depends on no component, and moving this there would point it at both
+ * this module and `BrandMark`.
+ *
+ * The model itself is `lib/reopen`'s and travels unchanged; only the mark is
+ * added. A second copy of a row is how two surfaces come to disagree about one
+ * tool, which is the whole reason `lib/reopen` exists.
+ */
+export function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
+  // 20, the glyph the dialog's 36px tile is built around (`1336:13895`).
+  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug, 20) }));
+}
+
+/** "Claude Code", "Claude Code and Codex", "Claude Code, Codex, and OpenCode". */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/**
+ * What a teardown could not finish: Disconnect, Reset and sign-out raise it
+ * when a tool is still pointing at Gate afterwards.
+ *
+ * AG-596 is explicit that Gate Connect "does not claim cleanup completed", so a
+ * partial teardown is named rather than passed over. Retrying is the primary,
+ * and only retouches the tools still on Gate.
+ */
+export function TeardownLeftBehindDialog({
+  tools,
+  busy,
+  onRetry,
+  onCancel,
+}: {
+  tools: string[];
+  busy?: boolean;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
+  const plural = tools.length > 1;
+  return (
+    <Modal
+      tone="warning"
+      icon="triangleAlert"
+      title={plural ? "Some tools stayed on Gate" : "One tool stayed on Gate"}
+      secondary={{ label: "Close", onClick: onCancel, disabled: busy }}
+      primary={{
+        label: busy ? "Working…" : "Try again",
+        onClick: onRetry,
+        disabled: busy,
+      }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Couldn’t put {joinNames(tools)} back on{" "}
+        {plural ? "their own settings" : "its own settings"}.{" "}
+        {plural ? "They still point" : "It still points"} at Gate, which is now signed out.
+      </p>
+    </Modal>
+  );
+}

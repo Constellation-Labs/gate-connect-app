@@ -243,11 +243,12 @@ pub const ACCOUNT_FILE_NAME: &str = "account.json";
 /// - `opencode` - its inference lives under `/zen/v1/…`, which is not a path
 ///   the reseller router recognises.
 ///
-/// Here because the forwarder needs it too: a pay-as-you-go tool's request
-/// carries no provider credential of its own - Gate was going to supply the
-/// provider and the bill - so the forwarder must not send it on to the
-/// provider directly once the app is gone. It answers with an error naming the
-/// fix instead. Core does not bill pay-as-you-go in this tree yet; when it
+/// Here because the forwarder needs it too: a pay-as-you-go request on these
+/// slugs may carry no provider credential of its own - Codex's does not, since
+/// Gate was going to supply the provider and the bill - and the forwarder must
+/// not send such a request on to the provider once the app is gone. It answers
+/// with an error naming the fix instead. One that carries the tool's own key
+/// goes direct under it. Core does not bill pay-as-you-go in this tree yet; when it
 /// does, its slug list has to be this one.
 pub const PAYG_ELIGIBLE_SLUGS: [&str; 3] = ["anthropic", "openai", "openrouter"];
 
@@ -260,6 +261,23 @@ pub const TEST_UPSTREAM_SLUG: &str = "test-upstream";
 /// writes it yet; the forwarder strips it when present, so a config written by
 /// a build that does keeps working through the forwarder.
 pub const RELAY_TOOL_PATH_PREFIX: &str = "/__gate/t/";
+
+/// The segment after the tool marker that selects Gate's own models route
+/// (`/__gate/t/<tool>/gate/v1/...`), in the slot a catalog slug occupies on the
+/// other routes. Shared so the engine's relay serves it and the forwarder
+/// recognises it: with the app closed there is no Gate to serve it, and the
+/// forwarder must say so rather than read it as an unknown provider.
+pub const RELAY_GATE_SERVED_SLUG: &str = "gate";
+
+/// Does `target` name the Gate models route, whatever the tool?
+pub fn is_gate_served_target(target: &str) -> bool {
+    let Some(rest) = target.strip_prefix(RELAY_TOOL_PATH_PREFIX) else {
+        return false;
+    };
+    let mut segments = rest.splitn(3, '/');
+    let _tool = segments.next();
+    segments.next() == Some(RELAY_GATE_SERVED_SLUG)
+}
 
 /// Every catalog slug a relay base URL may name, and the upstream it forwards
 /// to when Gate is not routing it.
@@ -685,6 +703,20 @@ pub fn parse_proof(head: &[u8], expected: &str) -> Option<Vec<(String, String)>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gate_models_route_is_recognised_for_any_tool_and_nothing_else() {
+        assert!(is_gate_served_target("/__gate/t/codex/gate/v1/responses"));
+        assert!(is_gate_served_target(
+            "/__gate/t/hermes/gate/v1/chat/completions"
+        ));
+        assert!(!is_gate_served_target(
+            "/__gate/t/codex/openai/v1/responses"
+        ));
+        assert!(!is_gate_served_target("/gate/v1/responses"));
+        assert!(!is_gate_served_target("/__gate/t/gate"));
+        assert!(!is_gate_served_target("/__gate/t/codex/gateway/v1"));
+    }
 
     /// The path seam is an environment variable, which is process-global, so
     /// tests that set it cannot overlap. `core` carries the same lock for the

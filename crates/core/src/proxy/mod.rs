@@ -34,6 +34,8 @@
 //! drop-in has always been both at once; macOS exports the variables via
 //! `launchctl setenv` and Windows via `HKCU\Environment` alongside the PAC.
 
+use crate::account::BillingMode;
+use crate::registry::ToolId;
 use anyhow::{Context, Result};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -45,6 +47,8 @@ pub mod ca_bundle;
 
 mod cert_authority;
 
+/// The relay route a tool's config points at when it is on Gate models.
+pub mod gate_served;
 /// Plaintext loopback reverse proxy for CLI tools; hosted in the engine.
 mod relay;
 
@@ -71,9 +75,13 @@ pub(crate) mod test_relay;
 mod proxy_env;
 
 /// Re-exported so the per-tool integrations that write their own `NO_PROXY`
-/// use the same list as the machine-wide export. They carried three copies of
-/// it, which is three places to forget when the list grows - and it just did.
-pub(crate) use proxy_env::NO_PROXY_VALUE;
+/// build on the same list as the machine-wide export. They carried three
+/// copies of it, which is three places to forget when the list grows - and it
+/// just did. The environment form, because each of them writes one: Claude
+/// Code as it stands, Hermes with its local addresses added (see the
+/// constant). `no_proxy_exempts` reads what the full list means, for those
+/// addresses.
+pub(crate) use proxy_env::{no_proxy_exempts, ENV_NO_PROXY_VALUE, LEGACY_ENV_NO_PROXY_VALUE};
 
 #[cfg(target_os = "macos")]
 pub mod ca;
@@ -769,6 +777,16 @@ impl Drop for GateAuthCheck {
     }
 }
 
+/// Take the re-check latch for a check that did not come through the observer,
+/// or `None` when one is already in flight. Ignores the cooldown: a caller
+/// here asked for this check (the routing sweep, the Linux refusal counter),
+/// where the cooldown exists to damp the engine's per-request 401s. What it
+/// keeps is one check at a time, so two triggers landing together do not each
+/// force a refresh and each rewrite the bundle in the secret store.
+pub fn try_begin_gate_auth_check() -> Option<GateAuthCheck> {
+    (!GATE_AUTH_CHECKING.swap(true, std::sync::atomic::Ordering::AcqRel)).then_some(GateAuthCheck)
+}
+
 /// Release the re-check latch and start the cooldown. Called for you by
 /// [`GateAuthCheck`]'s drop; prefer holding the guard to calling this.
 pub fn gate_auth_check_finished() {
@@ -778,6 +796,240 @@ pub fn gate_auth_check_finished() {
     GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
     // Last, so a waiter woken here finds the cooldown already running.
     GATE_AUTH_CHECK_DONE.notify_waiters();
+}
+
+/// Observer the desktop shell registers to hear that routed traffic left this
+/// machine for the gateway, and from which tools. It is handed the tools whose
+/// traffic is being reported in this batch - `None` for a sender
+/// [`client_tool`] could not name.
+///
+/// This is what the window's activity reads refresh on. They cannot poll: the
+/// activity endpoint sits in a throttle bucket keyed on the source address, so a
+/// timer in every window would spend a budget shared with everyone behind the
+/// same egress (see `useActivity`). The relay is the one component that knows
+/// for certain a new request exists, so a read it triggers is never wasted and
+/// an idle machine costs nothing.
+///
+/// Fed from [`inject_attribution`], which every gateway-bound request passes
+/// through on both paths - the MITM engine and the loopback relay - so neither
+/// needs a hook of its own. Not cfg-gated, like the auth observer above: on
+/// Linux the engine lives in the helper daemon, which registers no observer, so
+/// [`note_traffic`] is a no-op there and the window falls back to re-reading
+/// when it is focused again.
+static TRAFFIC_OBSERVER: std::sync::OnceLock<TrafficObserver> = std::sync::OnceLock::new();
+
+/// See [`TRAFFIC_OBSERVER`].
+type TrafficObserver = Box<dyn Fn(&[Option<&'static str>]) + Send + Sync>;
+
+/// One [`TrafficMark`] per tool, keyed as [`client_tool`] names them.
+type TrafficSeen = std::collections::BTreeMap<Option<&'static str>, TrafficMark>;
+
+/// How long a tool's traffic has to be quiet before it is reported. A turn is
+/// rarely one request, and the gateway's activity view lags ingestion by a
+/// moment, so reporting the first request would re-read numbers that do not
+/// yet include it. Reporting the *lull* after a burst reads once, late enough
+/// to see all of it.
+const TRAFFIC_QUIET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The most often one tool is reported, and the cadence while its traffic never
+/// goes quiet - a long agent run should still move the counters. Each report
+/// costs the window up to three throttled reads, so this is what bounds the
+/// spend: two reports a minute per active tool.
+const TRAFFIC_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often the sweeper looks for a tool that has gone quiet. Cheap: it walks
+/// a map with one entry per tool that has sent anything this run.
+const TRAFFIC_SWEEP_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What the sweeper knows about one tool's traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrafficMark {
+    /// The newest request seen.
+    last_seen: std::time::Instant,
+    /// The oldest request not yet reported; `None` once everything seen has
+    /// been.
+    pending_since: Option<std::time::Instant>,
+    /// When this tool was last reported; `None` until it has been.
+    last_reported: Option<std::time::Instant>,
+}
+
+/// Per-tool marks. A `BTreeMap` because `HashMap::new` is not `const`, and the
+/// map holds a handful of entries.
+static TRAFFIC_SEEN: std::sync::Mutex<TrafficSeen> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Register the traffic observer and start the sweeper that feeds it. First
+/// registration wins; later calls are ignored (the shell registers exactly once
+/// at setup), and only the winning one starts a thread.
+///
+/// The thread starts here rather than on the first request seen, and that is
+/// a data-plane decision: `thread::spawn` panics when the OS refuses a thread,
+/// and a `Once` that panicked stays poisoned, so a spawn on the request path
+/// would have turned one refused thread into a panic on every gateway-bound
+/// request for the rest of the process. Here a refusal costs the refresh signal
+/// and nothing else; the window still re-reads on its focus edge. The thread
+/// itself is a 1s tick over a map with one entry per tool that has sent
+/// anything, so a shell that never routes (the Linux GUI, whose engine lives in
+/// the daemon) pays for a sleep and an empty walk.
+pub fn set_traffic_observer(observer: impl Fn(&[Option<&'static str>]) + Send + Sync + 'static) {
+    if TRAFFIC_OBSERVER.set(Box::new(observer)).is_err() {
+        return;
+    }
+    let sweep = std::thread::Builder::new()
+        .name("gate-traffic-sweeper".into())
+        .spawn(|| {
+            // Set above, before this thread existed; the `else` is unreachable
+            // and keeps the loop from asking again on every tick.
+            let Some(observer) = TRAFFIC_OBSERVER.get() else {
+                return;
+            };
+            loop {
+                std::thread::sleep(TRAFFIC_SWEEP_TICK);
+                let due = match TRAFFIC_SEEN.lock() {
+                    Ok(mut seen) => traffic_due(&mut seen, std::time::Instant::now()),
+                    // Poisoned by a panic elsewhere. Stop sweeping rather than
+                    // spin; the window still re-reads on its focus edge.
+                    Err(_) => return,
+                };
+                if due.is_empty() {
+                    continue;
+                }
+                if engine::debug_log() {
+                    eprintln!("[gate-proxy] traffic observed from {due:?}");
+                }
+                observer(&due);
+            }
+        });
+    if let Err(e) = sweep {
+        eprintln!("[gate-proxy] traffic sweeper could not start; activity reads will refresh on focus only: {e}");
+    }
+}
+
+/// Record that a gateway-bound request from `tool` is leaving now. Called by
+/// [`inject_attribution`] on every such request; a no-op unless a shell has
+/// registered to hear about it. One map update under the lock, no I/O.
+fn note_traffic(tool: Option<&'static str>) {
+    if TRAFFIC_OBSERVER.get().is_none() {
+        return;
+    }
+    if let Ok(mut seen) = TRAFFIC_SEEN.lock() {
+        mark_traffic(&mut seen, tool, std::time::Instant::now());
+    }
+}
+
+/// The recording step of [`note_traffic`]: `tool` sent a request at `now`.
+/// Separate so the tests drive the same step the request path does.
+fn mark_traffic(seen: &mut TrafficSeen, tool: Option<&'static str>, now: std::time::Instant) {
+    let mark = seen.entry(tool).or_insert(TrafficMark {
+        last_seen: now,
+        pending_since: None,
+        last_reported: None,
+    });
+    mark.last_seen = now;
+    mark.pending_since.get_or_insert(now);
+}
+
+/// Which tools are due a report at `now`, marking them reported.
+///
+/// A tool is due when it has unreported traffic, it has not been reported
+/// within [`TRAFFIC_REPORT_INTERVAL`], and either it has been quiet for
+/// [`TRAFFIC_QUIET`] or its unreported traffic is [`TRAFFIC_REPORT_INTERVAL`]
+/// old - the second so continuous traffic is reported on a cadence rather than
+/// never. Pure, so the timing is testable without a thread.
+fn traffic_due(seen: &mut TrafficSeen, now: std::time::Instant) -> Vec<Option<&'static str>> {
+    let mut due = Vec::new();
+    for (tool, mark) in seen.iter_mut() {
+        let Some(pending_since) = mark.pending_since else {
+            continue;
+        };
+        let spaced = mark
+            .last_reported
+            .is_none_or(|at| now.duration_since(at) >= TRAFFIC_REPORT_INTERVAL);
+        let quiet = now.duration_since(mark.last_seen) >= TRAFFIC_QUIET;
+        let overdue = now.duration_since(pending_since) >= TRAFFIC_REPORT_INTERVAL;
+        if spaced && (quiet || overdue) {
+            mark.pending_since = None;
+            mark.last_reported = Some(now);
+            due.push(*tool);
+        }
+    }
+    due
+}
+
+#[cfg(test)]
+mod traffic_tests {
+    use super::{mark_traffic, traffic_due, TrafficSeen, TRAFFIC_QUIET, TRAFFIC_REPORT_INTERVAL};
+    use std::time::{Duration, Instant};
+
+    const TOOL: Option<&str> = Some("claude-code");
+
+    /// A map with one tool whose requests landed at each of `at` (offsets from
+    /// `t0`), none reported yet. Recorded the way the request path records.
+    fn seen(t0: Instant, at: &[u64]) -> TrafficSeen {
+        let mut map = TrafficSeen::new();
+        for &secs in at {
+            mark_traffic(&mut map, TOOL, t0 + Duration::from_secs(secs));
+        }
+        map
+    }
+
+    #[test]
+    fn a_burst_is_reported_once_it_goes_quiet_and_then_not_again() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0, 1, 2]);
+        // Still inside the quiet window after the last request: nothing yet.
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(2) + TRAFFIC_QUIET / 2).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + Duration::from_secs(2) + TRAFFIC_QUIET),
+            vec![TOOL]
+        );
+        // Reported, and with nothing new there is nothing to say.
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(600)).is_empty());
+    }
+
+    #[test]
+    fn continuous_traffic_is_reported_on_the_interval_rather_than_never() {
+        let t0 = Instant::now();
+        // A request every second, so it is never quiet.
+        let at: Vec<u64> = (0..=60).collect();
+        let mut map = seen(t0, &at);
+        let interval = TRAFFIC_REPORT_INTERVAL.as_secs();
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(interval - 1)).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + Duration::from_secs(interval)),
+            vec![TOOL]
+        );
+    }
+
+    #[test]
+    fn a_report_is_never_closer_than_the_interval_to_the_last_one() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0]);
+        assert_eq!(traffic_due(&mut map, t0 + TRAFFIC_QUIET), vec![TOOL]);
+        // A second burst straight after the report goes quiet well before the
+        // interval is up: it waits for the interval, then lands.
+        let again = t0 + TRAFFIC_QUIET + Duration::from_secs(1);
+        mark_traffic(&mut map, TOOL, again);
+        assert!(traffic_due(&mut map, again + TRAFFIC_QUIET).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + TRAFFIC_QUIET + TRAFFIC_REPORT_INTERVAL),
+            vec![TOOL]
+        );
+    }
+
+    #[test]
+    fn tools_are_reported_independently() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0]);
+        let late = t0 + Duration::from_secs(3);
+        mark_traffic(&mut map, Some("codex"), late);
+        // Only the first has been quiet long enough.
+        assert_eq!(traffic_due(&mut map, t0 + TRAFFIC_QUIET), vec![TOOL]);
+        assert_eq!(
+            traffic_due(&mut map, late + TRAFFIC_QUIET),
+            vec![Some("codex")]
+        );
+    }
 }
 
 /// Wakes every relay request waiting on a check's verdict when that check
@@ -984,6 +1236,57 @@ pub fn engine_hosted_elsewhere() -> Option<u16> {
 /// integrations write into their config instead of a gateway URL + key.
 pub fn relay_base_url() -> Option<String> {
     relay::load_persisted_port().map(relay::base_url)
+}
+
+/// The relay's unauthenticated liveness path, re-exported so the e2e suite
+/// spells it once.
+///
+/// **Not** `gate_connect_paths::RELAY_HEALTH_PATH`, which is the separate
+/// *proof-carrying* path [`relay_report`] and [`probe_relay_route`] ask on. This
+/// one answers a bare 204 to anybody who asks, so it says that a relay of ours
+/// is serving this port and nothing about who is on the other end. The two are
+/// deliberately different paths - see the note on the constant in
+/// `gate-connect-paths` - so a probe cannot mistake one answer for the other.
+pub use relay::HEALTH_PATH as RELAY_LIVENESS_PATH;
+
+/// Is the relay actually answering on the port config-routed tools are pointed
+/// at?
+///
+/// A TCP connect would only prove *something* is listening on that port, which
+/// after a port reuse is a claim we cannot support. Neither would a 204 on
+/// [`RELAY_LIVENESS_PATH`], which is what this asked for before: a squatter can
+/// answer 204 to anything, so that identified nothing it claimed to. So this
+/// asks the listener to prove it can read the 0600 token, on the same
+/// challenge-response [`relay_report`] uses. A raw loopback socket carries it,
+/// which also settles what `.no_proxy()` used to: there is no client here for an
+/// `HTTPS_PROXY` of our own to route back through.
+///
+/// Three outcomes rather than two, because "nothing is there" and "somebody
+/// else's process is there" are different claims and the failed proof does not
+/// tell them apart on its own. A refused connect is a confirmed negative; a
+/// connect that lands on a listener which cannot prove itself is a port
+/// collision, or a build old enough to predate the challenge, and reporting
+/// `Unreachable` for it would claim the port is dead when it is occupied.
+///
+/// Scope: this is the route for *config* integrations, which write the relay
+/// base URL into their config. Proxy-routed members (the catalog domains) hang
+/// off the engine instead and keep their existing certificate-trust treatment.
+pub fn probe_relay_route() -> crate::routing_health::RouteHealth {
+    use crate::routing_health::RouteHealth;
+
+    let Some(port) = relay::load_persisted_port() else {
+        // No port has ever been bound, so there is nothing for a tool to be
+        // pointed at. That is a definite negative, not an unknown.
+        return RouteHealth::Unreachable;
+    };
+    if relay_listening() {
+        return RouteHealth::Reachable;
+    }
+    if loopback_proxy_answers(&relay::base_url(port)) {
+        RouteHealth::Unknown
+    } else {
+        RouteHealth::Unreachable
+    }
 }
 
 /// How an address of ours is doing, as a status check needs to know it.
@@ -1230,6 +1533,33 @@ pub fn wait_for_shutdown() -> anyhow::Result<()> {
         }
         Ok::<(), anyhow::Error>(())
     })
+}
+
+/// Read the browser stores - Chromium's and each Firefox profile's - once, off
+/// the polled path.
+///
+/// For the one moment `status` cannot answer for: `ca_trusted` has just gone
+/// true and [`ProxyState::ca_nss_trust`] is `None`, because the write that
+/// turned it true happened somewhere this process cannot see - the CLI's
+/// `proxy trust-ca` or `--system-trust`, whose record is keyed to a CA this
+/// process may not share, or a store that appeared after the write. The UI raises a note on that transition,
+/// and its fall-through sentence tells the user to reopen their browser; on a
+/// machine with no `certutil` that is advice which cannot work.
+///
+/// Deliberately not on `status`: this shells out once or twice per database.
+/// It is called from a transition, not a poll, and `None` is a perfectly good
+/// answer - it leaves the caller saying only what `ca_trusted` established.
+///
+/// `None` off Linux, where the OS store and the browser's are the same store.
+pub fn probe_browser_store() -> Option<NssTrust> {
+    #[cfg(target_os = "linux")]
+    {
+        ca::probe_nss_trust()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 /// Path to the local root CA's public cert on disk. Tools that ship their own
@@ -1561,8 +1891,8 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
 /// Does `configured` name a loopback listener hosted **inside the engine's
 /// process**, so that it stops answering when that process exits?
 ///
-/// The question a plain quit asks of each address a tool's configuration
-/// names. Three addresses are ours, and they die differently:
+/// The question the stranded-tool revert asks of each address a tool's
+/// configuration names (see `provider::revert_stranded_configs_for_quit`). Three addresses are ours, and they die differently:
 ///
 /// - the **relay** origin (a base URL under it): hosted in the engine unless
 ///   the forwarder holds it. On macOS and Windows the forwarder normally does
@@ -1599,13 +1929,6 @@ pub fn address_dies_with_gui(configured: &str) -> bool {
 /// and a sweep that could answer differently for two tools if the forwarder's
 /// claim changed halfway. One read per sweep keeps a sweep consistent with
 /// itself.
-///
-/// It does not make the quit dialog and the revert that follows it one read:
-/// each is its own sweep, seconds apart, and a forwarder that took or lost the
-/// relay port in between makes them differ. The difference fails safe. A
-/// forwarder that lost the port between the two means the revert puts back a
-/// tool the dialog did not name, which is the old quit's behaviour; one that
-/// took it means a tool the dialog named is left alone, and keeps working.
 #[derive(Debug, Clone)]
 pub struct QuitAddresses {
     relay_origin: Option<String>,
@@ -1630,14 +1953,13 @@ impl QuitAddresses {
     /// Read them for an exit the forwarder does not outlive either, so the
     /// relay origin dies whether the forwarder holds it right now or not.
     ///
-    /// Two exits are like that, both on Windows, where the forwarder is a
-    /// plain detached process with nothing to start it again except Gate
-    /// itself: the end of the login session (a logout or a shutdown, see
-    /// [`session_ending`]), after which a tool that starts before Gate would
-    /// find nothing on the relay port; and an uninstall, whose hook kills the
-    /// forwarder and leaves no Gate at all to repair the configs. macOS needs
-    /// neither: launchd holds the relay port from login, and a drag to the
-    /// Trash runs no code of ours.
+    /// One exit is like that: an uninstall on Windows, whose hook kills the
+    /// forwarder and leaves no Gate at all to repair the configs. There the
+    /// forwarder is a plain detached process with nothing to start it again
+    /// except Gate itself. macOS needs nothing of the kind: a drag to the Trash
+    /// runs no code of ours. (The end of a Windows login session used to be the
+    /// second such exit; every quit now takes Gate out of every config, which
+    /// covers it.)
     ///
     /// The forwarder's own address is still read as surviving. What names it
     /// is the proxy half, which dies with the forwarder in both cases too, but
@@ -1659,31 +1981,6 @@ impl QuitAddresses {
             self.engine_url.as_deref(),
             self.forwarder_url.as_deref(),
         )
-    }
-}
-
-/// Whether the login session is ending: a logout, a restart or a shutdown,
-/// as opposed to the user quitting Gate. Windows only, where it decides
-/// whether the forwarder outlives this exit (see
-/// [`QuitAddresses::relay_unfronted`]); `false` everywhere else.
-///
-/// `SM_SHUTTINGDOWN` is set for the whole of the end-session sequence, which
-/// is when an exit handler that runs at all during a logout runs.
-pub fn session_ending() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        #[link(name = "user32")]
-        extern "system" {
-            fn GetSystemMetrics(index: i32) -> i32;
-        }
-        const SM_SHUTTINGDOWN: i32 = 0x2000;
-        // SAFETY: takes an integer, returns an integer, touches no memory of
-        // ours.
-        unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        false
     }
 }
 
@@ -1756,6 +2053,448 @@ pub(crate) const GATE_AUTHORIZATION_HEADER: &str = "x-gate-authorization";
 /// Selected-org header, injected alongside the OAuth token (the gateway
 /// requires it on every OAuth request).
 pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
+/// This installation's id, so the activity view can group traffic by machine.
+/// Self-asserted and non-secret: it identifies nothing to authorize against.
+pub(crate) const GATE_INSTALL_ID_HEADER: &str = "x-gate-install-id";
+/// Which tool sent the request, when we can tell. Feeds the per-tool series in
+/// the activity view.
+pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
+/// A tool naming itself because Gate wrote this header into that tool's own
+/// config file - the engine's equivalent of the relay's path marker, for a tool
+/// that has no base URL for us to write.
+///
+/// **Deliberately not [`GATE_CLIENT_HEADER`] itself.** That one is stamped by
+/// us and stripped from whatever the caller sent, so a tool cannot label its own
+/// traffic with it. This one is a request *input*, read before the strip and
+/// consumed here: it never reaches the gateway, and the slug it names is
+/// validated against [`crate::registry::ToolId`] rather than forwarded as text.
+pub(crate) const GATE_TOOL_HEADER: &str = "x-gate-tool";
+/// What the user calls this machine, so the gateway can show traffic under a
+/// human name rather than an install id. Self-asserted and non-secret, like the
+/// two above.
+///
+/// Sent only when the user actually named the device. There is no hostname
+/// fallback on the wire - see `preferences::device_label` - because onboarding
+/// offers to skip naming, and a hostname usually carries a person's name. An
+/// unnamed device is attributed by its install id alone.
+pub(crate) const GATE_DEVICE_NAME_HEADER: &str = "x-gate-device-name";
+/// The retired Gate-model header, stripped from every request and never sent.
+///
+/// Gate Models used to work here: the proxy stamped the user's chosen models on
+/// each request and the gateway rewrote the body's `model`, so the tool went on
+/// showing a model it was not being served. The choice now lives in the tool's
+/// own config and reaches Gate on the relay's served route (`gate_served`), so
+/// nothing sets this header any more.
+///
+/// It is still stripped, and that is the whole reason the constant survives: a
+/// gateway that predates the change still honours it, so a local process that
+/// set it itself could pick a paid model on the user's behalf. Remove the strip
+/// once no supported gateway reads the header.
+pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
+
+/// Stamp the attribution headers the activity view groups by.
+///
+/// Deliberately infallible. These headers exist so a dashboard can say "this
+/// machine, this tool"; the request they ride on is carrying the user's actual
+/// work. Anything we can't determine - no install id, a value the header codec
+/// rejects, an unrecognised client - is simply left off, and the gateway
+/// records that request as unattributed exactly as it did before attribution
+/// existed. Failing a request to protect a chart would be the wrong trade.
+///
+/// Any value the caller sent is overwritten: a tool cannot label its traffic as
+/// another machine's. The retired [`GATE_MODEL_HEADER`] is removed outright for
+/// the reason its own doc gives.
+fn inject_attribution(
+    headers: &mut HeaderMap,
+    domain: Option<&str>,
+    routed_tool: Option<&'static str>,
+) {
+    headers.remove(GATE_INSTALL_ID_HEADER);
+    if let Some(id) = crate::primitives::install_id_cached() {
+        if let Ok(value) = HeaderValue::from_str(id) {
+            headers.insert(HeaderName::from_static(GATE_INSTALL_ID_HEADER), value);
+        }
+    }
+    // Absent unless the user named this device, and a name the header codec
+    // rejects (a rename can be any Unicode) is left off rather than escaped, per
+    // the rule above. The length is bounded at the preferences layer, so this
+    // cannot be the header that blows the block size.
+    headers.remove(GATE_DEVICE_NAME_HEADER);
+    if let Some(value) =
+        crate::preferences::device_label().and_then(|name| HeaderValue::from_str(&name).ok())
+    {
+        headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
+    }
+    // The route wins over the User-Agent, and only ever adds: `routed_tool` is
+    // `Some` exactly when the request arrived on a base URL carrying a tool
+    // marker. That is not more *trustworthy* than the User-Agent - any process
+    // on the loopback interface can call any path, exactly as it can send any
+    // header - it is only no longer dependent on a string Gate neither owns nor
+    // versions, so the honest case stops breaking when a tool renames itself.
+    // The guess stays
+    // underneath for everything the marker cannot reach - the forward-proxy
+    // engine, where there is no URL to write, and any relay base URL written
+    // before the marker existed and not yet reconciled.
+    // Consumed, not forwarded: the caller's own copy goes no further than this
+    // hop whether or not we could read it. It is Gate-internal, it names the
+    // user's tooling, and the gateway learns the same fact from the header we
+    // stamp below.
+    headers.remove(GATE_TOOL_HEADER);
+    let tool = routed_tool.or_else(|| client_tool(headers, domain));
+    // Every gateway-bound request comes through here, on both paths, which is
+    // what makes this the one place the window can be told traffic happened.
+    // Told after the marker has had its say, so a relay-routed tool reaches the
+    // activity feed under the name its own config carries rather than under
+    // whatever its `User-Agent` happened to spell.
+    note_traffic(tool);
+    headers.remove(GATE_CLIENT_HEADER);
+    if let Some(slug) = tool {
+        headers.insert(
+            HeaderName::from_static(GATE_CLIENT_HEADER),
+            HeaderValue::from_static(slug),
+        );
+    }
+    headers.remove(GATE_MODEL_HEADER);
+}
+
+/// Test seam for the attribution injection.
+///
+/// The injection itself is `pub(crate)` because nothing outside the proxy should
+/// stamp these headers. It still needs covering from an integration test rather
+/// than a unit test - it reads the preferences file, and the app-support override
+/// is process-global - so this is the narrowest door that allows it.
+#[doc(hidden)]
+pub mod testing {
+    use hyper::header::HeaderMap;
+
+    /// The header name, so a test asserts on the same constant the code sends.
+    pub const GATE_MODEL_HEADER_NAME: &str = super::GATE_MODEL_HEADER;
+
+    /// Same, for the device-name label.
+    pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
+
+    pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
+        super::inject_attribution(headers, None, None);
+    }
+
+    /// Repoint a request at the gateway exactly as the MITM engine does.
+    ///
+    /// Exposed so the serve routing can be asserted from the integration test
+    /// that already owns the preferences seam. It cannot be a unit test: the
+    /// app-support override is process-global, and a lib test that sets it races
+    /// every other test in the binary that does the same.
+    /// Concrete in the body type, and stringly in the error, on purpose: a
+    /// generic seam monomorphises in the calling crate, which then has to link
+    /// this crate's private dependencies, and an integration test cannot.
+    ///
+    /// Always `BillingMode::Byok`: the forwarded shape, which is the one that
+    /// carries the upstream hint.
+    pub fn apply_rewrite_for_tests(
+        req: &mut hyper::Request<()>,
+        gateway: &hyper::Uri,
+        upstream_url: &str,
+        api_key: &str,
+    ) -> Result<(), String> {
+        super::engine::apply_rewrite(
+            req,
+            gateway,
+            super::engine::MatchedRoute {
+                upstream_url,
+                slug: None,
+            },
+            api_key,
+            None,
+            None,
+            crate::account::BillingMode::Byok,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
+    }
+
+    /// Kept under its original name so the tests that call it are untouched;
+    /// `strip_client_auth` is the merged spelling of the same job.
+    pub fn strip_tool_credential_for_tests(headers: &mut HeaderMap) {
+        super::strip_client_auth(headers);
+    }
+}
+
+/// The tool named by [`GATE_TOOL_HEADER`], if it names one we know.
+///
+/// This is `established` evidence in the sense `client_tool` means it: the
+/// header is there because Gate wrote it into a config file only that tool
+/// reads, not because a string the caller composed looked right. It is the only
+/// such signal available on the forward-proxy path for a tool that has no base
+/// URL - the engine sees a CONNECT, so there is no URL of ours to put a marker
+/// in.
+///
+/// An unknown slug yields `None` rather than being passed through, so the value
+/// that reaches the activity column is always one of ours. Same reasoning as the
+/// relay's marker: a request we cannot name is served unlabelled.
+///
+/// `env-proxy` is dropped with the unknown ones, as the relay's marker drops it:
+/// it is the environment channel rather than a program, so it is not a
+/// [`stamped_client`] name and no activity read could ask for its series.
+pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
+    headers
+        .get(GATE_TOOL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(crate::registry::ToolId::from_slug)
+        .filter(|id| *id != crate::registry::ToolId::EnvProxy)
+        .map(crate::registry::ToolId::slug)
+}
+
+/// Which client sent a request, for the gateway's `client_tool` column.
+///
+/// Two signals, in order of how much they can be trusted.
+///
+/// **The vendor's own client header**, where there is one. Anthropic's desktop
+/// app declares itself in `anthropic-client-platform` / `anthropic-client-app`,
+/// which are namespaced to the vendor, so reading them is not a guess at all -
+/// it is the app saying what it is. This is what lets the desktop apps be
+/// attributed despite routing knowing nothing about them, and it is the reason
+/// `gateway_request.entity.ts`'s comment about the column being null for "every
+/// engine-routed desktop app" is no longer the ceiling.
+///
+/// **Otherwise the caller's `User-Agent`**, substring-matched because these
+/// agents append their own versions and platform strings. That half is a
+/// heuristic and always was.
+///
+/// Unrecognised is `None`, never a guess. A wrong slug is worse than no slug: it
+/// would attribute one tool's traffic to another in the view the user reads to
+/// find out what their machine is doing.
+///
+/// **Caller-steerable, and not display-only.** Every header signal here is one
+/// the sender chose, so any local process whose traffic is intercepted can file
+/// its requests under another app's name. `inject_attribution` strips
+/// [`GATE_CLIENT_HEADER`] before stamping, so a caller cannot set the value
+/// outright - only steer which branch fires.
+///
+/// Nothing in routing, credential injection or billing reads the result: it is
+/// a label for the activity view and **never an authorization input**. (It was
+/// briefly more than that, while Gate Models stamped a per-tool model header
+/// keyed on this value. That mechanism is gone - the model now lives in the
+/// tool's own config - and this must stay a label.)
+///
+/// Four of the values it emits - `claude-desktop`, `claude-web`, `chatgpt`,
+/// `chatgpt-web` - have no [`crate::registry::ToolId`]. The activity reads take
+/// names from [`stamped_client`] instead, so the App pane reads them back per
+/// section: the Claude pane asks for Claude Code, the desktop app and claude.ai
+/// together.
+///
+/// Slugs are [`crate::taxonomy::Client`] slugs, which the tool ones coincide
+/// with by construction - `Client::ClaudeCode` is `claude-code`. That is the
+/// same question this column asks ("which program on the machine sent this"),
+/// so the ledger and the attribution column now answer it in one vocabulary.
+fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str> {
+    // Anthropic's own declaration first. The desktop app's User-Agent is a
+    // browser-shaped string its shell inherits, which matches nothing below, so
+    // nothing is lost by preferring the header - and the web value must be read
+    // here too or the UA would send a claude.ai tab through the allowlist.
+    // Claude Code in the desktop app's Code tab carries the app's platform
+    // header, so it is picked out before that header is read.
+    let raw_ua = headers
+        .get(hyper::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    if raw_ua.is_some_and(is_desktop_code_tab) {
+        return Some(crate::taxonomy::Client::ClaudeCode.slug());
+    }
+    if let Some(slug) = anthropic_client(headers) {
+        return Some(slug);
+    }
+    let ua = raw_ua.map(|v| v.to_ascii_lowercase());
+    if ua
+        .as_deref()
+        .is_some_and(|ua| CODEX_APP_AGENTS.iter().any(|prefix| ua.starts_with(prefix)))
+    {
+        return None;
+    }
+    if let Some(slug) = ua.as_deref().and_then(|ua| {
+        CLIENT_TOOL_NEEDLES
+            .iter()
+            .find_map(|(needle, client)| ua.contains(needle).then_some(client.slug()))
+    }) {
+        return Some(slug);
+    }
+    // OpenAI's markers come AFTER the allowlist, unlike Anthropic's above, and
+    // the asymmetry is deliberate. A Codex request naming itself in its
+    // User-Agent must stay `codex` even if it carries an `oai-` header; there is
+    // no such risk on the Anthropic side, where the two signals name different
+    // surfaces of different products.
+    //
+    // The app before the website, which is [`classify_client`]'s order and has
+    // to be. The two read the same two signals, and read them in opposite
+    // orders a request carrying both was routed as the app (the Cloudflare
+    // handling in `engine` is gated on `ClientClass::App`) and recorded as the
+    // website, which is two vendors' worth of wrong in one row. The empirical
+    // claim underneath - the `oai-*` markers are the website's and the app has
+    // never sent one - is the same claim in both functions, so when it fails it
+    // must fail the same way in both. `an_app_marker_outranks_a_web_marker` pins
+    // it on this side; `the_originator_header_identifies_the_app` on the other.
+    chatgpt_app(headers, domain).or_else(|| openai_web(headers, domain))
+}
+
+/// The `User-Agent` needles [`client_tool`] matches, lower-cased, each with the
+/// client it names. `claude-cli` is Claude Code's agent; the rest identify
+/// themselves by name. The slugs come off the enum rather than being retyped
+/// beside the needle: [`client_tool`]'s doc says the two vocabularies "coincide
+/// by construction", and three hand-typed literals were what made that false
+/// the last time a wire name and a slug came apart.
+///
+/// A const rather than a literal inside the function so the vendored-manifest
+/// drift test (`crate::manifest`) reads the same table that stamps:
+/// renaming a slug here without the manifest fails the build.
+pub(crate) const CLIENT_TOOL_NEEDLES: [(&str, crate::taxonomy::Client); 5] = [
+    ("claude-cli", crate::taxonomy::Client::ClaudeCode),
+    ("codex", crate::taxonomy::Client::Codex),
+    ("opencode", crate::taxonomy::Client::OpenCode),
+    ("openclaw", crate::taxonomy::Client::OpenClaw),
+    ("hermes", crate::taxonomy::Client::Hermes),
+];
+
+/// The Codex desktop app's own agents, lower-cased prefixes. Both contain the
+/// `codex` needle, and stamping them `codex` filed the desktop app's traffic
+/// under the CLI: the gateway prefers `x-gate-client` over its own detector,
+/// which names these `codex-desktop`. They are left unstamped outright, before
+/// the OpenAI checks: the app sends `originator` on chatgpt.com, so falling
+/// through would stamp it `chatgpt` and file it under the ChatGPT desktop app
+/// instead. The blank hands it to the gateway's detector, which is the honest
+/// answer this function prefers to a wrong slug. `codex-mcp-client` is the
+/// desktop app's MCP client, captured beside its `Codex Desktop/` builds; the
+/// CLI sends `codex_cli_rs/`, which still matches.
+const CODEX_APP_AGENTS: [&str; 2] = ["codex desktop/", "codex-mcp-client/"];
+
+/// Whether the ChatGPT desktop app sent this.
+///
+/// **Scoped to the entries that name chatgpt.com, and that is the whole design
+/// of it.** The signal is `originator`, which is OpenAI's own "which front-end
+/// is this" field - present on every app request to a routed path in the
+/// captures and on none of the web ones - but its header NAME is generic, so
+/// reading it anywhere would stamp a ChatGPT slug on anything that happened to
+/// send it to another vendor's host. Naming the matched entry is what makes it
+/// safe, and it is why this arrived a commit later than the rest.
+///
+/// `domain` is the catalog slug `decide` (or the relay's `resolve_route`)
+/// matched, so "is this a chatgpt.com entry" is answered by the routing decision
+/// rather than re-derived from a header the caller controls.
+///
+/// The value of `originator` is deliberately not read. It names the front-end
+/// ("Codex Desktop" and others), and mapping strings nobody has captured to
+/// slugs would be the guessing this module refuses everywhere else. Presence,
+/// on a chatgpt.com entry, is the claim.
+fn chatgpt_app(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str> {
+    if !domain.is_some_and(|slug| CHATGPT_HOST_DOMAINS.contains(&slug)) {
+        return None;
+    }
+    headers
+        .get("originator")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| !v.trim().is_empty())
+        .then_some(crate::taxonomy::Client::ChatGpt.slug())
+}
+
+/// The catalog entries whose host is chatgpt.com, named rather than derived.
+///
+/// A list, because two entries share that host under different URL splits and
+/// both carry app traffic: `chatgpt-apps` has the app's own paths off a bare
+/// host, `chatgpt` has the Responses endpoint Codex and Work reach. A new
+/// chatgpt.com entry must be added here or its app traffic goes unattributed -
+/// which is the failure direction this module prefers.
+const CHATGPT_HOST_DOMAINS: [&str; 2] = ["chatgpt-apps", "chatgpt"];
+
+/// Which Anthropic surface sent this, by its own account, or `None`.
+///
+/// Both platform values, and both are worth having: the desktop app and the
+/// website route through the same catalog entries, and a single slug covering
+/// both would put someone's browsing in the figure they read to see what their
+/// app is doing.
+///
+/// `anthropic-client-app` is kept as a second app signal for a build that drops
+/// the platform header - [`classify_client`] keeps the same fallback, and the
+/// two must not disagree about one request.
+///
+/// An unrecognised platform value is `None`, for the reason `classify_client`
+/// refuses to read one as `App`: a future first-party client may spell itself
+/// differently, and guessing files its traffic under a name that is not its own.
+fn anthropic_client(headers: &HeaderMap) -> Option<&'static str> {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    if let Some(platform) = header(ANTHROPIC_CLIENT_PLATFORM).map(str::trim) {
+        if platform.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM) {
+            return Some(crate::taxonomy::Client::ClaudeDesktop.slug());
+        }
+        if platform.eq_ignore_ascii_case(ANTHROPIC_WEB_PLATFORM) {
+            return Some(CLAUDE_WEB_CLIENT);
+        }
+        return None;
+    }
+    header("anthropic-client-app")
+        .is_some_and(|v| !v.trim().is_empty())
+        .then_some(crate::taxonomy::Client::ClaudeDesktop.slug())
+}
+
+/// Whether chatgpt.com sent this from a browser, by OpenAI's own markers.
+///
+/// Scoped to the entries that name chatgpt.com, exactly as [`chatgpt_app`] is.
+/// The markers are namespaced to the vendor, so reading them anywhere can only
+/// ever mean OpenAI - but "an OpenAI header arrived" is not "chatgpt.com sent
+/// this", and unscoped it answered `chatgpt-web` for a request to
+/// api.anthropic.com that happened to carry an `oai-device-id`. That is the
+/// cross-vendor mislabelling `originator_is_ignored_off_chatgpt_com` exists to
+/// prevent for the other header, and there is no reason this half should be
+/// exempt from it: nothing routes chatgpt.com's browser traffic through another
+/// vendor's entry, so the scoping costs no real request.
+fn openai_web(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str> {
+    if !domain.is_some_and(|slug| CHATGPT_HOST_DOMAINS.contains(&slug)) {
+        return None;
+    }
+    [
+        "oai-device-id",
+        "oai-client-version",
+        "x-openai-target-route",
+    ]
+    .iter()
+    .any(|name| headers.contains_key(*name))
+    .then_some(CHATGPT_WEB_CLIENT)
+}
+
+/// The two website slugs, which are not [`crate::taxonomy::Client`] values and
+/// deliberately so.
+///
+/// `Client` answers "which program is a ledger row aimed at", and no row is
+/// aimed at a browser - the websites ride the rows aimed at their desktop apps.
+/// What separates them per request is [`ClientClass`], a different axis, and
+/// folding a class into the client enum would collapse the distinction
+/// `taxonomy.rs` exists to keep. So the attribution column carries a `Client`
+/// slug OR one of these, and the vocabulary is "who sent it", which is what the
+/// column has always meant.
+///
+/// Named per vendor rather than one `browser`: a tab could be on either site,
+/// and one slug for both would put two vendors' traffic in one series.
+///
+/// Both spellings collide with a catalog domain slug - `claude-web` is also the
+/// claude.ai entry, and `Client::ChatGpt.slug()` is also the Responses entry.
+/// Two namespaces, one spelling, and they are not interchangeable: the UI keys
+/// rows by domain slug and the gateway keys series by this. Nothing reads across
+/// the two today; anything that starts to has to say which it means.
+const CLAUDE_WEB_CLIENT: &str = "claude-web";
+const CHATGPT_WEB_CLIENT: &str = "chatgpt-web";
+
+/// The name as the engine stamps it, if the engine can stamp it at all.
+///
+/// The closed set of `x-gate-client` values: every [`crate::taxonomy::Client`]
+/// but `any-app`, which names a ledger row rather than a sender, plus the two
+/// website slugs above. The activity reads validate against this, so a name
+/// the stamper cannot produce is refused here rather than read back as a
+/// series that is always empty. Defined beside the stamper's own constants so
+/// the two cannot drift; `every_stamped_client_is_readable` pins it.
+pub fn stamped_client(name: &str) -> Option<&'static str> {
+    use crate::taxonomy::Client;
+    Client::ALL
+        .into_iter()
+        .filter(|c| *c != Client::AnyApp)
+        .map(Client::slug)
+        .chain([CLAUDE_WEB_CLIENT, CHATGPT_WEB_CLIENT])
+        .find(|slug| *slug == name)
+}
 
 /// Inject the live Gate credential into `headers`, the single precedence rule
 /// shared by the MITM engine ([`engine::apply_rewrite`]) and the loopback
@@ -1769,12 +2508,33 @@ pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
 /// <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - otherwise the legacy
 /// `X-Gate-Api-Key`, and an error when there is neither (the `None` arm says
 /// why an empty key is not a credential).
+///
+/// Attribution ([`inject_attribution`]) is stamped either way: it says which
+/// machine the request left, which is true no matter whose credential carries
+/// it, and it is not a credential decision.
+///
+/// In `Payg` the tool's own credential is REMOVED (`Authorization` /
+/// `x-api-key`). The gateway classifies any non-`sk-gw-` value in those slots
+/// as a passthrough token, which forces BYOK and is then refused for want of an
+/// upstream URL, so a leftover `sk-ant-…` does not merely go unused - it breaks
+/// the request. Nothing is lost by dropping it: the gateway strips inbound
+/// `authorization` / `x-api-key` before forwarding anyway and re-keys with the
+/// provider account's own credential. The strip runs ahead of the
+/// caller-supplied-key short-circuit below, because a caller that sets its own
+/// `X-Gate-Api-Key` can just as easily be carrying a provider token beside it.
 pub(crate) fn inject_gate_credential(
     headers: &mut HeaderMap,
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
+    mode: BillingMode,
+    domain: Option<&str>,
+    tool: Option<&'static str>,
 ) -> Result<bool> {
+    inject_attribution(headers, domain, tool);
+    if mode == BillingMode::Payg {
+        strip_client_auth(headers);
+    }
     if headers.contains_key(GATE_KEY_HEADER) {
         // The caller brought its own Gate key, so nothing of ours goes on
         // this request - including any `x-gate-authorization` it may have set
@@ -1818,6 +2578,63 @@ pub(crate) fn inject_gate_credential(
         }
     }
     Ok(false)
+}
+
+/// Which credential slots a tool authenticates to its provider with. Removed on
+/// any rewrite Gate serves; never touched on a passthrough hop, where they are
+/// the only thing that can authenticate the request.
+///
+/// Both slots, because the two providers this routes to disagree: OpenAI-shaped
+/// APIs authenticate on `Authorization`, Anthropic on `x-api-key`.
+const CLIENT_AUTH_HEADERS: [&str; 2] = ["authorization", "x-api-key"];
+
+/// Drop the tool's own upstream credential from a request Gate is paying for.
+/// See [`inject_gate_credential`] for why PAYG requires this rather than merely
+/// tolerating the header.
+///
+/// On a served request the model, the provider and the bill are all Gate's, so
+/// the tool's key is not needed and is not sent. The gateway would strip it
+/// before forwarding upstream anyway - `buildForwardHeaders` removes
+/// `authorization` and `x-api-key` and re-injects the right credential - so this
+/// is not what stands between the user's key and a third party. It is narrower
+/// and still worth doing: there is no reason for Gate to *receive* a credential
+/// it will not use, and not sending it is cheaper than trusting every future
+/// code path on the far side to keep discarding it.
+fn strip_client_auth(headers: &mut HeaderMap) {
+    for name in CLIENT_AUTH_HEADERS {
+        headers.remove(name);
+    }
+}
+
+/// Catalog slugs PAYG can serve, i.e. the ones whose forwarded path is a shape
+/// the gateway's reseller router understands (`/v1/messages`,
+/// `/v1/chat/completions`, `/v1/responses`).
+///
+/// An allowlist, not a denylist, so a domain added later defaults to BYOK and a
+/// new entry can never start spending an org's balance by omission.
+///
+/// Everything left out is left out for a reason:
+/// - `claude-web`, `chatgpt-apps` - consumer chat surfaces authenticated by a
+///   session cookie and covered by the user's own subscription. Gate estimates
+///   their cost rather than billing it, and their paths are not inference-API
+///   shapes the reseller router serves.
+/// - `chatgpt` - Codex's ChatGPT-subscription Responses route. Subscription
+///   traffic is by definition not pay-as-you-go; Codex reaches PAYG through the
+///   `openai` entry instead (see `integrations::codex`).
+/// - `opencode` - its inference lives under `/zen/v1/…`, which is not a path
+///   the reseller router recognises.
+const PAYG_ELIGIBLE_SLUGS: [&str; 3] = ["anthropic", "openai", "openrouter"];
+
+/// The mode to actually route `slug` under. PAYG only applies to the domains in
+/// [`PAYG_ELIGIBLE_SLUGS`]; every other domain keeps its BYOK shape even while
+/// the account is in PAYG, because rewriting it without an upstream URL would
+/// break it and route nothing.
+pub(crate) fn effective_billing_mode(mode: BillingMode, slug: &str) -> BillingMode {
+    match mode {
+        BillingMode::Byok => BillingMode::Byok,
+        BillingMode::Payg if PAYG_ELIGIBLE_SLUGS.contains(&slug) => BillingMode::Payg,
+        BillingMode::Payg => BillingMode::Byok,
+    }
 }
 
 /// Whether a rewrite has no Gate credential to go out under: no live OAuth
@@ -1903,12 +2720,168 @@ pub struct ProxyDomain {
     /// Whether Gate can actually upstream this provider today. Unsupported
     /// domains render as disabled rows in the UI and can't be enabled.
     pub supported: bool,
+    /// The program this entry exists to route. The ledger groups by it.
+    ///
+    /// Aim, not coverage: read it with [`ProxyDomain::scope`] beside it, which
+    /// is usually [`Scope::Host`] and therefore wider than this. Catalog-only,
+    /// like every field here except `enabled` - `config::load_domains` rebuilds
+    /// from [`default_domains`] and applies persisted flags, so none of these
+    /// need a migration.
+    #[serde(default = "default_client")]
+    pub client: crate::taxonomy::Client,
+    /// Whose credential rides the request, and therefore whether a family
+    /// switch may flip this row. See [`Credential::cascades`].
+    ///
+    /// [`Credential::cascades`]: crate::taxonomy::Credential::cascades
+    #[serde(default = "default_credential")]
+    pub credential: crate::taxonomy::Credential,
+    /// How much of the machine this row reaches when it is on.
+    ///
+    /// Every catalog entry is [`Scope::Host`] today, and the field is not a
+    /// constant because the question is per row rather than per kind: a domain
+    /// entry earns `Host` by being MITM'd at CONNECT, where the host is all the
+    /// engine has. The relay does not narrow that - `chatgpt` is reached by
+    /// Codex through the loopback relay AND intercepted on chatgpt.com, and
+    /// `catalog.rs` says so in as many words ("Host, not Client, even though
+    /// Codex arrives through the relay"). What actually varies is the other kind
+    /// of row: an [`crate::registry::Integration`] defaults to [`Scope::Client`]
+    /// because Gate writes one program's config file, and `env_proxy` overrides
+    /// it to [`Scope::Machine`]. An entry here that is only ever relayed, with no
+    /// host interception at all, would be `Client` - there is not one yet.
+    ///
+    /// [`Scope::Client`]: crate::taxonomy::Scope::Client
+    /// [`Scope::Machine`]: crate::taxonomy::Scope::Machine
+    #[serde(default = "default_scope")]
+    pub scope: crate::taxonomy::Scope,
+}
+
+/// Serde fallbacks for the taxonomy fields.
+///
+/// Not decoration, and not unreachable: `ProxyDomain` crosses the Linux helper
+/// daemon's IPC as a whole struct (`Request::SetIntercept` in
+/// `helper_client.rs`, deserialized in `helper.rs`), and that daemon is detached
+/// and outlives the GUI. A GUI newer than the running helper, or older, is
+/// exactly the case these answer - which is also why the values matter rather
+/// than merely existing. The persisted domains file is the case they are NOT
+/// for: it holds enabled flags only, and `config::load_domains` rebuilds every
+/// other field from [`default_domains`].
+///
+/// A bare `#[serde(default)]` would need `Default` on three enums that have no
+/// sensible default: guessing `Brokered` for a row nobody classified would let
+/// it ride a family switch. These name the safe answer instead - nobody's
+/// client, nothing cascaded.
+fn default_client() -> crate::taxonomy::Client {
+    crate::taxonomy::Client::AnyApp
+}
+
+fn default_credential() -> crate::taxonomy::Credential {
+    crate::taxonomy::Credential::Observed
+}
+
+fn default_scope() -> crate::taxonomy::Scope {
+    crate::taxonomy::Scope::Host
 }
 
 impl ProxyDomain {
     fn matches_host(&self, host: &str) -> bool {
         self.hosts.iter().any(|h| h.eq_ignore_ascii_case(host))
     }
+}
+
+/// What the browsers' own NSS stores hold - Chromium's database and each
+/// Firefox profile's - and when they do not hold our CA, **why**, because the
+/// two reasons want opposite things from the user.
+///
+/// A bare boolean was not enough, and shipping one was a bug: `ToolsMissing` is
+/// fixed by installing a package and `WriteFailed` is not, so a UI holding only
+/// "false" either prescribes a package the user may already have or says
+/// nothing. `CertutilFailure` has always drawn this line for the log messages
+/// (see `ca_linux.rs`, and `NSS_TOOLS_HINT`'s own doc comment on why); this
+/// carries it as far as the screen.
+///
+/// `None` on the wire, rather than a fourth variant, for two different absences
+/// that a caller treats alike: not Linux, and Linux with nothing that keeps such
+/// a store. Both mean there is no reading, which is not a negative reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NssTrust {
+    /// Every database found holds the current CA, with the SSL-CA trust flag
+    /// the add asks for.
+    Trusted,
+    /// `certutil` is not installed, so Gate could not write any of them. The
+    /// one state a package install fixes.
+    ToolsMissing,
+    /// `certutil` is there and at least one database did not take the CA - a
+    /// lock, a permission, a database Gate cannot parse. A package install
+    /// changes nothing here; the log line names the store and the reason.
+    WriteFailed,
+    /// The databases answered and at least one simply does not hold the CA,
+    /// with nothing having refused: nobody wrote it - a store that appeared
+    /// after the last write, or a Chromium installed with no database yet.
+    /// Reachable only from [`ca::probe_nss_trust`], never from a write. A retry
+    /// is the fix, which is what makes this a different sentence from
+    /// `WriteFailed`: there is no refusal to go and read, and no package to
+    /// install.
+    NotWritten,
+}
+
+/// What a live read of the per-user NSS stores found, for the diagnostics
+/// report.
+///
+/// Three answers rather than a `bool`, because the two negatives are not the
+/// same claim and the report prints this as a fact a support engineer acts on.
+/// `Absent` says the stores were read and the CA is not in them; `Unreadable`
+/// says one could not be read at all - no `certutil`, a locked database, a call
+/// killed at its deadline - and a report that prints the first when it means
+/// the second is manufacturing a positive claim out of the absence of a
+/// reading. `None` on the wire keeps its meaning: no browser keeps a store on
+/// this machine, so the question does not apply.
+///
+/// `Absent` outranks `Unreadable` when both are found: one store definitely
+/// lacking the CA is a true statement whatever the store beside it did, and it
+/// is the more actionable of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NssProbe {
+    /// Every database found holds the current CA, with SSL-CA trust.
+    Holds,
+    /// Every database answered, and at least one does not hold it.
+    Absent,
+    /// At least one database could not be asked, and none was definitely
+    /// missing the CA.
+    Unreadable,
+}
+
+/// One NSS database that would not take the CA, and what it said.
+///
+/// The copy that raises this state tells the user the diagnostics report names
+/// which store refused and why, and for a while it did not: the outcome reached
+/// the UI as a single [`NssTrust`] and the per-store reason went to stderr. A
+/// sentence that sends somebody to a report has to be answerable there.
+///
+/// Only the `WriteFailed` cause is collected. A missing `certutil` fails every
+/// store for one reason the report already states, so listing it once per
+/// database would be three lines saying what the outcome said.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NssRefusal {
+    /// The database directory, as a display path. In the user's own home, and
+    /// the point of showing it is that they can go and look.
+    pub store: String,
+    /// `certutil`'s own words, by way of `CertutilFailure`. Machine output.
+    pub reason: String,
+}
+
+/// What the last NSS write in this process did, with the detail behind it.
+///
+/// [`NssTrust`] alone is what the UI switches copy on; the refusals are what
+/// makes the report able to answer the question that copy points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NssReading {
+    pub outcome: NssTrust,
+    /// Empty for every outcome but `WriteFailed`, and never used to *infer* the
+    /// outcome: a store list that came back empty because nothing was collected
+    /// is not a store list that came back empty because nothing refused.
+    pub refusals: Vec<NssRefusal>,
 }
 
 /// Snapshot of the proxy subsystem for the UI.
@@ -1925,20 +2898,84 @@ pub struct ProxyState {
     pub pac_port: Option<u16>,
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
-    /// Linux only: whether every browser NSS database (Chromium's, and each
-    /// Firefox profile's) holds our current CA (see
-    /// `ca_linux::nss_ca_trusted`). Those browsers do not read the system
-    /// store, so `Some(false)` beside a `ca_trusted` of true means they reject
-    /// every intercepted host while everything else routes. `None` off Linux,
-    /// or where no browser keeps such a database.
+    /// Linux only: what the store Chromium reads holds, as [`NssTrust`], from
+    /// the last time Gate wrote it on this machine. `None` everywhere else, and
+    /// on Linux until a trust write has been recorded for the current CA.
+    ///
+    /// Beside `ca_trusted` it separates states the UI otherwise cannot tell
+    /// apart, all of which look like Gate breaking HTTPS. Trusted and
+    /// `Trusted`: the stores are right, so a browser still failing is older
+    /// than the write and reopening it is the fix. Trusted and anything else:
+    /// the browsers cannot validate an intercepted host at all, and which
+    /// sentence helps depends on the variant.
+    ///
+    /// **Recorded at write time, never probed here.** `status` is polled - the
+    /// window re-reads it on every `tools-changed` and every visibility edge -
+    /// and probing would put one `certutil` per database on that path, which is
+    /// the failure `ca_windows` grew a bounded call and a cooldown for. The
+    /// write path already runs certutil and already knows the outcome per
+    /// store, so the reading is free there and exact.
+    ///
+    /// **The record is a file, not a static**, because two processes write the
+    /// same store: `gate-connect proxy trust-ca` runs `ensure_trusted` in the
+    /// CLI, and the GUI is the thing that draws the copy about it. A
+    /// process-scoped record left the GUI watching `ca_trusted` go true with no
+    /// reading behind it, and telling the user to reopen a browser on a machine
+    /// where `certutil` was never installed. `ca_linux`'s `nss_record_path`
+    /// keys the file by the CA's own fingerprint, so a record cannot outlive
+    /// the certificate it describes.
+    ///
+    /// `None` is still reachable, and still means nobody has looked: a machine
+    /// with no browser store, a record written for a different CA, or a first
+    /// run before any write. The one record served with no CA at all is a
+    /// removal that failed, so the window can say a browser kept the root. The UI answers it by probing once, off the polled
+    /// path, on the transition that would raise the note - see
+    /// `ca::probe_nss_trust`.
     #[serde(default)]
-    pub ca_nss_trusted: Option<bool>,
-    /// Linux only: how many times this process has added the CA to a browser
-    /// NSS database (see `ca_linux::nss_writes`). The GUI shows its "restart
-    /// your browser" notice when this goes up, since a browser only sees a new
-    /// root after it restarts. Always 0 elsewhere.
+    pub ca_nss_trust: Option<NssTrust>,
+    /// Linux only: when this process last added the CA to a browser store, in
+    /// milliseconds since the epoch, 0 if never (see `ca_linux::nss_written_at`).
+    /// The window raises its "quit and reopen" note when this rises, which
+    /// catches a store written on an enable where `ca_trusted` was already
+    /// true - a Chromium database just created, a Firefox profile seen for the
+    /// first time. Always 0 elsewhere.
     #[serde(default)]
-    pub ca_nss_writes: u64,
+    pub ca_nss_written_at: u64,
+    /// Whether the system proxy Gate writes is one a browser reads *live*, and
+    /// therefore whether a host-matched row covers the same site in a browser.
+    ///
+    /// True on macOS and Windows unconditionally: the PAC goes into the OS
+    /// setting, which is the browser's setting. On Linux it is a question about
+    /// the session, not the OS - `system_proxy_linux.rs` has two channels, and
+    /// only GNOME's `org.gnome.system.proxy` keys are re-read by a running
+    /// browser. On KDE, on a bare WM, or anywhere the schema is absent, Gate
+    /// writes the `environment.d` drop-in alone, nothing in the session points
+    /// a browser at the engine, and a row that claimed the browser would be
+    /// claiming an interception that is not happening.
+    ///
+    /// Named for what the *user* gets rather than for the mechanism, because
+    /// two mechanisms answer it. The copy it drives is `browserScopeNote`.
+    ///
+    /// **Read `false` as "Gate does not write this session's proxy channel",
+    /// never as "this session has none".** The two come apart on KDE, which
+    /// has proxy settings of its own that a running browser reads and that
+    /// Gate simply does not write: the reading is a true statement about Gate
+    /// and a false-negative about the desktop. That direction is deliberate -
+    /// a missing sentence costs a user reassurance they can get from the host
+    /// named beside it, while a present one that is wrong tells them Gate is
+    /// inspecting a browser tab it is not touching, which is the one error
+    /// this field exists to prevent.
+    ///
+    /// So the remedy for KDE is not here. It is `system_proxy_linux.rs`
+    /// learning to write `kioslaverc`'s proxy keys the way it writes GNOME's,
+    /// at which point this answers true there and no copy moves. Do not
+    /// "correct" it by widening the probe to any desktop that *has* a proxy
+    /// setting, and do not delete the sentence it gates on the grounds that it
+    /// is missing for some Linux users: both readings have been made before
+    /// and both put a claim about interception in front of someone who cannot
+    /// check it.
+    #[serde(default)]
+    pub browser_proxy_channel: bool,
     /// Whether Gate is putting its proxy into the user's environment - the
     /// channel that routes command-line tools, as distinct from the OS proxy
     /// setting that routes GUI apps. A user-held choice, because the variables
@@ -1950,6 +2987,16 @@ pub struct ProxyState {
     /// cannot be separated and the UI must not present a switch for it.
     #[serde(default)]
     pub env_export_separable: bool,
+    /// Loopback base URL config-routed tools are pointed at, from the persisted
+    /// relay port - `None` before any port has been bound.
+    ///
+    /// Non-secret, and already written verbatim into every config-routed tool's
+    /// own file, so surfacing it reveals nothing the user cannot read on disk.
+    /// The drift-review dialog needs it: telling someone Gate will overwrite
+    /// their routing values without showing what it will write in their place
+    /// asks them to approve a value they cannot see.
+    #[serde(default)]
+    pub relay_base_url: Option<String>,
     /// Whether the environment forwarder answered when the process hosting the
     /// engine last asked. `None` when this process hosts no engine (Linux, a
     /// CLI beside the app, routing off) or nothing has asked yet.
@@ -1972,8 +3019,10 @@ pub(crate) enum Decision {
     /// Matched host but not an inference path: forward to the real
     /// upstream unchanged.
     Passthrough,
-    /// Rewrite to the gateway, injecting this upstream URL.
-    Rewrite { upstream_url: String },
+    /// Rewrite to the gateway, injecting this upstream URL. `slug` names the
+    /// catalog entry that claimed the path, so the caller can resolve the
+    /// billing shape for it ([`effective_billing_mode`]).
+    Rewrite { upstream_url: String, slug: String },
 }
 
 /// True if any enabled domain claims `host`. Used by the engine's
@@ -2093,8 +3142,35 @@ pub enum ClientClass {
 /// is the one routing keys on; the desktop value is here so the debug log can
 /// tell them apart, and Gate matches the same string for its `claude-desktop`
 /// platform.
+/// The header the two values above arrive on. Named once so `client_tool` and
+/// `classify_client` cannot read different headers for the same fact.
+const ANTHROPIC_CLIENT_PLATFORM: &str = "anthropic-client-platform";
 const ANTHROPIC_WEB_PLATFORM: &str = "web_claude_ai";
 const ANTHROPIC_DESKTOP_PLATFORM: &str = "desktop_app";
+
+/// Whether this is Claude Code running inside the desktop app's Code tab.
+///
+/// The desktop app launches its own `claude` and that process sends
+/// `anthropic-client-platform: desktop_app`, the same value the app itself
+/// sends, so the platform header alone files a Code tab session under the
+/// desktop app. Its User-Agent says what it is: `claude-cli/<version>
+/// (<type>, <entrypoint>, ...)`, with the entrypoint `claude-desktop`.
+/// Captured 2026-10-07 from Claude Code 2.1.288 launched by the Windows app
+/// 2.19675.1: `claude-cli/2.1.288 (external, claude-desktop,
+/// agent-sdk/0.3.288)`.
+///
+/// Matched on that entrypoint and not on `claude-cli/` alone, because Cowork
+/// also runs Claude Code from inside the desktop app and its headers have not
+/// been captured. Until they are, anything else carrying `desktop_app` stays
+/// the desktop app's, which is what it was before this existed.
+fn is_desktop_code_tab(user_agent: &str) -> bool {
+    user_agent
+        .trim_start()
+        .strip_prefix("claude-cli/")
+        .and_then(|rest| rest.split_once('('))
+        .and_then(|(_, detail)| detail.split([',', ')']).nth(1))
+        .is_some_and(|entrypoint| entrypoint.trim() == "claude-desktop")
+}
 
 /// One entry's browser scope. See [`BROWSER_ROUTED`].
 pub(crate) struct BrowserScope {
@@ -2255,11 +3331,15 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
     // value nothing had been told about, captured 2026-08-17 from claude.ai in
     // Chrome. Checked before the OpenAI signals only because it is decisive:
     // no inference, no prefix matching, the vendor simply says which it is.
-    if let Some(platform) = header("anthropic-client-platform").map(str::trim) {
+    if let Some(platform) = header(ANTHROPIC_CLIENT_PLATFORM).map(str::trim) {
         if platform.eq_ignore_ascii_case(ANTHROPIC_WEB_PLATFORM) {
             return ClientClass::Web;
         }
-        if platform.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM) {
+        // Not the app: Claude Code in its Code tab, which `client_tool` files
+        // under Claude Code. The two must not disagree about one request.
+        if platform.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM)
+            && !is_desktop_code_tab(header("user-agent").unwrap_or_default())
+        {
             return ClientClass::App;
         }
         // Any OTHER value falls through deliberately rather than being read as
@@ -2366,7 +3446,7 @@ pub fn rules_for_client(domains: &[ProxyDomain], client: ClientClass) -> Vec<Pro
 /// ignores the other's paths. Stopping at the first host match made the earlier
 /// entry silently swallow the later one's traffic as an unclaimed passthrough,
 /// so enabling both switches routed less than enabling one. Since both are now
-/// rows the user can toggle independently (`provider::chat_domain_slugs`), that
+/// rows the user can toggle independently (both `Credential::Additive`), that
 /// combination has to behave. A host-matching entry that claims neither the path
 /// nor its subtree simply abstains; only if nobody claims it does the request
 /// fall through to `Passthrough`.
@@ -2460,6 +3540,7 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
         if prefix_hit && suffix_ok {
             return Decision::Rewrite {
                 upstream_url: d.upstream_url.clone(),
+                slug: d.slug.clone(),
             };
         }
     }
@@ -2494,19 +3575,61 @@ pub struct ResolvedEndpoint {
 
 impl ResolvedEndpoint {
     /// The base URL a tool config points at to route this endpoint through the
-    /// relay: `<relay>/<slug><client_path>`.
+    /// relay: `<relay>/__gate/t/<tool>/<slug><client_path>`.
     ///
     /// The slug segment is how the relay knows which upstream a request belongs
     /// to, so it can inject `x-gate-upstream-url` itself instead of the tool
-    /// carrying it in a config file. It is stripped back off before anything is
-    /// forwarded, leaving exactly `client_path` + whatever the tool appended.
-    pub fn relay_base_url(&self, relay_base_url: &str) -> String {
+    /// carrying it in a config file. The `tool` segment ahead of it names who
+    /// was configured, so attribution stops depending on the request's
+    /// `User-Agent` - see `relay::TOOL_PATH_PREFIX`, which is crate-private and
+    /// so cannot be linked from this public item. Both are stripped back
+    /// off before anything is forwarded, leaving exactly `client_path` +
+    /// whatever the tool appended, so neither reaches the gateway or the
+    /// upstream.
+    ///
+    /// `tool` is the integration's own [`ToolId`], not a lookup. That is the
+    /// whole point: the call site is inside the module that configures that
+    /// tool, which is the one place in the system where "which tool is this" is
+    /// known rather than inferred.
+    pub fn relay_base_url(&self, relay_base_url: &str, tool: ToolId) -> String {
         format!(
-            "{}/{}{}",
+            "{}{}{}/{}{}",
             relay_base_url.trim_end_matches('/'),
+            relay::TOOL_PATH_PREFIX,
+            tool.slug(),
             self.slug,
             self.client_path
         )
+    }
+
+    /// Is `candidate` a base URL *we* wrote for this endpoint and tool?
+    ///
+    /// Not "does it point at loopback". The two are not the same question and
+    /// the difference is a config the user owns: someone who repoints a tool we
+    /// connected at their own local server is still on loopback, and answering
+    /// yes there hands `reconcile_enabled` a licence to take it back. It asks
+    /// instead whether the string is one [`Self::relay_base_url`] could have
+    /// produced, which only Gate Connect writes.
+    ///
+    /// Judged at the candidate's OWN origin rather than the relay's current one,
+    /// because a base URL that has gone stale is exactly what the reapply exists
+    /// to repair: the relay comes back on a different port and every config we
+    /// wrote now names a dead one. Both path shapes count for the same reason -
+    /// the pre-marker one is what every install written before the tool segment
+    /// still holds, and it is no less ours for being old.
+    pub fn is_relay_base_url(&self, candidate: &str, tool: ToolId) -> bool {
+        let Some((scheme, rest)) = candidate.split_once("://") else {
+            return false;
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        if authority.is_empty() {
+            return false;
+        }
+        let origin = format!("{scheme}://{authority}");
+        if self.relay_base_url(&origin, tool) == candidate {
+            return true;
+        }
+        format!("{origin}/{}{}", self.slug, self.client_path) == candidate
     }
 }
 
@@ -2601,6 +3724,114 @@ mod tests {
     }
 
     use super::SolveOutcome;
+
+    /// What separates a base URL of ours from one the user owns.
+    ///
+    /// The tempting test is "does it point at loopback", and it is wrong in the
+    /// one direction that costs something: a tool the user has repointed at
+    /// their own local server answers yes to it, and `config_is_managed` would
+    /// then let `reconcile_enabled` take the config back without asking. The
+    /// question is whether the string is one we could have written.
+    #[test]
+    fn only_a_url_we_could_have_written_reads_as_ours() {
+        use super::{resolve_endpoint, ToolId};
+        let r = resolve_endpoint("https://api.anthropic.com/v1").expect("anthropic resolves");
+
+        // What we write today, and the same at a port the relay has since left:
+        // the stale one is precisely what the reapply exists to repair, so it
+        // has to still read as ours.
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:1234/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        // The shape written before the marker existed, which every install that
+        // has not reconciled since still holds.
+        assert!(r.is_relay_base_url("http://127.0.0.1:9977/anthropic/v1", ToolId::OpenCode));
+
+        // The user's own llama server on the same interface. Loopback, and not
+        // ours.
+        assert!(!r.is_relay_base_url("http://127.0.0.1:11434/v1", ToolId::OpenCode));
+        // Ours in shape, but naming a different tool or a different upstream.
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/codex/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/openai/v1",
+            ToolId::OpenCode
+        ));
+        // Not a URL at all, and a scheme with no authority.
+        assert!(!r.is_relay_base_url("anthropic/v1", ToolId::OpenCode));
+        assert!(!r.is_relay_base_url("http:///anthropic/v1", ToolId::OpenCode));
+    }
+
+    /// The wire words the frontend's own union spells out.
+    ///
+    /// `NssTrust` reaches TypeScript twice - on `ProxyState.ca_nss_trust` and
+    /// inside `Diagnostics.ca_nss_write` - and both are typed as a string union
+    /// by hand. A renamed variant would compile on both sides and simply stop
+    /// matching, which for the copy means falling through to the reopen advice
+    /// on a machine that needs a package installed.
+    ///
+    /// The `match` is what makes this cover an **added** variant too, which has
+    /// the same failure mode and which the assertions alone would let through:
+    /// adding one without a word here does not compile, and adding one without
+    /// a branch in `browserTrustRestartAdvice` falls through to the same wrong
+    /// sentence a rename does.
+    #[test]
+    fn the_nss_wire_words_are_what_the_frontend_expects() {
+        let word = |t: NssTrust| serde_json::to_value(t).expect("serialize NssTrust");
+        for outcome in [
+            NssTrust::Trusted,
+            NssTrust::ToolsMissing,
+            NssTrust::WriteFailed,
+            NssTrust::NotWritten,
+        ] {
+            let expected = match outcome {
+                NssTrust::Trusted => "trusted",
+                NssTrust::ToolsMissing => "tools_missing",
+                NssTrust::WriteFailed => "write_failed",
+                NssTrust::NotWritten => "not_written",
+            };
+            assert_eq!(word(outcome), expected);
+        }
+    }
+
+    /// The probe's own three words, which the report prints one line off.
+    #[test]
+    fn the_nss_probe_words_are_what_the_report_expects() {
+        let word = |p: NssProbe| serde_json::to_value(p).expect("serialize NssProbe");
+        for probe in [NssProbe::Holds, NssProbe::Absent, NssProbe::Unreadable] {
+            let expected = match probe {
+                NssProbe::Holds => "holds",
+                NssProbe::Absent => "absent",
+                NssProbe::Unreadable => "unreadable",
+            };
+            assert_eq!(word(probe), expected);
+        }
+    }
+
+    /// A refusal carries the store and the reason, under the names the report
+    /// reads. This is the payload behind "the diagnostics report names which one
+    /// and why", so the field names are part of the promise.
+    #[test]
+    fn a_refusal_serialises_the_store_and_the_reason() {
+        let reading = NssReading {
+            outcome: NssTrust::WriteFailed,
+            refusals: vec![NssRefusal {
+                store: "/home/u/.pki/nssdb".into(),
+                reason: "certutil -A exited 255".into(),
+            }],
+        };
+        let json = serde_json::to_value(&reading).expect("serialize NssReading");
+        assert_eq!(json["outcome"], "write_failed");
+        assert_eq!(json["refusals"][0]["store"], "/home/u/.pki/nssdb");
+        assert_eq!(json["refusals"][0]["reason"], "certutil -A exited 255");
+    }
 
     /// Only a capture takes the short grace. Every failure is a failure for
     /// cooldown purposes, however differently it is worded (the wording lives
@@ -2777,6 +4008,19 @@ mod tests {
             1,
             "a refusal inside the cooldown must not re-check"
         );
+
+        // A check someone asked for (the routing sweep, the Linux refusal
+        // counter) is not damped by the cooldown, only kept to one at a time.
+        let held = super::try_begin_gate_auth_check().expect("the cooldown does not block it");
+        assert!(
+            super::try_begin_gate_auth_check().is_none(),
+            "a second check must not start beside one in flight"
+        );
+        drop(held);
+        assert!(
+            super::try_begin_gate_auth_check().is_some(),
+            "dropping the guard releases the latch"
+        );
     }
 
     use super::*;
@@ -2892,6 +4136,126 @@ mod tests {
         assert!(resolve_endpoint("https://api.openai.com.evil.test/v1").is_none());
     }
 
+    /// `CHATGPT_HOST_DOMAINS` names every catalog entry on chatgpt.com.
+    ///
+    /// Its own doc says "a new chatgpt.com entry must be added here or its app
+    /// traffic goes unattributed", which is the hand-kept-array failure mode the
+    /// taxonomy exists to retire. The list stays hand-kept - it is read per
+    /// request and rebuilding the catalog there would cost more than it saves -
+    /// so this is what makes forgetting it loud.
+    #[test]
+    fn the_chatgpt_host_list_matches_the_catalog() {
+        let drawn: Vec<String> = default_domains()
+            .into_iter()
+            .filter(|d| {
+                d.hosts
+                    .iter()
+                    .any(|h| h.eq_ignore_ascii_case("chatgpt.com"))
+            })
+            .map(|d| d.slug)
+            .collect();
+        let named: Vec<String> = CHATGPT_HOST_DOMAINS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            drawn, named,
+            "the catalog's chatgpt.com entries and CHATGPT_HOST_DOMAINS have come apart"
+        );
+    }
+
+    /// The catalog's taxonomy fields, pinned per entry.
+    ///
+    /// `credential` is the one that decides whether a row may ride a family
+    /// switch, and until this existed an entry flipped from `Additive` to
+    /// `Brokered` would have routed somebody's signed-in session with the whole
+    /// suite green - the exact accident the field replaced an exclusion array to
+    /// prevent. Written as a table rather than a loop so that adding an entry
+    /// fails here and has to be classified deliberately.
+    #[test]
+    fn the_catalog_states_who_each_row_is_for() {
+        use crate::taxonomy::{Client, Credential, Scope};
+        let expected: [(&str, Client, Credential, Scope); 7] = [
+            (
+                "anthropic",
+                Client::ClaudeDesktop,
+                Credential::Brokered,
+                Scope::Host,
+            ),
+            (
+                "claude-web",
+                Client::ClaudeDesktop,
+                Credential::Additive,
+                Scope::Host,
+            ),
+            ("openai", Client::AnyApp, Credential::Brokered, Scope::Host),
+            (
+                "chatgpt-apps",
+                Client::ChatGpt,
+                Credential::Additive,
+                Scope::Host,
+            ),
+            (
+                "chatgpt",
+                Client::ChatGpt,
+                Credential::Additive,
+                Scope::Host,
+            ),
+            (
+                "openrouter",
+                Client::AnyApp,
+                Credential::Brokered,
+                Scope::Host,
+            ),
+            (
+                "opencode",
+                Client::OpenCode,
+                Credential::Brokered,
+                Scope::Host,
+            ),
+        ];
+        let catalog = default_domains();
+        assert_eq!(
+            catalog.len(),
+            expected.len(),
+            "a catalog entry was added or removed without classifying it here"
+        );
+        for (domain, (slug, client, credential, scope)) in catalog.iter().zip(expected) {
+            assert_eq!(domain.slug, slug, "catalog order changed");
+            assert_eq!(domain.client, client, "{slug}: client");
+            assert_eq!(domain.credential, credential, "{slug}: credential");
+            assert_eq!(domain.scope, scope, "{slug}: scope");
+        }
+    }
+
+    /// The rows a family switch may flip are the brokered ones, asserted against
+    /// the catalog rather than against a provider's list.
+    ///
+    /// `provider::cascade_domains` derives the cascade from this field, so the
+    /// two halves of that rule are pinned in the two files: which rows are
+    /// brokered here, and what the derivation does with them there.
+    #[test]
+    fn only_brokered_catalog_rows_cascade() {
+        for domain in default_domains() {
+            assert_eq!(
+                domain.credential.cascades(),
+                domain.credential == crate::taxonomy::Credential::Brokered,
+                "{}: cascades() and the credential disagree",
+                domain.slug
+            );
+        }
+        let session: Vec<String> = default_domains()
+            .into_iter()
+            .filter(|d| !d.credential.cascades())
+            .map(|d| d.slug)
+            .collect();
+        assert_eq!(
+            session,
+            vec!["claude-web", "chatgpt-apps", "chatgpt"],
+            "the set of session surfaces changed; each one is a dialog the user has to be shown"
+        );
+    }
+
     #[test]
     fn every_resolved_endpoint_lands_on_an_inference_prefix() {
         // The invariant that ties the two halves together: for each catalog
@@ -2936,7 +4300,8 @@ mod tests {
                 assert_eq!(
                     decide(std::slice::from_ref(&mitm), &d.hosts[0], &request_path),
                     Decision::Rewrite {
-                        upstream_url: d.upstream_url.clone()
+                        upstream_url: d.upstream_url.clone(),
+                        slug: d.slug.clone()
                     },
                     "{}: shadowed on the relay route, so `decide` must carry {request_path}",
                     d.slug
@@ -3169,7 +4534,8 @@ mod tests {
         assert_eq!(
             decide(&browser, "claude.ai", CLAUDE_COMPLETION),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai/api".into()
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             },
             "the browser's chat turn IS captured"
         );
@@ -3196,7 +4562,8 @@ mod tests {
             assert_eq!(
                 decide(&app, "claude.ai", path),
                 Decision::Rewrite {
-                    upstream_url: "https://claude.ai/api".into()
+                    upstream_url: "https://claude.ai/api".into(),
+                    slug: "claude-web".into()
                 },
                 "the app keeps {path}"
             );
@@ -3387,7 +4754,8 @@ mod tests {
             assert_eq!(
                 decide(&rules_for_client(&all, class), "chatgpt.com", TURN),
                 Decision::Rewrite {
-                    upstream_url: "https://chatgpt.com".into()
+                    upstream_url: "https://chatgpt.com".into(),
+                    slug: "chatgpt-apps".into()
                 },
                 "{class:?} must have its chat turn captured"
             );
@@ -3409,7 +4777,8 @@ mod tests {
                 PLUMBING
             ),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com".into()
+                upstream_url: "https://chatgpt.com".into(),
+                slug: "chatgpt-apps".into()
             },
             "the app keeps it"
         );
@@ -3433,7 +4802,8 @@ mod tests {
                 "/backend-api/codex/responses"
             ),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: "chatgpt".into()
             }
         );
         // And an entry that is not browser-excluding keeps every prefix even for
@@ -3449,7 +4819,8 @@ mod tests {
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/messages?beta=true"),
             Decision::Rewrite {
-                upstream_url: "https://api.anthropic.com".into()
+                upstream_url: "https://api.anthropic.com".into(),
+                slug: "anthropic".into()
             }
         );
     }
@@ -3502,14 +4873,16 @@ mod tests {
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/complete"),
             Decision::Rewrite {
-                upstream_url: "https://api.anthropic.com".into()
+                upstream_url: "https://api.anthropic.com".into(),
+                slug: "anthropic".into()
             }
         );
         // count_tokens rides under /v1/messages, so the prefix still catches it.
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/messages/count_tokens"),
             Decision::Rewrite {
-                upstream_url: "https://api.anthropic.com".into()
+                upstream_url: "https://api.anthropic.com".into(),
+                slug: "anthropic".into()
             }
         );
     }
@@ -3526,6 +4899,7 @@ mod tests {
             decide(&d, "api.anthropic.com", "/v1/chat/completions"),
             Decision::Rewrite {
                 upstream_url: "https://api.anthropic.com".into(),
+                slug: "anthropic".into()
             }
         );
     }
@@ -3580,7 +4954,8 @@ mod tests {
         assert_eq!(
             decide(&d, "openrouter.ai", "/api/v1/chat/completions"),
             Decision::Rewrite {
-                upstream_url: "https://openrouter.ai/api".into()
+                upstream_url: "https://openrouter.ai/api".into(),
+                slug: "openrouter".into()
             }
         );
         // Outside the upstream's subtree: not this domain's traffic.
@@ -3605,7 +4980,8 @@ mod tests {
         assert_eq!(
             decide(&d, "api.openai.com", "/v1/responses"),
             Decision::Rewrite {
-                upstream_url: "https://api.openai.com".into()
+                upstream_url: "https://api.openai.com".into(),
+                slug: "openai".into()
             }
         );
         // case-insensitive host match
@@ -3630,7 +5006,8 @@ mod tests {
             assert_eq!(
                 decide(&d, "api.openai.com", path),
                 Decision::Rewrite {
-                    upstream_url: "https://api.openai.com".into()
+                    upstream_url: "https://api.openai.com".into(),
+                    slug: "openai".into()
                 },
                 "inference path {path} must rewrite to the gateway"
             );
@@ -3668,7 +5045,8 @@ mod tests {
         assert_eq!(
             decide(&d, "claude.ai", CLAUDE_COMPLETION),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai/api".into()
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             }
         );
         // Query strings must not change the verdict.
@@ -3679,7 +5057,8 @@ mod tests {
                 &format!("{CLAUDE_COMPLETION}?rendering_mode=messages")
             ),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai/api".into()
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             }
         );
     }
@@ -3714,7 +5093,8 @@ mod tests {
             assert_eq!(
                 decide(&d, "claude.ai", path),
                 Decision::Rewrite {
-                    upstream_url: "https://claude.ai/api".into()
+                    upstream_url: "https://claude.ai/api".into(),
+                    slug: "claude-web".into()
                 }
             );
         }
@@ -3765,7 +5145,8 @@ mod tests {
             assert_eq!(
                 decide(&d, "chatgpt.com", path),
                 Decision::Rewrite {
-                    upstream_url: "https://chatgpt.com".into()
+                    upstream_url: "https://chatgpt.com".into(),
+                    slug: "chatgpt-apps".into()
                 },
                 "{path} should route to Gate"
             );
@@ -3959,14 +5340,16 @@ mod tests {
         assert_eq!(
             decide(&both, "chatgpt.com", "/backend-api/codex/responses"),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: "chatgpt".into()
             },
             "the Responses call belongs to the `chatgpt` entry's split"
         );
         assert_eq!(
             decide(&both, "chatgpt.com", "/backend-api/f/conversation"),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com".into()
+                upstream_url: "https://chatgpt.com".into(),
+                slug: "chatgpt-apps".into()
             },
             "and the app's chat turn still belongs to `chatgpt-apps`"
         );
@@ -3988,7 +5371,8 @@ mod tests {
         assert_eq!(
             decide(&d, "chatgpt.com", "/backend-api/f/conversation"),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com".into()
+                upstream_url: "https://chatgpt.com".into(),
+                slug: "chatgpt-apps".into()
             }
         );
     }
@@ -4103,6 +5487,708 @@ mod tests {
 
         crate::env::set_app_support_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The cross-repo agreement table for tool attribution.
+    ///
+    /// Two matchers, in two repositories, answer "which tool sent this" and
+    /// neither compares notes with the other: [`client_tool`] here, and the
+    /// per-platform `detect` in the gateway's
+    /// `apps/gateway-proxy/src/utils/platform-registry.ts`. They disagreed for
+    /// months on any agent whose own token is not the first thing in its
+    /// `User-Agent` - the gateway anchored its `opencode` regex, this side uses
+    /// a case-insensitive `contains` - and nothing caught it, because each
+    /// side's tests were written against its own rule.
+    ///
+    /// Disagreement is worse than either side being wrong alone. This side
+    /// stamps `x-gate-client: opencode` while the gateway writes
+    /// `agent_framework: direct-api`, so one row carries two confident and
+    /// contradictory claims and neither surface reads as "unknown".
+    ///
+    /// So the table records BOTH answers per sample rather than one shared one.
+    /// The columns are not expected to be equal - where they differ the row says
+    /// why, and that visibility is the point. **The same table is mirrored in
+    /// the gateway**, in `tests/utils/agent-ua-samples.test.ts`; this test
+    /// asserts the `connect` column and that one asserts `registry`. A sample
+    /// added here goes there too. Nothing but this comment enforces that, so a
+    /// row with no counterpart proves half of what it looks like it proves.
+    ///
+    /// Which is why the name says `connect` rather than "agrees with the
+    /// gateway": the `registry` column is documentation here, read by a person
+    /// porting the table across and by nothing else. A name promising a
+    /// cross-repo assertion would have a green run standing behind it.
+    #[test]
+    fn the_user_agent_table_pins_what_connect_stamps() {
+        let tool = |ua: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            client_tool(&h, None)
+        };
+
+        // (user-agent, what this side stamps, what the gateway registry makes
+        // of the same string on its own).
+        let samples: &[(&str, Option<&str>, Option<&str>)] = &[
+            // Agreed: what each tool sends today, backed by real captures.
+            (
+                "claude-cli/2.1.222 (external, cli)",
+                Some("claude-code"),
+                Some("claude-code"),
+            ),
+            ("codex_cli_rs/0.55.0", Some("codex"), Some("codex")),
+            ("opencode/0.4.2", Some("opencode"), Some("opencode")),
+            // The shape that split the two matchers, and the reason the `^`
+            // anchor came off the gateway's `opencode` detector: the token is
+            // present but not first, as it would be with a runtime or wrapper
+            // banner in front of it.
+            (
+                "Bun/1.2.3 opencode/0.4.2",
+                Some("opencode"),
+                Some("opencode"),
+            ),
+            // Case is the tool's business, not ours - one tool has to be one
+            // series.
+            ("Codex/1.0", Some("codex"), Some("codex")),
+            // DIVERGENT, and not a regex disagreement: the two sides read
+            // different evidence. This side matches `openclaw` in the
+            // User-Agent; the gateway detects OpenClaw from body markers and
+            // has no UA signal at all, so a UA-only sample is genuinely `None`
+            // there. Routed traffic is still attributed, because the gateway
+            // now prefers `x-gate-client` - which is to say, this side's answer
+            // - over its own detector.
+            ("openclaw/1.4.0", Some("openclaw"), None),
+            // The Codex desktop app, captured verbatim. Both carry the `codex`
+            // needle and neither is the CLI: left unstamped here, the gateway's
+            // own detector names them `codex-desktop`.
+            (
+                "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
+                None,
+                Some("codex-desktop"),
+            ),
+            (
+                "codex-mcp-client/0.148.0-alpha.9",
+                None,
+                Some("codex-desktop"),
+            ),
+            // Not agents. A wrong slug here would file somebody else's traffic
+            // under a tool's name in the very view a user opens to find out
+            // what their machine is doing, which is worse than the honest
+            // blank.
+            ("curl/8.7.1", None, None),
+            ("Mozilla/5.0 (Macintosh) Chrome/120", None, None),
+        ];
+
+        for (ua, connect, _registry) in samples {
+            assert_eq!(tool(ua), *connect, "user-agent {ua:?}");
+        }
+    }
+
+    /// The `User-Agent` guess is the only tool signal either path has, so its
+    /// misses matter as much as its hits.
+    #[test]
+    fn identifies_a_tool_only_when_its_agent_says_so() {
+        let tool = |ua: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            client_tool(&h, None)
+        };
+
+        assert_eq!(
+            tool("claude-cli/2.1.0 (external, cli)"),
+            Some("claude-code")
+        );
+        assert_eq!(tool("codex_cli_rs/0.55.0"), Some("codex"));
+        assert_eq!(tool("opencode/0.4.2"), Some("opencode"));
+        // Case is the tool's business, not ours: one tool has to be one series.
+        assert_eq!(tool("Codex/1.0"), Some("codex"));
+        // The three codex-like agents: the CLI is `codex`, the desktop app's
+        // two agents are not. Stamping them `codex` filed the app under the
+        // CLI, since the gateway trusts this stamp over its own detector.
+        assert_eq!(
+            tool("codex_cli_rs/0.55.0 (Mac OS 15.0.0; arm64)"),
+            Some("codex")
+        );
+        assert_eq!(
+            tool("Codex Desktop/26.825.32147 (Windows NT 10.0; x64)"),
+            None
+        );
+        assert_eq!(tool("codex-mcp-client/0.148.0-alpha.9"), None);
+
+        // No agent, or one we don't recognise, is unattributed - never a guess.
+        // A wrong slug would put one tool's traffic under another's name in the
+        // very view the user reads to find out what their machine is doing.
+        assert_eq!(client_tool(&HeaderMap::new(), None), None);
+        assert_eq!(tool("curl/8.7.1"), None);
+        assert_eq!(tool("Mozilla/5.0 (Macintosh) Chrome/120"), None);
+    }
+
+    /// The Claude desktop app is attributed, by its own declaration.
+    ///
+    /// The gap this closes: routing knows nothing about a desktop app - the
+    /// engine sees a CONNECT to a host - so its traffic reached the gateway
+    /// with no `client_tool` and appeared in no per-tool reading. The app says
+    /// what it is in a vendor-namespaced header, which is better evidence than
+    /// the User-Agent substring the other five are matched on.
+    #[test]
+    fn the_claude_desktop_app_names_itself() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("desktop_app"),
+        );
+        assert_eq!(client_tool(&h, None), Some("claude-desktop"));
+
+        // The second signal on its own, for a build that drops the first -
+        // `classify_client` keeps the same fallback, and the two must not
+        // disagree about one request.
+        let mut only_app = HeaderMap::new();
+        only_app.insert(
+            HeaderName::from_static("anthropic-client-app"),
+            HeaderValue::from_static("com.anthropic.claudefordesktop"),
+        );
+        assert_eq!(client_tool(&only_app, None), Some("claude-desktop"));
+    }
+
+    /// Claude Code launched by the desktop app's Code tab sends the app's
+    /// platform header too. Its User-Agent is what names it, and both readers
+    /// have to take it from there or one request lands in two places.
+    ///
+    /// The headers are the capture from 2026-10-07 (Claude Code 2.1.288 under
+    /// the Windows app 2.19675.1), not a reconstruction.
+    #[test]
+    fn claude_code_in_the_desktop_code_tab_is_claude_code() {
+        const CODE_TAB_UA: &str =
+            "claude-cli/2.1.288 (external, claude-desktop, agent-sdk/0.3.288)";
+        let mut h = HeaderMap::new();
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static(CODE_TAB_UA),
+        );
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static(ANTHROPIC_DESKTOP_PLATFORM),
+        );
+        h.insert(
+            HeaderName::from_static("anthropic-client-version"),
+            HeaderValue::from_static("2.19675.1"),
+        );
+        assert_eq!(client_tool(&h, None), Some("claude-code"));
+        assert_eq!(
+            classify_client(|name| h.get(name).and_then(|v| v.to_str().ok())),
+            ClientClass::Unknown,
+            "not the app: App would file it beside the desktop app's own traffic"
+        );
+
+        // Anything else on the app's platform header stays the app's - Cowork
+        // runs Claude Code inside the app too and has not been captured.
+        for ua in [
+            "claude-cli/2.1.288 (external, local-agent, agent-sdk/0.3.288)",
+            "claude-cli/2.1.288",
+            "Mozilla/5.0 (Windows NT 10.0) Claude/2.19675.1 Chrome/120",
+            "something-else (external, claude-desktop)",
+        ] {
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            assert_eq!(client_tool(&h, None), Some("claude-desktop"), "{ua}");
+            assert_eq!(
+                classify_client(|name| h.get(name).and_then(|v| v.to_str().ok())),
+                ClientClass::App,
+                "{ua}"
+            );
+        }
+
+        // The terminal CLI is untouched: no platform header, matched by name.
+        let mut cli = HeaderMap::new();
+        cli.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("claude-cli/2.1.288 (external, sdk-cli, agent-sdk/0.3.288)"),
+        );
+        assert_eq!(client_tool(&cli, None), Some("claude-code"));
+    }
+
+    /// Every value `client_tool` can stamp is one the activity reads accept, so
+    /// no series is written that the App pane could never ask for.
+    ///
+    /// Walks every branch rather than the enum: the stamper's outputs are the
+    /// claim, and the set is what has to cover them. The relay marker's half is
+    /// in `relay.rs`, beside the function that peels it.
+    #[test]
+    fn every_stamped_client_is_readable() {
+        let with = |pairs: &[(&'static str, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (name, value) in pairs {
+                h.insert(
+                    HeaderName::from_static(name),
+                    HeaderValue::from_static(value),
+                );
+            }
+            h
+        };
+        let cases: Vec<(HeaderMap, Option<&str>)> = vec![
+            (with(&[("user-agent", "claude-cli/2.1.0")]), None),
+            (with(&[("user-agent", "codex_cli_rs/0.55.0")]), None),
+            (with(&[("user-agent", "opencode/0.4.2")]), None),
+            (with(&[("user-agent", "openclaw/1.4.0")]), None),
+            (with(&[("user-agent", "hermes/0.1")]), None),
+            (
+                with(&[(ANTHROPIC_CLIENT_PLATFORM, ANTHROPIC_DESKTOP_PLATFORM)]),
+                None,
+            ),
+            (
+                with(&[(ANTHROPIC_CLIENT_PLATFORM, ANTHROPIC_WEB_PLATFORM)]),
+                None,
+            ),
+            (
+                with(&[("anthropic-client-app", "com.anthropic.claudefordesktop")]),
+                None,
+            ),
+            (
+                with(&[("originator", "Codex Desktop")]),
+                Some("chatgpt-apps"),
+            ),
+            (with(&[("oai-device-id", "d")]), Some("chatgpt")),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for (headers, domain) in &cases {
+            let slug = client_tool(headers, *domain)
+                .unwrap_or_else(|| panic!("case {headers:?} on {domain:?} stamped nothing"));
+            assert_eq!(stamped_client(slug), Some(slug), "{slug:?} is not readable");
+            seen.insert(slug);
+        }
+        // And the other way: nothing in the set that no branch above stamps,
+        // so the reads cannot ask for a series the engine never writes.
+        let all: std::collections::BTreeSet<&str> = crate::taxonomy::Client::ALL
+            .into_iter()
+            .map(crate::taxonomy::Client::slug)
+            .chain([CLAUDE_WEB_CLIENT, CHATGPT_WEB_CLIENT])
+            .filter_map(stamped_client)
+            .collect();
+        assert_eq!(seen, all);
+        // `any-app` names a row, not a sender, and nothing stamps it.
+        assert_eq!(stamped_client("any-app"), None);
+        assert_eq!(stamped_client("env-proxy"), None);
+        assert_eq!(stamped_client(""), None);
+    }
+
+    /// The engine's config-header signal names only readable clients, the
+    /// header half of `every_stamped_client_is_readable`.
+    #[test]
+    fn every_tool_the_config_header_names_is_readable() {
+        use crate::registry::ToolId;
+        let named = |slug: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                HeaderName::from_static(GATE_TOOL_HEADER),
+                HeaderValue::from_static(slug),
+            );
+            header_tool(&h)
+        };
+        // Every registered tool, so a new one is covered without editing this.
+        for id in crate::registry::registry().iter().map(|i| i.id()) {
+            if id == ToolId::EnvProxy {
+                assert_eq!(
+                    named(id.slug()),
+                    None,
+                    "the environment channel is not a tool"
+                );
+                continue;
+            }
+            assert_eq!(named(id.slug()), Some(id.slug()));
+            assert_eq!(stamped_client(id.slug()), Some(id.slug()));
+        }
+        assert_eq!(named("nope"), None);
+    }
+
+    /// The website is attributed too, and separately from the desktop app.
+    ///
+    /// Separately is the point. Both ride the same catalog entries, so one slug
+    /// covering both would put someone's browsing into the figure they read to
+    /// see what their app is doing.
+    #[test]
+    fn claude_ai_in_a_browser_is_its_own_client() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("web_claude_ai"),
+        );
+        assert_eq!(client_tool(&h, None), Some("claude-web"));
+    }
+
+    /// chatgpt.com in a browser, by OpenAI's own markers, on a chatgpt.com entry.
+    ///
+    /// The markers are namespaced to the vendor, so they can only mean OpenAI -
+    /// but the ENTRY is what makes them mean chatgpt.com, which is why this half
+    /// is scoped the same way the app half is.
+    #[test]
+    fn chatgpt_com_in_a_browser_is_its_own_client() {
+        for name in [
+            "oai-device-id",
+            "oai-client-version",
+            "x-openai-target-route",
+        ] {
+            let mut h = HeaderMap::new();
+            h.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("x"),
+            );
+            assert_eq!(
+                client_tool(&h, Some("chatgpt-apps")),
+                Some("chatgpt-web"),
+                "{name}"
+            );
+            // Off that host the same header says nothing. An OpenAI marker on an
+            // Anthropic request is somebody else's traffic, and answering
+            // `chatgpt-web` for it is the cross-vendor mislabelling this module
+            // refuses everywhere else.
+            assert_eq!(client_tool(&h, Some("anthropic")), None, "{name}");
+            assert_eq!(client_tool(&h, None), None, "{name}");
+        }
+    }
+
+    /// Both signals on one request: the app wins, on both sides of the split.
+    ///
+    /// `classify_client` checks `originator` before the `oai-*` markers and says
+    /// why - an app build that starts sending a web marker must not lose its
+    /// route. `client_tool` read them the other way round, so such a request
+    /// would have been ROUTED as the app and RECORDED as the website: the app's
+    /// turns landing in the browser's series, which is what keeping two slugs
+    /// exists to prevent. One order now, and this is the assertion that holds
+    /// the two functions together.
+    #[test]
+    fn an_app_marker_outranks_a_web_marker() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static("originator"),
+            HeaderValue::from_static("chatgpt"),
+        );
+        h.insert(
+            HeaderName::from_static("oai-device-id"),
+            HeaderValue::from_static("x"),
+        );
+        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("chatgpt"));
+        // The other side of the same request, from the same headers.
+        let header = |name: &str| h.get(name).and_then(|v: &HeaderValue| v.to_str().ok());
+        assert_eq!(classify_client(header), ClientClass::App);
+    }
+
+    /// The ChatGPT desktop app, identified by OpenAI's own front-end field.
+    ///
+    /// The routing decision is what makes it safe to read: `originator` has a
+    /// generic header name, so it is only believed on an entry whose host is
+    /// chatgpt.com.
+    #[test]
+    fn the_chatgpt_app_names_itself_on_its_own_host() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static("originator"),
+            HeaderValue::from_static("chatgpt"),
+        );
+        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("chatgpt"));
+        // Both entries on that host carry app traffic under different URL
+        // splits, so both must answer.
+        assert_eq!(client_tool(&h, Some("chatgpt")), Some("chatgpt"));
+
+        // The Codex desktop app sends `originator` too, and is not the ChatGPT
+        // app: it stays unstamped on these entries, for the gateway to name.
+        for ua in [
+            "Codex Desktop/26.825.32147 (Windows NT 10.0; x64)",
+            "codex-mcp-client/0.148.0-alpha.9",
+        ] {
+            let mut codex_app = h.clone();
+            codex_app.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            assert_eq!(client_tool(&codex_app, Some("chatgpt-apps")), None, "{ua}");
+            assert_eq!(client_tool(&codex_app, Some("chatgpt")), None, "{ua}");
+        }
+    }
+
+    /// The same header on another vendor's entry is not believed.
+    ///
+    /// The whole reason this branch waited for the matched entry to be plumbed
+    /// here: `originator` is a name anything could send, and stamping a ChatGPT
+    /// slug on an Anthropic request would be the cross-vendor mislabelling that
+    /// `client_tool`'s "never a guess" rule exists to prevent.
+    #[test]
+    fn originator_is_ignored_off_chatgpt_com() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static("originator"),
+            HeaderValue::from_static("chatgpt"),
+        );
+        assert_eq!(client_tool(&h, Some("anthropic")), None);
+        assert_eq!(client_tool(&h, Some("openai")), None);
+        // And with no decision at hand at all - the relay's direct-forward
+        // path, or a caller that has not been plumbed.
+        assert_eq!(client_tool(&h, None), None);
+    }
+
+    /// The website still wins on its own markers: a chatgpt.com tab is not the
+    /// desktop app, and the two must stay separate series.
+    #[test]
+    fn the_chatgpt_website_is_not_the_app() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static("oai-device-id"),
+            HeaderValue::from_static("x"),
+        );
+        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("chatgpt-web"));
+    }
+
+    /// A Codex request stays Codex even carrying an OpenAI web marker.
+    ///
+    /// The reason the OpenAI check sits after the allowlist while Anthropic's
+    /// sits before it: here the two signals can name the same request, and the
+    /// tool naming itself is the better answer.
+    #[test]
+    fn a_named_tool_outranks_the_openai_web_markers() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("codex/1.2.3"),
+        );
+        h.insert(
+            HeaderName::from_static("oai-device-id"),
+            HeaderValue::from_static("x"),
+        );
+        // On the entry that would otherwise answer `chatgpt-web`, so the
+        // allowlist is what decides rather than the scoping.
+        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("codex"));
+    }
+
+    /// A platform value nobody has seen is not read as the desktop app, for the
+    /// same reason `classify_client` refuses to read one as `App`: a future
+    /// first-party client may spell itself differently, and guessing would file
+    /// its traffic under a name that is not its own.
+    #[test]
+    fn an_unrecognised_anthropic_platform_is_not_attributed() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("some_new_surface"),
+        );
+        assert_eq!(client_tool(&h, None), None);
+    }
+
+    /// The vendor's declaration outranks the User-Agent, which on this app is a
+    /// browser-shaped string its shell inherits and which would otherwise match
+    /// nothing at all.
+    #[test]
+    fn the_vendor_header_outranks_the_user_agent() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("desktop_app"),
+        );
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("Mozilla/5.0 (Macintosh) Chrome/120"),
+        );
+        assert_eq!(client_tool(&h, None), Some("claude-desktop"));
+    }
+
+    /// Attribution is stamped from our own state, never from the caller's.
+    /// The route outranks the `User-Agent`, and the header the caller sent
+    /// outranks neither.
+    ///
+    /// The three-way distinction is the point. A base URL carrying a tool marker
+    /// is something *Gate Connect wrote*, from inside the integration that knows
+    /// which tool it was configuring, so it is better evidence than a substring
+    /// of a string the tool picks for itself. An `x-gate-client` the caller set
+    /// is not evidence at all and stays overwritten either way - otherwise any
+    /// local process could file its spend under another tool's name.
+    #[test]
+    fn a_routed_tool_outranks_the_user_agent_but_a_claimed_header_outranks_nothing() {
+        let attributed = |ua: Option<&str>, routed: Option<&'static str>| {
+            let mut h = HeaderMap::new();
+            if let Some(ua) = ua {
+                h.insert(
+                    hyper::header::USER_AGENT,
+                    HeaderValue::from_str(ua).unwrap(),
+                );
+            }
+            // Always present and always wrong, so every case below also asserts
+            // that the caller's own claim was dropped rather than merged.
+            h.insert(
+                HeaderName::from_static(GATE_CLIENT_HEADER),
+                HeaderValue::from_static("openclaw"),
+            );
+            inject_attribution(&mut h, None, routed);
+            h.get(GATE_CLIENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+
+        // The marker is the whole reason this change exists: a User-Agent that
+        // no longer names the tool - a runtime banner in front of the token is
+        // enough - still attributes correctly when the route named it.
+        assert_eq!(
+            attributed(Some("Bun/1.2.3 opencode/0.4.2"), Some("opencode")),
+            Some("opencode".to_string())
+        );
+        // And with no User-Agent at all, which is where the guess has nothing.
+        assert_eq!(attributed(None, Some("codex")), Some("codex".to_string()));
+
+        // No marker: the guess still runs, so nothing that works today stops.
+        assert_eq!(
+            attributed(Some("opencode/0.4.2"), None),
+            Some("opencode".to_string())
+        );
+
+        // Neither signal: unattributed, never the caller's claim.
+        assert_eq!(attributed(Some("curl/8.7.1"), None), None);
+        assert_eq!(attributed(None, None), None);
+    }
+
+    #[test]
+    fn attribution_overwrites_whatever_the_caller_claimed() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(GATE_INSTALL_ID_HEADER),
+            HeaderValue::from_static("someone-elses-machine"),
+        );
+        h.insert(
+            HeaderName::from_static(GATE_CLIENT_HEADER),
+            HeaderValue::from_static("claude-code"),
+        );
+
+        inject_attribution(&mut h, None, None);
+
+        // The client header is derived from the User-Agent, and there is none
+        // here, so the claim is dropped rather than believed.
+        assert_eq!(h.get(GATE_CLIENT_HEADER), None);
+        // Whatever the id resolves to, it is ours or it is absent - a local
+        // process cannot label its traffic as another installation's.
+        let claimed = h
+            .get(GATE_INSTALL_ID_HEADER)
+            .map(|v| v.to_str().unwrap().to_string());
+        assert_ne!(claimed.as_deref(), Some("someone-elses-machine"));
+        assert_eq!(claimed.as_deref(), crate::primitives::install_id_cached());
+    }
+
+    /// PAYG applies per domain, and the list is an allowlist: a domain nobody
+    /// has cleared for reseller routing keeps its BYOK shape even while the
+    /// account bills through Gate. The consumer-chat surfaces are the ones this
+    /// protects - they authenticate with a session cookie, so stripping it would
+    /// break them and route nothing.
+    #[test]
+    fn payg_applies_only_to_the_eligible_domains() {
+        for slug in ["anthropic", "openai", "openrouter"] {
+            assert_eq!(
+                effective_billing_mode(BillingMode::Payg, slug),
+                BillingMode::Payg,
+                "{slug} serves a gateway-native inference path"
+            );
+        }
+        for slug in ["claude-web", "chatgpt-apps", "chatgpt", "opencode"] {
+            assert_eq!(
+                effective_billing_mode(BillingMode::Payg, slug),
+                BillingMode::Byok,
+                "{slug} is a subscription or non-reseller path"
+            );
+        }
+        // A domain added later defaults to BYOK rather than silently starting to
+        // spend an org's balance.
+        assert_eq!(
+            effective_billing_mode(BillingMode::Payg, "some-future-provider"),
+            BillingMode::Byok
+        );
+        // And BYOK is never widened by the eligibility list.
+        assert_eq!(
+            effective_billing_mode(BillingMode::Byok, "anthropic"),
+            BillingMode::Byok
+        );
+    }
+
+    /// Every eligible slug must actually exist in the catalog: a typo here would
+    /// silently keep PAYG off for that provider, which is the failure mode this
+    /// allowlist is otherwise good at hiding.
+    #[test]
+    fn every_payg_eligible_slug_is_a_real_catalog_entry() {
+        let catalog = default_domains();
+        for slug in PAYG_ELIGIBLE_SLUGS {
+            assert!(
+                catalog.iter().any(|d| d.slug == slug),
+                "{slug} is listed as PAYG-eligible but is not in the catalog"
+            );
+        }
+    }
+
+    /// PAYG removes the tool's own credential, and does so even when the caller
+    /// supplied its own Gate key - that branch leaves the Gate headers alone,
+    /// but a provider token sitting beside them would still force BYOK.
+    #[test]
+    fn payg_strips_the_client_credential_even_behind_a_caller_supplied_key() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(GATE_KEY_HEADER),
+            HeaderValue::from_static("sk-gw-callers-own"),
+        );
+        h.insert(
+            hyper::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-ant-oat01-app"),
+        );
+        h.insert(
+            HeaderName::from_static("x-api-key"),
+            HeaderValue::from_static("sk-ant-api03-app"),
+        );
+
+        inject_gate_credential(
+            &mut h,
+            "sk-gw-ours",
+            None,
+            None,
+            BillingMode::Payg,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
+        assert_eq!(h.get(hyper::header::AUTHORIZATION), None);
+        assert_eq!(h.get("x-api-key"), None);
+    }
+
+    /// Attribution rides alongside the credential decision without touching it.
+    #[test]
+    fn a_caller_supplied_key_still_gets_attributed() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(GATE_KEY_HEADER),
+            HeaderValue::from_static("sk-gw-callers-own"),
+        );
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("claude-cli/2.1.0"),
+        );
+
+        inject_gate_credential(
+            &mut h,
+            "sk-gw-ours",
+            Some("token"),
+            Some("org"),
+            BillingMode::Byok,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // The credential is left exactly as it arrived: that branch is the
+        // caller's to own.
+        assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
+        assert_eq!(h.get(GATE_AUTHORIZATION_HEADER), None);
+        // The request still left this machine, from this tool, so it is still
+        // attributable. Failing to record that would leave an unexplained hole
+        // in the activity view.
+        assert_eq!(h.get(GATE_CLIENT_HEADER).unwrap(), "claude-code");
     }
 }
 
@@ -4249,7 +6335,9 @@ mod credential_tests {
     #[test]
     fn injecting_with_no_credential_is_an_error() {
         let mut headers = HeaderMap::new();
-        let err = inject_gate_credential(&mut headers, "", None, None).unwrap_err();
+        let err =
+            inject_gate_credential(&mut headers, "", None, None, BillingMode::Byok, None, None)
+                .unwrap_err();
         assert!(err.to_string().contains("no Gate credential"), "{err:#}");
         assert!(headers.get(GATE_KEY_HEADER).is_none());
     }

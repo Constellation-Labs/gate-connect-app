@@ -1,8 +1,8 @@
 # UI e2e
 
-Browser-level tests for the popover. They load the **real** frontend bundle in
-a real browser and drive it the way a person does: real `App.tsx`
-orchestration, real `src/lib/api.ts`, real CSS at 360x520, real focus and
+Browser-level tests for the window UI and the tray. They load the **real**
+frontend bundle in a real browser and drive it the way a person does: real
+`NewUiApp.tsx` orchestration, real `src/lib/api.ts`, real CSS, real focus and
 keyboard behaviour.
 
 The one thing that isn't real is the Tauri process. `install.ts` puts a
@@ -13,7 +13,7 @@ so `provider_enable` really does change what the next `list_tools` returns.
 ## What this layer is for
 
 The vitest suites in `src/` render one screen against fixed props with
-`vi.mock("../lib/api")`. That leaves a seam nothing covered: **App deciding
+`vi.mock("../lib/api")`. That leaves a seam nothing covered: **the shell deciding
 what to invoke, what to re-read afterwards, and which screen to show for the
 result.** Everything here lives on that seam - boot resolution, screen
 handoffs, backend events arriving unprompted, a command rejecting.
@@ -21,13 +21,17 @@ handoffs, backend events arriving unprompted, a command rejecting.
 ## What it is not for
 
 - **The Rust backend.** Covered by the workspace crates' own integration
-  tests and, against real AI CLIs and a real relay, by `ci/e2e/run.sh`.
+  tests and, against real AI CLIs and a real relay, by `ci/e2e/run.sh`. For
+  the seam *between* the two - a click reaching a real command, and the
+  backend's own state deciding what the UI shows next - see `live/`, which
+  runs the same frontend against the real command table on all three OSes.
+  It has its own config (`playwright.live.config.ts`) and its own command,
+  `pnpm test:e2e:live`; `pnpm test:e2e` does not run it.
 - **Cross-browser rendering.** One Chromium project. The app ships in one
   webview per platform and none of them is Chromium; a matrix here would be
-  coverage of something we don't ship. `platform.spec.ts` covers what the app
-  *does* per platform (chrome, nouns, which controls exist) by faking
-  `app_platform`; how any of it paints in WKWebView, WebView2 or WebKitGTK is
-  not covered by anything.
+  coverage of something we don't ship. A spec covers what the app *does* per
+  platform by faking `app_platform` (`platform` in the boot patch); how any of
+  it paints in WKWebView, WebView2 or WebKitGTK is not covered by anything.
 - **Re-testing one screen's branches.** If it can be asserted by rendering a
   single component with props, it belongs in a `.test.tsx` next to that
   component - those run in a second and these don't.
@@ -50,21 +54,23 @@ signed-in OAuth account, an org picked, routing off, three installed tools -
 and returns an `App` handle:
 
 ```ts
-test("turning routing on trusts the CA in the same step", async ({ boot }) => {
-  const app = await boot({ runningAgents: 0 });
+test("a connected app reads Protected only once the sweep confirms it", async ({ boot }) => {
+  const app = await boot({
+    proxy: { running: true, ca_trusted: true },
+    tools: [connectedCodex],
+  });
 
-  await app.routingSwitch.click();
-
-  expect((await app.state()).proxy.ca_trusted).toBe(true);
+  await expect(app.page.getByText("Protected", { exact: true })).toBeVisible();
+  await expect.poll(() => app.lastCall("routing_verdicts")).not.toBeNull();
 });
 ```
 
 - `app.state()` - the backend's state after whatever the UI just did.
 - `app.calls()` / `app.lastCall(cmd)` - what the frontend invoked, with args.
-- `app.emit(event, payload)` - push a backend event (`quit-requested`,
+- `app.emit(event, payload)` - push a backend event (`session-changed`,
   `proxy-state-changed`, `tauri://focus`) the way Rust does.
 - `app.patch(...)` - change backend state out of band, for what moves while
-  the popover is closed: a token expiring, the CLI enabling routing.
+  the window is in the background: a token expiring, the CLI enabling routing.
 - `failures: { command: "message" }` in the boot patch makes a command reject,
   which is how the error paths get tested.
 
