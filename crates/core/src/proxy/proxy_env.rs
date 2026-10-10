@@ -29,9 +29,10 @@
 //! is exactly what Linux has always done.
 //!
 //! There are two lists, not one. [`NO_PROXY_VALUE`] is what Gate means to keep
-//! off the engine and is what GNOME's `ignore-hosts` carries;
-//! [`ENV_NO_PROXY_VALUE`] is that list in a shape every client can parse, and
-//! is the one written into any process environment.
+//! off the engine: GNOME's `ignore-hosts` carries it, and [`no_proxy_exempts`]
+//! reads it to decide which hosts are local. [`ENV_NO_PROXY_VALUE`] is that
+//! list in a shape every client can parse, and is the base of every process
+//! environment Gate writes.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -69,9 +70,6 @@ use std::collections::BTreeMap;
 ///
 /// **Ignored is not the same as unparseable**, though, and an environment gets
 /// [`ENV_NO_PROXY_VALUE`] instead: `httpx` cannot read the IPv6 CIDRs at all.
-// Unused outside tests on macOS and Windows, where only GNOME's ignore list
-// (Linux) reads it - kept as the list `ENV_NO_PROXY_VALUE` is pinned to.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 fc00::/7,fe80::/10,.local,.ts.net,.internal";
@@ -88,10 +86,11 @@ fc00::/7,fe80::/10,.local,.ts.net,.internal";
 /// there: blind-tunnelled, uninspected, working while Gate runs. A bracketed
 /// address (`[fd00::1]`) fails the same way; a bare one (`::1`) is fine.
 ///
-/// Every environment Gate writes takes this: the shell export, Claude Code's
+/// Every environment Gate writes takes this: the shell export and Claude Code's
 /// settings (inherited by its Bash tool and stdio MCP servers, which is where
-/// the Python is) and Hermes' `.env`. Only GNOME's ignore list keeps the full
-/// list, and `httpx` never reads it.
+/// the Python is) as it stands, and Hermes' `.env` as its base, with the local
+/// addresses Hermes' config names added. Only GNOME's ignore list keeps the
+/// full list, and `httpx` never reads it.
 pub(crate) const ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 .local,.ts.net,.internal";
@@ -100,14 +99,60 @@ pub(crate) const ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 /// [`ENV_NO_PROXY_VALUE`]: the full list, IPv6 CIDRs and all.
 ///
 /// Frozen on purpose rather than derived from [`NO_PROXY_VALUE`]: it is what
-/// is on disk, and that does not change when the list next grows. Each
-/// integration's `status` reads exactly this value as its own stale write, so
-/// the startup reconcile rewrites it - which is the only thing that would on
+/// is on disk, and that does not change when the list next grows. Claude
+/// Code's `status` reads exactly this value as its own stale write, so the
+/// startup reconcile rewrites it - which is the only thing that would on
 /// Linux, where no quit sweep reconnects anything. Exactly this value and no
 /// other, so a `NO_PROXY` the user edited is never mistaken for Gate's.
+///
+/// Hermes does not need it by name: its `status` compares Gate's recorded
+/// line with what a connect would write now, and this value is one case of
+/// that.
 pub(crate) const LEGACY_ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 fc00::/7,fe80::/10,.local,.ts.net,.internal";
+
+/// Whether [`NO_PROXY_VALUE`] means `host` to be reached directly, read the way
+/// the clients that honour every entry read it: a name exactly, a `.suffix` as
+/// any name under it, a CIDR as any address inside it.
+///
+/// What the list *intends*, which is not what every client does: Python's
+/// `urllib` ignores the CIDR entries (see the note above), so a caller asking
+/// what a Python tool will actually bypass has to ask that question instead.
+/// Hermes uses this to find the addresses it must spell out for its own client.
+pub(crate) fn no_proxy_exempts(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    // An IPv4-mapped IPv6 address is the IPv4 address, for routing purposes.
+    let addr = host.parse::<std::net::IpAddr>().ok().map(|a| match a {
+        std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(a, std::net::IpAddr::V4),
+        v4 => v4,
+    });
+    NO_PROXY_VALUE.split(',').any(|entry| {
+        if let Some((net, bits)) = entry.split_once('/') {
+            let (Some(addr), Ok(net), Ok(bits)) =
+                (addr, net.parse::<std::net::IpAddr>(), bits.parse::<u32>())
+            else {
+                return false;
+            };
+            return match (addr, net) {
+                (std::net::IpAddr::V4(a), std::net::IpAddr::V4(n)) if bits <= 32 => {
+                    let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+                    u32::from(a) & mask == u32::from(n) & mask
+                }
+                (std::net::IpAddr::V6(a), std::net::IpAddr::V6(n)) if bits <= 128 => {
+                    let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+                    u128::from(a) & mask == u128::from(n) & mask
+                }
+                _ => false,
+            };
+        }
+        if entry.starts_with('.') {
+            host.ends_with(entry)
+        } else {
+            host == entry
+        }
+    })
+}
 
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set
@@ -421,6 +466,38 @@ mod tests {
             second.is_none(),
             "a re-enable must keep the original record, not overwrite it"
         );
+    }
+
+    #[test]
+    fn no_proxy_exempts_reads_names_suffixes_and_ranges() {
+        for host in [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "100.101.102.103",
+            "100.64.0.1",
+            "100.127.255.255",
+            "192.168.1.20",
+            "10.0.0.5",
+            "fd7a:115c:a1e0::1",
+            "model-box.tail1234.ts.net",
+            "nas.local",
+            "MODEL-BOX.TS.NET",
+            "::ffff:192.168.1.20",
+        ] {
+            assert!(no_proxy_exempts(host), "{host} should be exempt");
+        }
+        for host in [
+            "openrouter.ai",
+            "100.63.255.255",
+            "100.128.0.1",
+            "8.8.8.8",
+            "2001:4860::1",
+            "notlocal",
+            "ts.net.example.com",
+        ] {
+            assert!(!no_proxy_exempts(host), "{host} should not be exempt");
+        }
     }
 
     #[test]

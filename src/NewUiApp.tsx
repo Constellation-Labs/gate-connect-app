@@ -80,6 +80,7 @@ import {
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
   sectionStatus,
+  upstreamFix,
   verdictStatus,
   verdictsBySlug,
 } from "./lib/verdict";
@@ -2823,8 +2824,40 @@ export function NewUiApp() {
         );
       }
     }
+    // A provider Hermes owns being switched off is the other reason with a fix
+    // here: turning its domain on. Only when that IS the reason - the flag says
+    // the sweep found the tool routed and coverage is all that is wrong - and
+    // never for a drifted or failing Hermes, whose coverage can be short too.
+    const fix = app.status.uninspected
+      ? upstreamFix(tools.find((t) => t.slug === openTool)?.coverage)
+      : undefined;
+    if (fix) {
+      return (
+        <PaneNote
+          title={`${app.name} isn’t protected`}
+          body={detail}
+          action={{
+            label: fix.label,
+            busy: routingBusy,
+            onClick: () => void routing.enableHermesProviders(fix.slugs),
+          }}
+        />
+      );
+    }
     return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
-  }, [view, reopenAlert, paneNotice, paneWriteError, railApps, groups, routingBusy, routeMembers]);
+  }, [
+    view,
+    reopenAlert,
+    paneNotice,
+    paneWriteError,
+    railApps,
+    groups,
+    routingBusy,
+    routeMembers,
+    tools,
+    openTool,
+    routing.enableHermesProviders,
+  ]);
 
   const onMenuSelect = useCallback(
     (action: MenuAction) => {

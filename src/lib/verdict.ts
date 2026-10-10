@@ -1,5 +1,5 @@
 import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
-import { governingMembers } from "./groups";
+import { TOOL_MANAGED_DOMAINS, governingMembers } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
 
@@ -87,9 +87,8 @@ export function verdictStatus(
       // Only this arm. Every other state is already amber and already more
       // urgent than this: a drifted or unrouted tool has a bigger problem
       // than an uninspected provider, and stacking the two would bury it.
-      const uninspected = uninspectedHosts(opts.coverage);
-      if (uninspected)
-        return { kind: "not-protected", detail: `Routed, not inspected: ${uninspected}` };
+      const uninspected = uninspectedDetail(opts.coverage);
+      if (uninspected) return { kind: "not-protected", detail: uninspected, uninspected: true };
       return { kind: "protected" };
     }
     case "off":
@@ -107,21 +106,23 @@ export function verdictStatus(
 }
 
 /**
- * The hosts Gate is not looking at, all of them, or `undefined` when it is
+ * Why Gate is not looking at some of the hosts, or `undefined` when it is
  * looking at every one.
  *
- * Both halves of the coverage count. `unknown` is the irremediable one - no
- * catalog entry claims that host - and `switched_off` is a domain whose switch
- * is off, which AG-930's dialog offers to fix at the moment a tool is
- * connected. The row still has to say it, because the dialog fires once and
- * the switch can be flipped afterwards from somewhere else: removing and
- * re-trusting a certificate reset one to off hours after the fact, which is
- * how this was found.
+ * All four lists count. `local` is a tool on local models alone, switched on
+ * and sending Gate nothing; the backend lists them only then. `bypassed` is a
+ * host the tool's own NO_PROXY sends around Gate. `unknown` is the
+ * irremediable one - no catalog entry claims that host - and `switched_off` is
+ * a domain whose switch is off, which AG-930's dialog offers to fix at the
+ * moment a tool is connected. The row still has to say it, because the dialog
+ * fires once and the switch can be flipped afterwards from somewhere else:
+ * removing and re-trusting a certificate reset one to off hours after the
+ * fact, which is how this was found.
  *
  * Every host, not one plus a count: the rail prints no reason at all now, and
  * the pane card that does has the room.
  */
-function uninspectedHosts(
+function uninspectedDetail(
   coverage: UpstreamCoverage | null | undefined,
 ): string | undefined {
   if (!coverage) return undefined;
@@ -130,12 +131,59 @@ function uninspectedHosts(
   // a caller cannot name the same row twice or flip the same switch twice.
   // Naming hosts is right here: the pane already says the app, and the host
   // is the part the person recognises from their own config.
-  const hosts = [
-    ...coverage.switched_off.flatMap((entry) => entry.hosts),
-    ...coverage.unknown,
-  ];
-  if (hosts.length === 0) return undefined;
-  return hosts.join(", ");
+  //
+  // One sentence per list, not one list of hosts, because they have different
+  // remedies: a switched-off provider can be turned on (`upstreamFix`, or its
+  // own row), an unknown one is not fixable from here at all, and a local one
+  // needs nothing fixed. "Routed, not inspected" said all of them the same
+  // way, in plumbing words.
+  const off = coverage.switched_off.flatMap((entry) => entry.hosts);
+  const sentences: string[] = [];
+  if (off.length > 0) {
+    const whose =
+      coverage.switched_off.length === 1 ? "its provider is" : "their providers are";
+    sentences.push(`Gate can’t see requests to ${off.join(", ")} while ${whose} turned off.`);
+  }
+  if (coverage.unknown.length > 0) {
+    sentences.push(`Gate can’t inspect requests to ${coverage.unknown.join(", ")}.`);
+  }
+  // Not "can't inspect": Gate could, and a NO_PROXY setting sends the calls
+  // around it. "May", because a value the tool expands is read as a possible
+  // bypass rather than guessed at.
+  if (coverage.bypassed.length > 0) {
+    sentences.push(
+      `Requests to ${coverage.bypassed.join(", ")} may skip Gate: a NO_PROXY setting can send them straight there.`,
+    );
+  }
+  // Only sent when local hosts are all the tool calls: the switch is on and
+  // none of its traffic reaches Gate, so the row may not say Protected.
+  if (coverage.local.length > 0) {
+    sentences.push(`Requests to ${coverage.local.join(", ")} go straight there, not through Gate.`);
+  }
+  return sentences.length > 0 ? sentences.join(" ") : undefined;
+}
+
+/**
+ * The card's button for an uninspected app: the provider domains to turn on,
+ * or `undefined` when there is nothing the card may turn on.
+ *
+ * Only the domains a tool owns (`TOOL_MANAGED_DOMAINS`, OpenRouter): a connect
+ * already turns those on for Hermes without asking, and they have no row to do
+ * it from. A provider with its own row (OpenAI, Anthropic, ChatGPT) is not the
+ * card's to flip: enabling it intercepts and re-keys that provider's traffic
+ * for every client on the machine, which is a decision for that row. The
+ * detail line still names the host, so the person knows where to look.
+ */
+export function upstreamFix(
+  coverage: UpstreamCoverage | null | undefined,
+): { slugs: string[]; label: string } | undefined {
+  const slugs = (coverage?.switched_off ?? [])
+    .map((entry) => entry.slug)
+    .filter((slug) => TOOL_MANAGED_DOMAINS.includes(slug));
+  if (slugs.length === 0) return undefined;
+  // Singular: `TOOL_MANAGED_DOMAINS` is OpenRouter alone. A second entry is
+  // the moment to give this a plural.
+  return { slugs, label: "Turn it on" };
 }
 
 /** Index a sweep by slug, so a row can look itself up. */

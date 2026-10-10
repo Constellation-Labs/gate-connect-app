@@ -561,6 +561,14 @@ export type UpstreamCoverage = {
   defaulted: boolean;
   switched_off: HermesCoverageEntry[];
   unknown: string[];
+  /** Non-local hosts the tool's own NO_PROXY may send straight there, around
+   *  Gate: Gate sees none of those calls, whether or not a domain claims the
+   *  host. */
+  bypassed: string[];
+  /** Local hosts reached directly, listed only when they are every host the
+   *  tool calls: switched on, and protecting nothing. Beside an inspected
+   *  provider, or beside a gap in the other two lists, it is empty. */
+  local: string[];
 };
 
 /** The name this had when only the Hermes dialog read it. Kept so the AG-930

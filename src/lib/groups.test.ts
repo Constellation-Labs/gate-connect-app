@@ -392,7 +392,7 @@ describe("sectionStatus", () => {
     );
     const uninspected = {
       kind: "not-protected",
-      detail: "Routed, not inspected: bedrock-runtime.us-east-1.amazonaws.com",
+      detail: "Gate can’t inspect requests to bedrock-runtime.us-east-1.amazonaws.com.",
     };
     const apps = new Map([["claude-code", { status: uninspected } as never]]);
     expect(sectionStatus(claude, apps)).toEqual(uninspected);

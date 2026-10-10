@@ -485,6 +485,7 @@ export function useRouting({
       await recordAutoEnabledDomains(HERMES_SLUG, next).catch((e: unknown) => {
         logWarn(`routing: recording hermes' auto-enabled domains failed: ${describe(e)}`);
       });
+      return enabled;
     },
     [setProviderDomains],
   );
@@ -509,6 +510,41 @@ export function useRouting({
       });
     },
     [setProviderDomains],
+  );
+
+  /**
+   * The Hermes pane card's fix: turn on the provider domains Hermes owns that
+   * are switched off, at the person's click.
+   *
+   * Only `TOOL_MANAGED_DOMAINS`, the same set a connect turns on without
+   * asking (`hermesProviderDomains`), recorded as Hermes' the same way so
+   * turning Hermes off gives them back. A provider with its own row reaches
+   * every client on the machine, so this never flips one; the card has no
+   * button for those (`upstreamFix`).
+   */
+  const enableHermesProviders = useCallback(
+    async (slugs: string[]) => {
+      if (busy) return;
+      const mine = slugs.filter((slug) => TOOL_MANAGED_DOMAINS.includes(slug));
+      if (mine.length === 0) return;
+      setBusy(true);
+      try {
+        await ensureCaTrusted();
+        await ensureEngineRunning();
+        for (const domain of await enableProviderDomains(mine)) {
+          track("domain_toggled", { domain, routed: true });
+          noteToolConnected(domain, "domain");
+        }
+      } catch (e) {
+        if (!(e instanceof Declined)) {
+          trackError(e, "provider_toggle", { domain: mine.join(","), routed: true });
+          onError?.(e, "domain");
+        }
+      } finally {
+        await settle();
+      }
+    },
+    [busy, ensureCaTrusted, ensureEngineRunning, enableProviderDomains, settle, onError],
   );
 
   /**
@@ -851,6 +887,7 @@ export function useRouting({
     setAppRouted,
     setFamilyRouted,
     setDomainRouted,
+    enableHermesProviders,
     setEnvExport,
     untrustCa,
     writeFailures,

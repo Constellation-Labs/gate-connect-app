@@ -129,12 +129,14 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     defaulted: false,
     switched_off: [],
     unknown: [],
+    bypassed: [],
+    local: [],
     ...over,
   });
   const covered = coverage();
   const on = () => verdict({ state: "on" });
 
-  it("says routed-not-inspected when Gate has no entry for the provider", () => {
+  it("says Gate cannot inspect a provider it has no entry for", () => {
     // The whole ticket. The sweep says "on" because the tool really is
     // pointed at Gate; what it cannot know is that the provider it points at
     // is one Gate never intercepts, so every request tunnels past unread.
@@ -144,7 +146,8 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
       }),
     ).toEqual({
       kind: "not-protected",
-      detail: "Routed, not inspected: bedrock-runtime.us-east-1.amazonaws.com",
+      detail: "Gate can’t inspect requests to bedrock-runtime.us-east-1.amazonaws.com.",
+      uninspected: true,
     });
   });
 
@@ -157,7 +160,11 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
       verdictStatus(on(), {
         coverage: coverage({ switched_off: [off("openrouter", "openrouter.ai")] }),
       }),
-    ).toEqual({ kind: "not-protected", detail: "Routed, not inspected: openrouter.ai" });
+    ).toEqual({
+      kind: "not-protected",
+      detail: "Gate can’t see requests to openrouter.ai while its provider is turned off.",
+      uninspected: true,
+    });
   });
 
   it("names every host, because the pane card has the room", () => {
@@ -170,7 +177,35 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
       }),
     ).toEqual({
       kind: "not-protected",
-      detail: "Routed, not inspected: openrouter.ai, api.groq.com, api.together.xyz",
+      detail:
+        "Gate can’t see requests to openrouter.ai while its provider is turned off. " +
+        "Gate can’t inspect requests to api.groq.com, api.together.xyz.",
+      uninspected: true,
+    });
+  });
+
+  it("is not Protected when the tool only reaches local hosts, which bypass Gate", () => {
+    // Switched on, and none of its traffic reaches Gate: a Hermes on a model
+    // in a VM over Tailscale, and nothing else.
+    expect(
+      verdictStatus(on(), { coverage: coverage({ local: ["100.101.102.103", "llm.local"] }) }),
+    ).toEqual({
+      kind: "not-protected",
+      detail: "Requests to 100.101.102.103, llm.local go straight there, not through Gate.",
+      uninspected: true,
+    });
+  });
+
+  it("says a host the tool's NO_PROXY sends around Gate may skip it", () => {
+    // Not "can't inspect": Gate has a domain for api.anthropic.com, and the
+    // reason it sees nothing is the tool's own NO_PROXY.
+    expect(
+      verdictStatus(on(), { coverage: coverage({ bypassed: ["api.anthropic.com"] }) }),
+    ).toEqual({
+      kind: "not-protected",
+      detail:
+        "Requests to api.anthropic.com may skip Gate: a NO_PROXY setting can send them straight there.",
+      uninspected: true,
     });
   });
 

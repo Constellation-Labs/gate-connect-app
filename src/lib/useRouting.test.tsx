@@ -797,15 +797,38 @@ describe("useRouting: remembering a failed write", () => {
  * enabled themselves.
  */
 describe("useRouting: Hermes and the provider it talks to", () => {
-  const covered = { defaulted: false, switched_off: [], unknown: [] };
+  const covered = { defaulted: false, switched_off: [], unknown: [], bypassed: [], local: [] };
   const off = {
     defaulted: false,
     switched_off: [{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }],
     unknown: [],
+    bypassed: [],
+    local: [],
   };
 
   beforeEach(() => {
     (hermesUpstreamCoverage as Mock).mockResolvedValue(covered);
+  });
+
+  it("turns nothing on from the pane card when the certificate prompt is declined", async () => {
+    // The card's button goes through the same trust gate as every enable.
+    // Declining is an answer, not a failure: no write, no error, and the
+    // window is clickable again.
+    const { api, onError } = harness(
+      [tool("hermes", { kind: "connected" })],
+      proxyState({ ca_trusted: false }),
+    );
+
+    await act(async () => {
+      void api.current!.enableHermesProviders(["openrouter"]);
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+    });
+
+    expect(proxySetDomain).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(api.current!.busy).toBe(false);
   });
 
   it("turns the provider on without asking, after the connect", async () => {
@@ -991,8 +1014,11 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     // Bedrock, or a self-hosted endpoint. No switch fixes it, so there is
     // nothing to turn on. `Coverage` keeps these in `unknown`.
     (hermesUpstreamCoverage as Mock).mockResolvedValue({
+      defaulted: false,
       switched_off: [],
       unknown: ["bedrock-runtime.us-east-1.amazonaws.com"],
+      bypassed: [],
+      local: [],
     });
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
 
