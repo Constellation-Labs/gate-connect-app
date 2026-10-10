@@ -36,6 +36,9 @@ pub mod gateway_api;
 pub mod keychain;
 /// A diagnostic log for local and staging builds. Off in production.
 pub mod logging;
+/// The gateway's harness manifest, vendored, and the checks that hold this app's
+/// harness lists to it.
+pub mod manifest;
 pub mod oauth;
 pub mod org;
 /// Non-secret user choices from Settings, defaulting to on.

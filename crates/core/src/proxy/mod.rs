@@ -2299,22 +2299,16 @@ fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str
         return Some(slug);
     }
     let ua = raw_ua.map(|v| v.to_ascii_lowercase());
-    // `claude-cli` is Claude Code's agent; the rest identify themselves by name.
-    // The slugs come off the enum rather than being retyped beside the needle:
-    // this function's doc says the two vocabularies "coincide by construction",
-    // and three hand-typed literals were what made that false the last time a
-    // wire name and a slug came apart.
+    if ua
+        .as_deref()
+        .is_some_and(|ua| CODEX_APP_AGENTS.iter().any(|prefix| ua.starts_with(prefix)))
+    {
+        return None;
+    }
     if let Some(slug) = ua.as_deref().and_then(|ua| {
-        use crate::taxonomy::Client;
-        [
-            ("claude-cli", Client::ClaudeCode),
-            ("codex", Client::Codex),
-            ("opencode", Client::OpenCode),
-            ("openclaw", Client::OpenClaw),
-            ("hermes", Client::Hermes),
-        ]
-        .into_iter()
-        .find_map(|(needle, client)| ua.contains(needle).then_some(client.slug()))
+        CLIENT_TOOL_NEEDLES
+            .iter()
+            .find_map(|(needle, client)| ua.contains(needle).then_some(client.slug()))
     }) {
         return Some(slug);
     }
@@ -2335,6 +2329,36 @@ fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str
     // it on this side; `the_originator_header_identifies_the_app` on the other.
     chatgpt_app(headers, domain).or_else(|| openai_web(headers, domain))
 }
+
+/// The `User-Agent` needles [`client_tool`] matches, lower-cased, each with the
+/// client it names. `claude-cli` is Claude Code's agent; the rest identify
+/// themselves by name. The slugs come off the enum rather than being retyped
+/// beside the needle: [`client_tool`]'s doc says the two vocabularies "coincide
+/// by construction", and three hand-typed literals were what made that false
+/// the last time a wire name and a slug came apart.
+///
+/// A const rather than a literal inside the function so the vendored-manifest
+/// drift test (`crate::manifest`) reads the same table that stamps:
+/// renaming a slug here without the manifest fails the build.
+pub(crate) const CLIENT_TOOL_NEEDLES: [(&str, crate::taxonomy::Client); 5] = [
+    ("claude-cli", crate::taxonomy::Client::ClaudeCode),
+    ("codex", crate::taxonomy::Client::Codex),
+    ("opencode", crate::taxonomy::Client::OpenCode),
+    ("openclaw", crate::taxonomy::Client::OpenClaw),
+    ("hermes", crate::taxonomy::Client::Hermes),
+];
+
+/// The Codex desktop app's own agents, lower-cased prefixes. Both contain the
+/// `codex` needle, and stamping them `codex` filed the desktop app's traffic
+/// under the CLI: the gateway prefers `x-gate-client` over its own detector,
+/// which names these `codex-desktop`. They are left unstamped outright, before
+/// the OpenAI checks: the app sends `originator` on chatgpt.com, so falling
+/// through would stamp it `chatgpt` and file it under the ChatGPT desktop app
+/// instead. The blank hands it to the gateway's detector, which is the honest
+/// answer this function prefers to a wrong slug. `codex-mcp-client` is the
+/// desktop app's MCP client, captured beside its `Codex Desktop/` builds; the
+/// CLI sends `codex_cli_rs/`, which still matches.
+const CODEX_APP_AGENTS: [&str; 2] = ["codex desktop/", "codex-mcp-client/"];
 
 /// Whether the ChatGPT desktop app sent this.
 ///
@@ -5532,6 +5556,19 @@ mod tests {
             // now prefers `x-gate-client` - which is to say, this side's answer
             // - over its own detector.
             ("openclaw/1.4.0", Some("openclaw"), None),
+            // The Codex desktop app, captured verbatim. Both carry the `codex`
+            // needle and neither is the CLI: left unstamped here, the gateway's
+            // own detector names them `codex-desktop`.
+            (
+                "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
+                None,
+                Some("codex-desktop"),
+            ),
+            (
+                "codex-mcp-client/0.148.0-alpha.9",
+                None,
+                Some("codex-desktop"),
+            ),
             // Not agents. A wrong slug here would file somebody else's traffic
             // under a tool's name in the very view a user opens to find out
             // what their machine is doing, which is worse than the honest
@@ -5566,6 +5603,18 @@ mod tests {
         assert_eq!(tool("opencode/0.4.2"), Some("opencode"));
         // Case is the tool's business, not ours: one tool has to be one series.
         assert_eq!(tool("Codex/1.0"), Some("codex"));
+        // The three codex-like agents: the CLI is `codex`, the desktop app's
+        // two agents are not. Stamping them `codex` filed the app under the
+        // CLI, since the gateway trusts this stamp over its own detector.
+        assert_eq!(
+            tool("codex_cli_rs/0.55.0 (Mac OS 15.0.0; arm64)"),
+            Some("codex")
+        );
+        assert_eq!(
+            tool("Codex Desktop/26.825.32147 (Windows NT 10.0; x64)"),
+            None
+        );
+        assert_eq!(tool("codex-mcp-client/0.148.0-alpha.9"), None);
 
         // No agent, or one we don't recognise, is unattributed - never a guess.
         // A wrong slug would put one tool's traffic under another's name in the
@@ -5842,6 +5891,21 @@ mod tests {
         // Both entries on that host carry app traffic under different URL
         // splits, so both must answer.
         assert_eq!(client_tool(&h, Some("chatgpt")), Some("chatgpt"));
+
+        // The Codex desktop app sends `originator` too, and is not the ChatGPT
+        // app: it stays unstamped on these entries, for the gateway to name.
+        for ua in [
+            "Codex Desktop/26.825.32147 (Windows NT 10.0; x64)",
+            "codex-mcp-client/0.148.0-alpha.9",
+        ] {
+            let mut codex_app = h.clone();
+            codex_app.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            assert_eq!(client_tool(&codex_app, Some("chatgpt-apps")), None, "{ua}");
+            assert_eq!(client_tool(&codex_app, Some("chatgpt")), None, "{ua}");
+        }
     }
 
     /// The same header on another vendor's entry is not believed.
