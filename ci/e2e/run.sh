@@ -166,6 +166,17 @@ export GATE_PROXY_DEBUG=1
 
 PASS=0
 FAIL=0
+# Every `run_tool` that passed, as `label/mode`. Read by the must-have-run check
+# at the end of the script, which is what makes a skip a failure.
+RAN=""
+# Every `run_tool` that started, passed or not, as `label/mode`. A harness that
+# started and failed has already counted its own FAIL, so the must-have-run
+# check leaves it alone rather than counting it twice.
+ATTEMPTED=""
+# Auth modes whose whole phase was abandoned after counting one FAIL for it (the
+# OAuth login failing). Their harnesses never start, and the must-have-run check
+# does not add a FAIL per tool on top of that one.
+ABORTED_MODES=""
 
 # Launch a tool (output to a file, never the step's pipe) and poll the capture
 # until the expected request shows up or we time out. We deliberately do NOT
@@ -1096,6 +1107,7 @@ run_tool() {
     shift
   done
   [ "$1" = "--" ] && shift
+  ATTEMPTED="$ATTEMPTED $label/$mode"
   echo "::group::$label ($mode)"
   TOOL_OUT="$WORK/$slug-$mode.out" # per-tool/phase so the diagnostics step keeps each one
   : > "$CAPTURE"
@@ -1115,6 +1127,7 @@ run_tool() {
       "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context" "$expected_client"; then
       echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
+      RAN="$RAN $label/$mode"
     else
       echo "FAIL: $label did not reach the gateway as expected ($mode)"
       FAIL=$((FAIL + 1))
@@ -1157,8 +1170,9 @@ run_relay_tools() {
 
   # --- Codex: apikey mode → relay base + /v1, POSTs /v1/responses. Talks to the
   #     relay over plaintext http now, so the old custom-CA problem
-  #     (openai/codex#9526) no longer applies. Guarded on install - codex isn't
-  #     on every runner in the matrix.
+  #     (openai/codex#9526) no longer applies. Installed on every runner and
+  #     expected everywhere, so the install guard is not a sanctioned skip: a
+  #     missing CLI falls through to the must-have-run FAIL at the end.
   if command -v codex >/dev/null 2>&1; then
     mkdir -p "$HOME/.codex"
     printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
@@ -1358,6 +1372,7 @@ else
   echo "::endgroup::"
   echo "FAIL: oauth login did not complete; skipping the OAuth phase"
   FAIL=$((FAIL + 1))
+  ABORTED_MODES="$ABORTED_MODES oauth"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1384,6 +1399,79 @@ else
   sed 's/^/    /' "$AUDIT_LOG" 2>/dev/null || true
   FAIL=$((FAIL + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# Must-have-run: every harness this OS is expected to cover has to have PASSED,
+# in both auth modes. Each tool above guards itself (CLI not installed, no model
+# in the catalog, engine not up) and skips with a notice, which is right for a
+# diagnosis and wrong for a required check: a PR that kept the engine from
+# starting would skip claude-code, openclaw and hermes and stay green. Here a
+# skip becomes a FAIL naming the tool.
+#
+# The one declared absence is Hermes on Windows, which the workflow does not
+# install (install.ps1 has no browser-skip switch); the gateway manifest
+# publishes the same gap as an exception. A new absence goes here, with its
+# reason, or it fails.
+# ---------------------------------------------------------------------------
+EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw hermes"
+[ "$OS" = "Windows" ] && EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw"
+# A harness that started and failed, or a mode whose login failed, has already
+# counted its FAIL above; only one that never reached `run_tool` is counted here.
+for mode in api-key oauth; do
+  case " $ABORTED_MODES " in *" $mode "*) continue ;; esac
+  for tool in $EXPECTED_TOOLS; do
+    case " $RAN " in *" $tool/$mode "*) continue ;; esac
+    case " $ATTEMPTED " in *" $tool/$mode "*) continue ;; esac
+    echo "FAIL: $tool never ran in $mode mode on $OS (skipped by its guard)"
+    FAIL=$((FAIL + 1))
+  done
+done
+
+# ---------------------------------------------------------------------------
+# Result file: the same per-tool, per-mode outcome as above, as JSON the
+# workflow uploads as an artifact. It is the stable contract for anything that
+# reads these runs (the gateway's `last_verified` refresh), so readers never
+# parse log wording. Shape:
+#   {"os":"Linux","commit":"<sha>","ref":"<ref>","finished_at":"<UTC>",
+#    "passed":true,"harnesses":{"codex":{"api-key":"pass","oauth":"pass"},...}}
+# A tool that never passed in a mode is "fail", whatever the reason.
+#
+# `os` is `uname`'s reading - Linux, Darwin or Windows - not the matrix label the
+# artifact is named after (ubuntu-22.04, macos-latest, windows-latest).
+# `passed` is the whole run, not the harness map: it is false when any check in
+# this script failed, the audit and restore checks included, so it can be false
+# while every harness reads "pass".
+#
+# Readers must trust only runs triggered by a push to main. The workflow also
+# runs on pull_request, where `commit` is GitHub's synthetic merge SHA, `ref` is
+# refs/pull/<n>/merge, and the PR's own copy of this script is what wrote the
+# file - so a PR run proves nothing about any released commit.
+# ---------------------------------------------------------------------------
+RESULT="$WORK/real-tools-result.json"
+# Git allows `"` in a branch name (a workflow_dispatch run can carry one), and
+# `\` would need escaping too were it ever allowed, so escape both for JSON.
+ref_json="${GITHUB_REF:-}"
+ref_json="${ref_json//\\/\\\\}"
+ref_json="${ref_json//\"/\\\"}"
+{
+  printf '{"os":"%s","commit":"%s","ref":"%s","finished_at":"%s","passed":%s,"harnesses":{' \
+    "$OS" "${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)}" "$ref_json" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAIL" -eq 0 ] && echo true || echo false)"
+  sep=""
+  for tool in $EXPECTED_TOOLS; do
+    printf '%s"%s":{' "$sep" "$tool"
+    msep=""
+    for mode in api-key oauth; do
+      case " $RAN " in *" $tool/$mode "*) r="pass" ;; *) r="fail" ;; esac
+      printf '%s"%s":"%s"' "$msep" "$mode" "$r"
+      msep=","
+    done
+    printf '}'
+    sep=","
+  done
+  printf '}}\n'
+} > "$RESULT"
+echo "result: $(cat "$RESULT")"
 
 ckpt "all phases finished; reached end of script"
 echo "----------------------------------------"
