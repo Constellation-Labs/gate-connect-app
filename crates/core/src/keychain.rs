@@ -266,19 +266,56 @@ pub fn get_cached(service: &str, account: &str, witness: &str) -> Result<Option<
     Ok(value)
 }
 
+/// Held for the whole of every [`get`], [`set`] and [`delete`]: one secret-store
+/// operation at a time in this process.
+///
+/// Two reasons, both seen on a real machine. The macOS `SecKeychain` API
+/// deadlocks when one thread deletes an item while another looks the same item
+/// up: the delete holds the keychain's lock and waits for the item's, the
+/// lookup holds the item's and waits for the keychain's. A sample of a hung app
+/// after a reboot showed exactly that, between two refreshes storing the
+/// renewed session at once, with sixteen more threads queued behind them -
+/// blank windows, no proxy, nothing logged. And one logical secret is several
+/// entries (`set` is a delete and then a write per chunk), so two writers
+/// interleaving, or a reader between them, can leave or see a bundle with
+/// chunks missing.
+///
+/// Reads mostly come from [`get_cached`], which only takes this on a miss.
+/// Survives poisoning: a panic in one caller must not shut every later one out
+/// of the store.
+static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+fn store_lock() -> std::sync::MutexGuard<'static, ()> {
+    STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Delete the secret at `(service, account)`, whether stored as a single entry
 /// or a chunk manifest plus its chunks. Returns whether anything was present.
 ///
+/// The manifest goes first, the mirror of `set` writing it last. A delete cut
+/// short - a force-quit, a failed entry - then leaves no secret rather than a
+/// manifest naming chunks that are gone. That one never healed: every read
+/// failed with "chunk i of n missing", which reads as the store being
+/// unavailable, so the app neither signed the user out nor asked them to sign
+/// in.
+///
+/// The chunks then go last to first, so a delete cut short among them leaves a
+/// run starting at chunk 0, which is what the sweep below finds next time. In
+/// ascending order it would leave a run starting past 0, behind a gap the sweep
+/// stops at.
+///
 /// Also deletes chunks no manifest names: what a chunked [`set`] leaves when it
-/// is cut short after some chunks and before the manifest. Those hold pieces of
-/// the secret - for the OAuth bundle, of its refresh token - and before this a
-/// sign-out left them in the store for good, since only a manifest led here.
+/// is cut short after some chunks and before the manifest, or what a delete cut
+/// short leaves as above. Those hold pieces of the secret - for the OAuth
+/// bundle, of its refresh token - and before this a sign-out left them in the
+/// store for good, since only a manifest led here.
 fn remove(service: &str, account: &str) -> Result<bool> {
     let named = get_raw(service, account)?
         .as_deref()
         .and_then(parse_manifest)
         .unwrap_or(0);
-    for i in 0..named {
+    let removed = delete_raw(service, account)?;
+    for i in (0..named).rev() {
         delete_raw(service, &chunk_account(account, i))?;
     }
     // Logged rather than returned: the sweep looks up an entry nothing should
@@ -289,7 +326,7 @@ fn remove(service: &str, account: &str) -> Result<bool> {
             "keychain: sweeping unnamed chunks of {service}/{account} failed: {e:#}"
         ));
     }
-    delete_raw(service, account)
+    Ok(removed)
 }
 
 /// Delete chunk entries from `from` up to the first one that is absent.
@@ -306,6 +343,7 @@ fn remove_unnamed_chunks(service: &str, account: &str, from: usize) -> Result<()
 }
 
 pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
+    let _one = store_lock();
     // Invalidated at BOTH ends, and the second one is the load-bearing half: a
     // reader that samples the epoch *after* this first call sees it hold steady
     // across the torn store below, and would cache what it read there for as
@@ -355,6 +393,7 @@ pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
 }
 
 pub fn get(service: &str, account: &str) -> Result<Option<String>> {
+    let _one = store_lock();
     let Some(value) = get_raw(service, account)? else {
         return Ok(None);
     };
@@ -372,6 +411,7 @@ pub fn get(service: &str, account: &str) -> Result<Option<String>> {
 }
 
 pub fn delete(service: &str, account: &str) -> Result<bool> {
+    let _one = store_lock();
     invalidate_cache();
     let removed = remove(service, account)?;
     invalidate_cache();

@@ -152,6 +152,22 @@ fn chunks_no_manifest_names_are_never_left_behind() {
         "delete must remove orphans past the manifest's last chunk"
     );
 
+    // A delete cut short among the chunks leaves what the next one sweeps. The
+    // chunks go last to first, so a directory where chunk 1's file goes stops
+    // the delete with only chunk 0 left: a run from 0 the sweep reaches. Going
+    // first to last would leave chunks 2 and 3 behind a gap at 0.
+    keychain::set(SERVICE, ACCOUNT, &large).unwrap();
+    std::fs::remove_file(chunk_path(&dir, 1)).unwrap();
+    std::fs::create_dir(chunk_path(&dir, 1)).unwrap();
+    assert!(keychain::delete(SERVICE, ACCOUNT).is_err());
+    std::fs::remove_dir(chunk_path(&dir, 1)).unwrap();
+    assert!(!keychain::delete(SERVICE, ACCOUNT).unwrap());
+    assert_eq!(
+        entry_files(&dir),
+        0,
+        "a delete cut short among the chunks must leave a run the next one sweeps"
+    );
+
     std::env::remove_var("GATE_CONNECT_TEST_SECRETS");
     let _ = std::fs::remove_dir_all(&dir);
 }
