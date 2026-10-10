@@ -6603,7 +6603,8 @@ pub fn run() {
                         }
                     }
                     // `session_reading` silently refreshes a stale token
-                    // (persisting it) and is `Live` only for a usable session;
+                    // (persisting it, or holding it in memory when the store
+                    // refuses the write) and is `Live` only for a usable session;
                     // push its token into the running engine (a no-op when
                     // routing is off). `SignedOut` pushes "": the engine then
                     // refuses routed requests as signed out - an OAuth account

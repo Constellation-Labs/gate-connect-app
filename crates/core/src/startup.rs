@@ -77,8 +77,10 @@ pub fn refresh_session() -> SessionVerdict {
                     _ => "gateway rejected the stored OAuth session; forcing a refresh".to_string(),
                 });
                 return match reverify_session() {
-                    // `force_refresh` stored the new bundle, so the engine
-                    // seeds itself from it below like any healthy start.
+                    // `force_refresh` stored the new bundle, or kept it in
+                    // memory when the store refused it, and `live_session`
+                    // serves it either way, so the engine seeds itself from it
+                    // below like any healthy start.
                     Recheck::Recovered(_) => SessionVerdict::Healthy,
                     // Already recorded via `mark_session_rejected`.
                     Recheck::Dead => {
@@ -187,8 +189,8 @@ pub fn reverify_session() -> Recheck {
             return Recheck::Unchanged;
         }
     };
-    // The forced refresh stored a bundle of its own: that one is what the
-    // probe judges.
+    // The forced refresh replaced the bundle, in the store or in memory: that
+    // one is what the probe judges.
     let judged = oauth::session_generation();
     let Ok(Some(gateway)) = account::load_base_url() else {
         return Recheck::Unchanged;
@@ -203,7 +205,7 @@ pub fn reverify_session() -> Recheck {
             dead_unless_replaced(judged)
         }
         // Unreachable or a non-auth error: no verdict. The forced refresh
-        // still happened and its token is stored, so a caller that re-seeds
+        // still happened and its token is what `live_session` serves now, so a caller that re-seeds
         // routing on `Recovered` simply doesn't - the next 30s tick picks the
         // new token up through `live_session` anyway.
         org::SessionProbe::Unavailable => Recheck::Unchanged,
