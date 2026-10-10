@@ -6,10 +6,12 @@ name: E2E (real tools)
 # one headless request, and the relay injects the Gate credential + forwards over
 # TLS to a local HTTPS mock gateway. Runs twice - once signed in with an API key
 # (asserts X-Gate-Api-Key) and once via OAuth (asserts X-Gate-Authorization +
-# X-Gate-Org-Id) - since both auth modes must keep working. Depends on
-# third-party CLIs whose flags and auth shapes drift, so it is NOT a required
-# check (don't gate merges on it). Each tool fails independently and the
-# captured-request assertion is the source of truth.
+# X-Gate-Org-Id) - since both auth modes must keep working. The third-party CLIs
+# are pinned below so their drift cannot move this check on a PR that did not
+# bump them, and run.sh fails any expected harness that did not pass, so a skip
+# cannot pass for green: that is what makes it fit to be a required check. Each
+# tool fails independently and the captured-request assertion is the source of
+# truth.
 on:
   pull_request:
   push:
@@ -111,6 +113,10 @@ jobs:
         id: e2e
         shell: bash
         timeout-minutes: 8
+        # Claude Code's background auto-updater could replace the pinned global
+        # install mid-job; keep the version this run tests the one pinned above.
+        env:
+          DISABLE_AUTOUPDATER: 1
         run: bash ci/e2e/run.sh
 
       # run.sh writes the per-tool outcome as JSON; keep it on the run so the

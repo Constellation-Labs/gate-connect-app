@@ -169,6 +169,14 @@ FAIL=0
 # Every `run_tool` that passed, as `label/mode`. Read by the must-have-run check
 # at the end of the script, which is what makes a skip a failure.
 RAN=""
+# Every `run_tool` that started, passed or not, as `label/mode`. A harness that
+# started and failed has already counted its own FAIL, so the must-have-run
+# check leaves it alone rather than counting it twice.
+ATTEMPTED=""
+# Auth modes whose whole phase was abandoned after counting one FAIL for it (the
+# OAuth login failing). Their harnesses never start, and the must-have-run check
+# does not add a FAIL per tool on top of that one.
+ABORTED_MODES=""
 
 # Launch a tool (output to a file, never the step's pipe) and poll the capture
 # until the expected request shows up or we time out. We deliberately do NOT
@@ -1099,6 +1107,7 @@ run_tool() {
     shift
   done
   [ "$1" = "--" ] && shift
+  ATTEMPTED="$ATTEMPTED $label/$mode"
   echo "::group::$label ($mode)"
   TOOL_OUT="$WORK/$slug-$mode.out" # per-tool/phase so the diagnostics step keeps each one
   : > "$CAPTURE"
@@ -1161,8 +1170,9 @@ run_relay_tools() {
 
   # --- Codex: apikey mode → relay base + /v1, POSTs /v1/responses. Talks to the
   #     relay over plaintext http now, so the old custom-CA problem
-  #     (openai/codex#9526) no longer applies. Guarded on install - codex isn't
-  #     on every runner in the matrix.
+  #     (openai/codex#9526) no longer applies. Installed on every runner and
+  #     expected everywhere, so the install guard is not a sanctioned skip: a
+  #     missing CLI falls through to the must-have-run FAIL at the end.
   if command -v codex >/dev/null 2>&1; then
     mkdir -p "$HOME/.codex"
     printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
@@ -1358,6 +1368,7 @@ else
   echo "::endgroup::"
   echo "FAIL: oauth login did not complete; skipping the OAuth phase"
   FAIL=$((FAIL + 1))
+  ABORTED_MODES="$ABORTED_MODES oauth"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1400,15 +1411,15 @@ fi
 # ---------------------------------------------------------------------------
 EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw hermes"
 [ "$OS" = "Windows" ] && EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw"
+# A harness that started and failed, or a mode whose login failed, has already
+# counted its FAIL above; only one that never reached `run_tool` is counted here.
 for mode in api-key oauth; do
+  case " $ABORTED_MODES " in *" $mode "*) continue ;; esac
   for tool in $EXPECTED_TOOLS; do
-    case " $RAN " in
-      *" $tool/$mode "*) ;;
-      *)
-        echo "FAIL: $tool never passed in $mode mode on $OS (skipped or not run)"
-        FAIL=$((FAIL + 1))
-        ;;
-    esac
+    case " $RAN " in *" $tool/$mode "*) continue ;; esac
+    case " $ATTEMPTED " in *" $tool/$mode "*) continue ;; esac
+    echo "FAIL: $tool never ran in $mode mode on $OS (skipped by its guard)"
+    FAIL=$((FAIL + 1))
   done
 done
 
@@ -1420,11 +1431,27 @@ done
 #   {"os":"Linux","commit":"<sha>","ref":"<ref>","finished_at":"<UTC>",
 #    "passed":true,"harnesses":{"codex":{"api-key":"pass","oauth":"pass"},...}}
 # A tool that never passed in a mode is "fail", whatever the reason.
+#
+# `os` is `uname`'s reading - Linux, Darwin or Windows - not the matrix label the
+# artifact is named after (ubuntu-22.04, macos-latest, windows-latest).
+# `passed` is the whole run, not the harness map: it is false when any check in
+# this script failed, the audit and restore checks included, so it can be false
+# while every harness reads "pass".
+#
+# Readers must trust only runs triggered by a push to main. The workflow also
+# runs on pull_request, where `commit` is GitHub's synthetic merge SHA, `ref` is
+# refs/pull/<n>/merge, and the PR's own copy of this script is what wrote the
+# file - so a PR run proves nothing about any released commit.
 # ---------------------------------------------------------------------------
 RESULT="$WORK/real-tools-result.json"
+# Git allows `"` in a branch name (a workflow_dispatch run can carry one), and
+# `\` would need escaping too were it ever allowed, so escape both for JSON.
+ref_json="${GITHUB_REF:-}"
+ref_json="${ref_json//\\/\\\\}"
+ref_json="${ref_json//\"/\\\"}"
 {
   printf '{"os":"%s","commit":"%s","ref":"%s","finished_at":"%s","passed":%s,"harnesses":{' \
-    "$OS" "${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)}" "${GITHUB_REF:-}" \
+    "$OS" "${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)}" "$ref_json" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAIL" -eq 0 ] && echo true || echo false)"
   sep=""
   for tool in $EXPECTED_TOOLS; do
