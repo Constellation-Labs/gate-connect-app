@@ -716,6 +716,44 @@ fn written_ids(settings: &Map<String, Value>) -> Option<Vec<String>> {
     )
 }
 
+/// The Gate model Claude Code is running on, while it is connected on Gate
+/// models; `None` otherwise, including when `settings.json` cannot be read.
+///
+/// For the engine, which moves the desktop Code tab onto Gate models only while
+/// this answers (`code_tab_gate_models` in `proxy::engine`) and asks once per
+/// request. So the reading is cached on the file's modified time and length,
+/// the way `preferences` caches its own file and for the same reason: a stat is
+/// cheap and cannot go stale, and on Linux the engine runs in a daemon that no
+/// write from the GUI or the CLI would otherwise refresh.
+pub fn applied_gate_model() -> Option<String> {
+    // The path is part of the stamp: `CLAUDE_CONFIG_DIR` can move the file,
+    // and two files with one mtime and length are not one reading.
+    type Stamp = (PathBuf, Option<(std::time::SystemTime, u64)>);
+    static CACHE: std::sync::RwLock<Option<(Stamp, Option<String>)>> = std::sync::RwLock::new(None);
+    let path = settings_path().ok()?;
+    let meta = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| Some((m.modified().ok()?, m.len())));
+    let stamp: Stamp = (path, meta);
+    if let Some((cached, model)) = CACHE.read().ok()?.as_ref() {
+        if *cached == stamp {
+            return model.clone();
+        }
+    }
+    let model =
+        load_settings()
+            .ok()
+            .flatten()
+            .and_then(|settings| match gate_model_state_of(&settings) {
+                Reading::Applied(model) => Some(model),
+                Reading::NotApplied | Reading::Drifted(_) => None,
+            });
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = Some((stamp, model.clone()));
+    }
+    model
+}
+
 /// Applied while Claude Code still sends to our route and starts on one of the
 /// set. An absent `model` is the picker's Default row, which resolves to the
 /// `ANTHROPIC_DEFAULT_MODEL` Gate pinned, so it counts.

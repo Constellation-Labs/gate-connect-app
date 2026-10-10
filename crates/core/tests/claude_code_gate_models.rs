@@ -316,3 +316,45 @@ fn app_default_after_an_in_set_pick_restores_the_users_model() {
     assert!(s["env"].get("ANTHROPIC_DEFAULT_HAIKU_MODEL").is_none());
     assert!(s["env"].get("ANTHROPIC_BASE_URL").is_none());
 }
+
+/// What the engine asks before moving a desktop Code tab turn onto Gate models
+/// (`code_tab_gate_models` in `proxy::engine`): the model Claude Code is on,
+/// only while it is connected on Gate models.
+///
+/// The disconnect half is the one that matters. The preference survives it -
+/// `gate_models_served_for` still answers - so a reading that followed the
+/// preference would bill the Code tab to Gate for a tool the user turned off.
+#[test]
+fn the_applied_model_follows_the_connection_not_the_preference() {
+    use gate_connect_core::integrations::claude_code::applied_gate_model;
+
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = setup();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    assert_eq!(applied_gate_model(), None, "never on Gate models");
+
+    choose_gate(&[OPUS, LUNA]);
+    assert_eq!(applied_gate_model(), None, "chosen, not yet connected");
+
+    claude.connect(&input()).unwrap();
+    assert_eq!(applied_gate_model().as_deref(), Some(OPUS));
+
+    // The user's `/model` pick inside the set, which the Code tab should start
+    // on too. Read through the cache, so this is also the file changing under
+    // a reading already taken.
+    let mut s = json();
+    s["model"] = Value::String(LUNA.into());
+    fs::write(
+        env::claude_code_settings_path().unwrap(),
+        serde_json::to_string_pretty(&s).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(applied_gate_model().as_deref(), Some(LUNA));
+
+    claude.disconnect().unwrap();
+    assert!(
+        preferences::gate_models_served_for("claude-code").is_some(),
+        "the preference outlives the switch"
+    );
+    assert_eq!(applied_gate_model(), None, "disconnected");
+}
