@@ -79,6 +79,37 @@ fn chunks_no_manifest_names_are_never_left_behind() {
     );
     std::fs::remove_dir(chunk_path(&dir, 2)).unwrap();
 
+    // And only those. Chunk 3 stands in for the chunks of a write that
+    // completed meanwhile, which a cleanup sweeping on past its own writes
+    // would delete. Chunk 2 is a dangling symlink rather than a directory:
+    // writing through it fails, but it deletes cleanly, so nothing but the
+    // cleanup's own bound stops a sweep from reaching chunk 3.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(dir.join("no-such-dir").join("x"), chunk_path(&dir, 2)).unwrap();
+        plant_orphans(&dir, 3..4);
+        assert!(keychain::set(SERVICE, ACCOUNT, &large).is_err());
+        assert!(!chunk_path(&dir, 0).exists() && !chunk_path(&dir, 1).exists());
+        assert!(
+            chunk_path(&dir, 3).exists(),
+            "a failed write's cleanup must not reach past the chunks it wrote"
+        );
+        std::fs::remove_file(chunk_path(&dir, 2)).unwrap();
+        std::fs::remove_file(chunk_path(&dir, 3)).unwrap();
+        assert_eq!(entry_files(&dir), 0);
+    }
+
+    // A sweep that errors does not fail the delete it is part of. A directory
+    // where chunk 0's file goes makes the sweep's first lookup an error.
+    keychain::set(SERVICE, ACCOUNT, "small").unwrap();
+    std::fs::create_dir(chunk_path(&dir, 0)).unwrap();
+    assert!(
+        keychain::delete(SERVICE, ACCOUNT).unwrap(),
+        "an erroring sweep must not fail a sign-out"
+    );
+    assert_eq!(keychain::get(SERVICE, ACCOUNT).unwrap(), None);
+    std::fs::remove_dir(chunk_path(&dir, 0)).unwrap();
+
     // A write killed outright cannot clean up after itself, so sign-out must.
     plant_orphans(&dir, 0..3);
     assert!(

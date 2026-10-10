@@ -281,7 +281,14 @@ fn remove(service: &str, account: &str) -> Result<bool> {
     for i in 0..named {
         delete_raw(service, &chunk_account(account, i))?;
     }
-    remove_unnamed_chunks(service, account, named)?;
+    // Logged rather than returned: the sweep looks up an entry nothing should
+    // name, and a store that errors on that lookup must not fail a sign-out or
+    // a write that would have gone through without it.
+    if let Err(e) = remove_unnamed_chunks(service, account, named) {
+        crate::logging::failure(&format!(
+            "keychain: sweeping unnamed chunks of {service}/{account} failed: {e:#}"
+        ));
+    }
     delete_raw(service, account)
 }
 
@@ -316,17 +323,30 @@ pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
     let chunks = split_chunks(value, MAX_CHUNK_CHARS);
     // Write the manifest last: until it exists a torn write reads as "no secret"
     // rather than a manifest pointing at chunks that aren't all there yet.
+    let mut wrote = 0;
     let written = chunks
         .iter()
-        .enumerate()
-        .try_for_each(|(i, chunk)| set_raw(service, &chunk_account(account, i), chunk))
+        .try_for_each(|chunk| {
+            set_raw(service, &chunk_account(account, wrote), chunk)?;
+            wrote += 1;
+            Ok(())
+        })
         .and_then(|()| set_raw(service, account, &format!("{CHUNK_MARKER}{}", chunks.len())));
     if let Err(e) = written {
         // Nothing names the chunks already written, so take them back now
         // rather than leave pieces of the secret for the next `remove` to find.
-        // Best effort: the write's own error is the one worth reporting, and a
-        // chunk this misses is still swept by that next `remove`.
-        let _ = remove_unnamed_chunks(service, account, 0);
+        // Exactly the ones this call wrote and no further: sweeping on until a
+        // gap could delete the chunks of a write that completed meanwhile (the
+        // CLI, or another thread), leaving its manifest naming chunks that are
+        // gone. Best effort: the write's own error is the one worth reporting,
+        // and a chunk this misses is still swept by the next `remove`.
+        for i in 0..wrote {
+            if let Err(cleanup) = delete_raw(service, &chunk_account(account, i)) {
+                crate::logging::failure(&format!(
+                    "keychain: taking back chunk {i} of a failed write to {service}/{account} failed: {cleanup:#}"
+                ));
+            }
+        }
         invalidate_cache();
         return Err(e);
     }
