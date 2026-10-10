@@ -3483,6 +3483,13 @@ async fn routing_verdicts() -> Vec<VerdictDto> {
         .unwrap_or_default()
 }
 
+/// What [`routing_verdicts_now`] remembers between sweeps. See
+/// [`gate_connect_core::routing_health::VerdictHold`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static VERDICT_HOLD: std::sync::LazyLock<
+    std::sync::Mutex<gate_connect_core::routing_health::VerdictHold>,
+> = std::sync::LazyLock::new(Default::default);
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn routing_verdicts_now() -> Vec<VerdictDto> {
     use gate_connect_core::routing_health::{self, ConfigState, Evidence};
@@ -3497,7 +3504,8 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
         .unwrap_or_else(|| "Constellation Gate".to_string());
 
     let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
-    let verdicts: Vec<VerdictDto> = registry::registry()
+    let integrations = registry::registry();
+    let checked: Vec<_> = integrations
         .iter()
         .filter(|integ| !integ.hidden_in_ui())
         .map(|integ| {
@@ -3512,8 +3520,25 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
                 session,
                 reopen_pending: reopen_pending_for(&slug),
             });
-            let reason = verdict.reason();
+            // The log keeps what the check found; only the row is held.
             recorded.push((slug.clone(), verdict));
+            (integ, slug, config, verdict)
+        })
+        .collect();
+    // One hold for the process, so both shells draw the same answer. It holds
+    // by time rather than by count of checks, because both shells sweep, so
+    // how many checks arrive depends on how many are open. Taken only here,
+    // after every `status()` above: those read each tool's config off disk,
+    // and holding the lock across them queued one shell's sweep behind the
+    // other's I/O. A poisoned lock only loses the history, which reads as
+    // nothing held.
+    let mut hold = VERDICT_HOLD.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    let verdicts: Vec<VerdictDto> = checked
+        .into_iter()
+        .map(|(integ, slug, config, verdict)| {
+            let verdict = hold.apply(&slug, verdict, now);
+            let reason = verdict.reason();
             // Only the half that was read off disk. The surfaces draw the pair
             // when both are present and omit it otherwise, so a reopen notice
             // now names the action rather than an endpoint nobody measured.
@@ -3539,6 +3564,7 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
             }
         })
         .collect();
+    drop(hold);
     // Persisted after the sweep, not during it: the log is what lets the recovery
     // summary report a check it did not take, and a half-written sweep would be a
     // worse record than the previous whole one.

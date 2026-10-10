@@ -281,6 +281,88 @@ pub fn verdict_for(ev: &Evidence) -> RoutingVerdict {
     RoutingVerdict::On
 }
 
+/// How long a tool's last `On` may stand in for one inconclusive check.
+///
+/// Three of the 10s sweeps the reopen watch runs, so a run of them is covered
+/// and a sweep that comes minutes later, on focus or after an action, is not.
+pub const HOLD_ON_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a run of inconclusive checks may be held, from the first of them.
+///
+/// One sweep interval: `REOPEN_IDLE_WATCH_MS` in `src/lib/reopen.ts`, and the
+/// two move together. Time rather than a count, because the window and the
+/// tray each run that sweep, unsynchronised, so two checks "in a row" can be
+/// one from each shell a few seconds apart. Counting them let the second
+/// shell draw the failure the first was holding, which is the flicker again.
+pub const HOLD_UNSURE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Keeps one inconclusive check from flipping a working tool to Not protected.
+///
+/// `VerificationFailed` means a probe could not answer: the identity provider
+/// or the gateway was slow, or a session check was already in flight. It is
+/// not evidence against a route that was `On` a moment ago, and drawing it as
+/// one made a row switch to "Verification failed" and back on every blip of a
+/// sweep that repeats every 10s (AG-1056).
+///
+/// So a tool that read `On` within [`HOLD_ON_FOR`] keeps reading `On` through
+/// such checks for [`HOLD_UNSURE_FOR`] after the first of them, however many
+/// shells are polling. One still inconclusive a sweep later is drawn as it
+/// is, and so is every other verdict, at once: an unreachable relay, a refused
+/// session or a drifted config are measurements, and holding those would hide
+/// a real outage.
+#[derive(Debug, Default)]
+pub struct VerdictHold {
+    tools: std::collections::HashMap<String, Held>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    /// When this tool last read `On`.
+    on_at: std::time::Instant,
+    /// When the current run of inconclusive checks began, if one has.
+    unsure_since: Option<std::time::Instant>,
+}
+
+impl VerdictHold {
+    /// The verdict to draw for `slug`, given this sweep's reading taken `now`.
+    pub fn apply(
+        &mut self,
+        slug: &str,
+        verdict: RoutingVerdict,
+        now: std::time::Instant,
+    ) -> RoutingVerdict {
+        match verdict {
+            RoutingVerdict::On => {
+                self.tools.insert(
+                    slug.to_string(),
+                    Held {
+                        on_at: now,
+                        unsure_since: None,
+                    },
+                );
+                RoutingVerdict::On
+            }
+            RoutingVerdict::NeedsAttention(Reason::VerificationFailed) => {
+                let held = self.tools.get_mut(slug).is_some_and(|held| {
+                    let since = *held.unsure_since.get_or_insert(now);
+                    now.saturating_duration_since(held.on_at) <= HOLD_ON_FOR
+                        && now.saturating_duration_since(since) < HOLD_UNSURE_FOR
+                });
+                if held {
+                    RoutingVerdict::On
+                } else {
+                    self.tools.remove(slug);
+                    verdict
+                }
+            }
+            _ => {
+                self.tools.remove(slug);
+                verdict
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +589,144 @@ mod tests {
             (Reason::VerificationFailed, NextAction::RetryCheck),
         ] {
             assert_eq!(reason.next_action(), action, "{}", reason.as_str());
+        }
+    }
+
+    mod hold {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        const UNSURE: RoutingVerdict = RoutingVerdict::NeedsAttention(Reason::VerificationFailed);
+
+        #[test]
+        fn one_inconclusive_check_after_on_is_held() {
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            assert_eq!(
+                hold.apply("hermes", RoutingVerdict::On, t),
+                RoutingVerdict::On
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(10)),
+                RoutingVerdict::On
+            );
+            assert_eq!(
+                hold.apply("hermes", RoutingVerdict::On, t + Duration::from_secs(20)),
+                RoutingVerdict::On,
+                "the flicker the reporter saw, drawn steady"
+            );
+        }
+
+        #[test]
+        fn a_second_inconclusive_check_in_a_row_is_shown() {
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            hold.apply("hermes", RoutingVerdict::On, t);
+            hold.apply("hermes", UNSURE, t + Duration::from_secs(10));
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(20)),
+                UNSURE
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(30)),
+                UNSURE,
+                "and stays shown until a check reads On again"
+            );
+        }
+
+        #[test]
+        fn two_shells_sweeping_apart_do_not_exhaust_the_hold() {
+            // The window and the tray each sweep every 10s, unsynchronised, so
+            // their checks interleave a few seconds apart. Both must draw the
+            // same answer: a run of inconclusive checks is held for one sweep
+            // interval, not for one check.
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            hold.apply("hermes", RoutingVerdict::On, t);
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(10)),
+                RoutingVerdict::On,
+                "window"
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(13)),
+                RoutingVerdict::On,
+                "tray, 3s later"
+            );
+            assert_eq!(
+                hold.apply("hermes", RoutingVerdict::On, t + Duration::from_secs(20)),
+                RoutingVerdict::On
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(23)),
+                RoutingVerdict::On,
+                "a fresh On starts a fresh hold"
+            );
+        }
+
+        #[test]
+        fn a_run_still_inconclusive_a_sweep_later_is_shown_to_both_shells() {
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            hold.apply("hermes", RoutingVerdict::On, t);
+            hold.apply("hermes", UNSURE, t + Duration::from_secs(10));
+            hold.apply("hermes", UNSURE, t + Duration::from_secs(13));
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(20)),
+                UNSURE,
+                "window, a full sweep after the run began"
+            );
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + Duration::from_secs(23)),
+                UNSURE,
+                "tray"
+            );
+        }
+
+        #[test]
+        fn an_old_on_does_not_cover_a_new_failure() {
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            hold.apply("hermes", RoutingVerdict::On, t);
+            assert_eq!(
+                hold.apply("hermes", UNSURE, t + HOLD_ON_FOR + Duration::from_secs(1)),
+                UNSURE,
+                "a sweep minutes later may be the last one for a while"
+            );
+        }
+
+        #[test]
+        fn measured_failures_are_never_held() {
+            for verdict in [
+                RoutingVerdict::NeedsAttention(Reason::ConnectionProblem),
+                RoutingVerdict::NeedsAttention(Reason::AccessProblem),
+                RoutingVerdict::NeedsAttention(Reason::ConfigurationChanged),
+                RoutingVerdict::NeedsAttention(Reason::ReopenRequired),
+                RoutingVerdict::Off,
+            ] {
+                let mut hold = VerdictHold::default();
+                let t = Instant::now();
+                hold.apply("hermes", RoutingVerdict::On, t);
+                assert_eq!(
+                    hold.apply("hermes", verdict, t + Duration::from_secs(1)),
+                    verdict
+                );
+            }
+        }
+
+        #[test]
+        fn nothing_is_held_without_an_on_first() {
+            let mut hold = VerdictHold::default();
+            assert_eq!(hold.apply("hermes", UNSURE, Instant::now()), UNSURE);
+        }
+
+        #[test]
+        fn tools_are_held_separately() {
+            let mut hold = VerdictHold::default();
+            let t = Instant::now();
+            hold.apply("hermes", RoutingVerdict::On, t);
+            assert_eq!(hold.apply("codex", UNSURE, t), UNSURE);
+            assert_eq!(hold.apply("hermes", UNSURE, t), RoutingVerdict::On);
         }
     }
 }
