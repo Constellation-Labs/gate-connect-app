@@ -14,8 +14,11 @@ name: E2E (real tools)
 # truth.
 on:
   pull_request:
+  # feat/new-app-ui too: its merges are what ships next, and gate's weekly
+  # last_verified refresh counts only push/schedule/dispatch runs, never
+  # pull_request ones. Drop it when #151 merges and main is the only branch.
   push:
-    branches: [main]
+    branches: [main, feat/new-app-ui]
   workflow_dispatch:
     inputs:
       alert:
