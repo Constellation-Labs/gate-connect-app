@@ -247,7 +247,7 @@ fn cmd_login_oauth(base_url: String, org: Option<String>) -> Result<()> {
     // The gateway requires an org on every OAuth request, so pick one now.
     let orgs = org::list(&base_url, &tokens.access_token)?;
     let chosen = select_org(&orgs, org.as_deref())?;
-    account::set_org(&chosen.org_id, &chosen.name)?;
+    account::set_org(&chosen.org_id, &chosen.name, chosen.compaction_window)?;
 
     match tokens.email() {
         Some(email) => println!("Signed in to {base_url} as {email} (org: {}).", chosen.name),
@@ -417,6 +417,7 @@ fn cmd_connect(tool: &str) -> Result<()> {
         // has to name what the GUI writes, or the two disagree about the same
         // install and a plain quit reverts whatever this wrote.
         engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
+        compaction_window: acct.compaction_window,
     };
     integ.connect(&input)?;
     println!("Connected {}.", integ.display_name());

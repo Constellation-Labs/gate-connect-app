@@ -326,6 +326,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
                 gateway_base_url: account.gateway_base_url.clone(),
                 relay_base_url: crate::proxy::relay_base_url(),
                 engine_proxy_url: crate::proxy::tool_proxy_url(),
+                compaction_window: account.compaction_window,
             };
             integ
                 .connect(&input)
@@ -545,6 +546,7 @@ pub fn reconcile_enabled() -> Result<()> {
                 gateway_base_url: account.gateway_base_url.clone(),
                 relay_base_url: relay_base_url.clone(),
                 engine_proxy_url: crate::proxy::tool_proxy_url(),
+                compaction_window: account.compaction_window,
             };
             if let Err(e) = integ.connect(&input) {
                 eprintln!(
@@ -594,6 +596,7 @@ fn reconcile_unmapped_tools(
             gateway_base_url: account.gateway_base_url.clone(),
             relay_base_url: Some(relay_base_url.to_string()),
             engine_proxy_url: crate::proxy::tool_proxy_url(),
+            compaction_window: account.compaction_window,
         };
         if let Err(e) = integ.connect(&input) {
             eprintln!("[gate] re-applying {} failed: {e:#}", integ.display_name());
@@ -1075,6 +1078,7 @@ fn restore_swept_tools() -> Result<()> {
             gateway_base_url: account.gateway_base_url.clone(),
             relay_base_url: relay_base_url.clone(),
             engine_proxy_url: crate::proxy::tool_proxy_url(),
+            compaction_window: account.compaction_window,
         };
         if let Err(e) = integ.connect(&input) {
             eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");

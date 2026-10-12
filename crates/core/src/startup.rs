@@ -70,17 +70,45 @@ pub fn refresh_session() -> SessionVerdict {
                 // Session is live, but a stored org that dropped out of the
                 // membership list would doom every request; clear it so the
                 // UI routes to the org picker (`needsOrg`).
-                let stale = account::selected_org()
-                    .ok()
-                    .flatten()
-                    .is_some_and(|(id, _)| !orgs.iter().any(|o| o.org_id == id));
-                if stale {
-                    eprintln!(
-                        "[gate] stored org is no longer a membership; clearing it for re-pick"
-                    );
-                    if let Err(e) = account::clear_org() {
-                        eprintln!("[gate] clearing the stale org failed: {e:#}");
+                let selected = account::selected_org().ok().flatten();
+                let current = selected
+                    .as_ref()
+                    .and_then(|(id, _)| orgs.iter().find(|o| &o.org_id == id));
+                match (selected, current) {
+                    (Some(_), None) => {
+                        eprintln!(
+                            "[gate] stored org is no longer a membership; clearing it for re-pick"
+                        );
+                        if let Err(e) = account::clear_org() {
+                            eprintln!("[gate] clearing the stale org failed: {e:#}");
+                        }
                     }
+                    // Still a membership: take the org's client config as it
+                    // is now. The window can change in the dashboard while
+                    // the app is closed, and this probe is the one read of
+                    // `GET /v1/me/orgs` every launch makes, so it is where a
+                    // change lands. When it moved, the managed tool configs
+                    // that carry it are stale, and the reconcile pass that
+                    // runs on every start may already have gone past them;
+                    // run it again rather than leave the old value in place
+                    // until the next focus.
+                    (Some(_), Some(org)) => {
+                        match account::set_compaction_window(org.compaction_window) {
+                            Ok(true) => {
+                                if let Err(e) = crate::provider::reconcile_enabled() {
+                                    eprintln!(
+                                        "[gate] re-applying tool configs for the new compaction \
+                                         window failed: {e:#}"
+                                    );
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                eprintln!("[gate] recording the compaction window failed: {e:#}");
+                            }
+                        }
+                    }
+                    (None, _) => {}
                 }
             }
             org::SessionProbe::Unavailable => {}

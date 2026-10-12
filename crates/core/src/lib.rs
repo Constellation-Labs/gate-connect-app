@@ -34,6 +34,8 @@ pub mod startup;
 pub mod integrations {
     pub mod claude_code;
     pub mod codex;
+    /// The org's compaction window, mapped to each harness's own knob.
+    pub mod compaction;
     /// Managed `.env` edits, shared by the proxy-routed harnesses.
     pub(crate) mod dotenv;
     /// Not a tool: the environment channel itself, as a thing users can decline.

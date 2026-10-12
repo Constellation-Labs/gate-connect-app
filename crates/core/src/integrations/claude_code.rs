@@ -81,13 +81,84 @@ const KEY_NO_PROXY: &str = "NO_PROXY";
 /// that hole means the environment carrying both certs, which is
 /// [`crate::proxy::ca_bundle`]'s job, not this one's.
 const KEY_NODE_EXTRA_CA_CERTS: &str = "NODE_EXTRA_CA_CERTS";
-const MANAGED_KEYS: [&str; 5] = [
+/// The org's compaction window, as Claude Code's own knob: see
+/// [`super::compaction`] for the mapping and the measurements behind it. The
+/// one managed key that is a preference rather than a routing requirement,
+/// which gives it two rules of its own:
+///
+/// - Written only while the selected org sets a window, and removed again
+///   (on the next connect, by `provider::reconcile_enabled` once `status`
+///   reads the stale value as drift) when the org stops setting one. The
+///   proxy keys are always written; this one tracks a value.
+/// - A value the user set themselves is never touched. The proxy keys
+///   snapshot a prior user value into `previousEnv` and replace it, because
+///   routing does not work without them; a compaction window the user chose
+///   by hand is a choice to keep, so a key present in `env` but absent from
+///   the marker's `managed` list is theirs - connect leaves it, status does
+///   not count it as drift, and disconnect does not remove it. Ownership is
+///   the marker's `managed` list, which is the ownership rule the whole file
+///   already runs on.
+const KEY_AUTO_COMPACT_WINDOW: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+/// Every key connect may write and disconnect reverts. The membership of the
+/// marker's `managed` list per file is [`managed_keys_for`]: this is the
+/// universe, that is the subset written into one file.
+const MANAGED_KEYS: [&str; 6] = [
     KEY_BASE_URL,
     KEY_CUSTOM_HEADERS,
     KEY_HTTPS_PROXY,
     KEY_NO_PROXY,
     KEY_NODE_EXTRA_CA_CERTS,
+    KEY_AUTO_COMPACT_WINDOW,
 ];
+
+/// Which keys a connect with `window` writes and lists as managed. The five
+/// routing keys always; the compaction window only while there is a value to
+/// carry, and never while the user owns the key (see [`KEY_AUTO_COMPACT_WINDOW`]).
+fn managed_keys_for(window: Option<&str>, window_is_ours: bool) -> Vec<&'static str> {
+    MANAGED_KEYS
+        .iter()
+        .copied()
+        .filter(|key| *key != KEY_AUTO_COMPACT_WINDOW || (window.is_some() && window_is_ours))
+        .collect()
+}
+
+/// Is the compaction window key in this file ours to write? Ours when the
+/// marker already lists it, or when nothing holds it; a value present in
+/// `env` that we never listed was put there by the user.
+fn window_is_ours(managed: &[String], env_block: Option<&Map<String, Value>>) -> bool {
+    managed.iter().any(|key| key == KEY_AUTO_COMPACT_WINDOW)
+        || !env_block.is_some_and(|env| env.contains_key(KEY_AUTO_COMPACT_WINDOW))
+}
+
+/// Why the compaction window in `settings.json` does not match the org's, or
+/// `None` when it does, or when the key is the user's and not ours to judge.
+///
+/// `managed` is whether the marker lists the key, `in_file` what `env` holds,
+/// `expected` what the org asks for now. Pure, so the six cases can be pinned
+/// without a file.
+fn window_drift(managed: bool, in_file: Option<&str>, expected: Option<&str>) -> Option<String> {
+    match (expected, managed, in_file) {
+        // Ours, and current.
+        (Some(want), true, Some(have)) if have == want => None,
+        (Some(want), true, Some(have)) => Some(format!(
+            "{KEY_AUTO_COMPACT_WINDOW} in settings.json is {have:?}, expected {want:?}"
+        )),
+        (Some(want), true, None) => Some(format!(
+            "managed {KEY_AUTO_COMPACT_WINDOW} missing from settings.json env, expected {want:?}"
+        )),
+        // The user's own value: not ours to judge or to replace.
+        (Some(_), false, Some(_)) => None,
+        (Some(want), false, None) => Some(format!(
+            "the org sets a compaction window ({KEY_AUTO_COMPACT_WINDOW}={want}) that \
+             settings.json does not carry yet"
+        )),
+        // The org stopped setting one; a value we wrote must go.
+        (None, true, _) => Some(format!(
+            "managed {KEY_AUTO_COMPACT_WINDOW} is stale: the org no longer sets a compaction window"
+        )),
+        (None, false, _) => None,
+    }
+}
 
 /// Keep loopback off the proxy, the same pairing every other proxy-routed
 /// integration writes (`hermes`, `env_proxy`, `dotenv`). It matters more here
@@ -258,14 +329,41 @@ impl Integration for ClaudeCode {
             .get(KEY_NODE_EXTRA_CA_CERTS)
             .and_then(|v| v.as_str())
         {
-            Some(ca) if ca == expected_ca => Ok(Status::Connected),
-            Some(ca) => Ok(Status::Drifted(format!(
-                "{KEY_NODE_EXTRA_CA_CERTS} in settings.json is {ca:?}, expected {expected_ca:?}"
-            ))),
-            None => Ok(Status::Drifted(format!(
-                "managed {KEY_NODE_EXTRA_CA_CERTS} missing from settings.json env - Claude Code \
-                 would route through the proxy without trusting Gate's CA"
-            ))),
+            Some(ca) if ca == expected_ca => {}
+            Some(ca) => {
+                return Ok(Status::Drifted(format!(
+                    "{KEY_NODE_EXTRA_CA_CERTS} in settings.json is {ca:?}, expected {expected_ca:?}"
+                )));
+            }
+            None => {
+                return Ok(Status::Drifted(format!(
+                    "managed {KEY_NODE_EXTRA_CA_CERTS} missing from settings.json env - Claude Code \
+                     would route through the proxy without trusting Gate's CA"
+                )));
+            }
+        }
+
+        // Last, and after routing is known good: the compaction window is a
+        // preference, so it decides nothing about whether traffic reaches
+        // Gate, but a managed value that no longer matches the org is still
+        // ours to fix, and reading it as drift is what sends
+        // `provider::reconcile_enabled` back through `connect` to rewrite it
+        // on start and on org switch. The expected value comes from the
+        // account file, the same place `connect` is handed it from.
+        let knobs = super::compaction::harness_knobs(crate::account::compaction_window());
+        let window_managed = managed
+            .iter()
+            .any(|v| v.as_str() == Some(KEY_AUTO_COMPACT_WINDOW));
+        let in_file = env_block
+            .get(KEY_AUTO_COMPACT_WINDOW)
+            .and_then(|v| v.as_str());
+        match window_drift(
+            window_managed,
+            in_file,
+            knobs.claude_code_auto_compact_window.as_deref(),
+        ) {
+            Some(reason) => Ok(Status::Drifted(reason)),
+            None => Ok(Status::Connected),
         }
     }
 
@@ -335,14 +433,32 @@ impl Integration for ClaudeCode {
         let env_value = |key: &str| settings.get("env").and_then(|env| env.get(key));
         let env_str = |key: &str| env_value(key).and_then(|v| v.as_str());
         let ca_cert_value = ca_cert_path.display().to_string();
-        let already_applied = MANAGED_KEYS
+        // The compaction window: what the org asks for, and whether the key
+        // in this file is ours to write at all (see KEY_AUTO_COMPACT_WINDOW).
+        let window = super::compaction::harness_knobs(input.compaction_window)
+            .claude_code_auto_compact_window;
+        let window_ours = window_is_ours(
+            &old_managed,
+            settings.get("env").and_then(|env| env.as_object()),
+        );
+        let managed_now = managed_keys_for(window.as_deref(), window_ours);
+        let window_applied = if window_ours {
+            env_str(KEY_AUTO_COMPACT_WINDOW) == window.as_deref()
+        } else {
+            true // the user's; nothing of ours to apply
+        };
+        let already_applied = managed_now
             .iter()
             .all(|key| old_managed.iter().any(|managed| managed == key))
+            && old_managed
+                .iter()
+                .all(|key| managed_now.contains(&key.as_str()))
             && env_value(KEY_BASE_URL).is_none()
             && env_value(KEY_CUSTOM_HEADERS).is_none()
             && env_str(KEY_HTTPS_PROXY) == Some(claude_proxy_url.as_str())
             && env_str(KEY_NO_PROXY) == Some(NO_PROXY_VALUE)
-            && env_str(KEY_NODE_EXTRA_CA_CERTS) == Some(ca_cert_value.as_str());
+            && env_str(KEY_NODE_EXTRA_CA_CERTS) == Some(ca_cert_value.as_str())
+            && window_applied;
         if already_applied {
             return Ok(());
         }
@@ -355,10 +471,15 @@ impl Integration for ClaudeCode {
             .unwrap_or_default();
 
         let env_block = ensure_object(&mut settings, "env");
-        for key in MANAGED_KEYS {
-            if !old_managed.iter().any(|managed| managed == key) && !prev.contains_key(key) {
-                if let Some(value) = env_block.get(key) {
-                    prev.insert(key.into(), value.clone());
+        // Over the keys this connect manages, not the universe: a user-owned
+        // compaction window is not in `managed_now`, so it is neither
+        // snapshotted nor replaced. (A window that is ours has no prior
+        // value to snapshot either way: ours because we listed it, or ours
+        // because nothing held it.)
+        for key in &managed_now {
+            if !old_managed.iter().any(|managed| managed == key) && !prev.contains_key(*key) {
+                if let Some(value) = env_block.get(*key) {
+                    prev.insert((*key).into(), value.clone());
                 }
             }
         }
@@ -373,13 +494,26 @@ impl Integration for ClaudeCode {
             KEY_NODE_EXTRA_CA_CERTS.into(),
             Value::String(ca_cert_path.display().to_string()),
         );
+        if window_ours {
+            match &window {
+                Some(value) => {
+                    env_block.insert(KEY_AUTO_COMPACT_WINDOW.into(), Value::String(value.clone()));
+                }
+                // The org stopped setting one (or never did): a value we
+                // wrote earlier goes, and the key leaves the managed list
+                // with it.
+                None => {
+                    env_block.remove(KEY_AUTO_COMPACT_WINDOW);
+                }
+            }
+        }
 
         let marker = ensure_object(&mut settings, MARKER_KEY);
         marker.insert("previousEnv".into(), Value::Object(prev));
         marker.insert(
             "managed".into(),
             Value::Array(
-                MANAGED_KEYS
+                managed_now
                     .iter()
                     .map(|key| Value::String((*key).into()))
                     .collect(),
@@ -401,9 +535,27 @@ impl Integration for ClaudeCode {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
+        let managed: Vec<String> = settings
+            .get(MARKER_KEY)
+            .and_then(|m| m.get("managed"))
+            .and_then(|v| v.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         if let Some(env_block) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
             for key in MANAGED_KEYS {
+                // The routing keys are reverted whether or not an older
+                // build's marker listed them (the legacy relay keys are
+                // removed this way). The compaction window is the exception:
+                // unlisted means the user's own, and it stays.
+                if key == KEY_AUTO_COMPACT_WINDOW && !managed.iter().any(|m| m == key) {
+                    continue;
+                }
                 match prev.get(key) {
                     Some(v) => {
                         env_block.insert(key.into(), v.clone());
@@ -491,7 +643,73 @@ mod tests {
         // Nor without the CA. Node ignores the OS trust store, so writing the
         // proxy alone routes `claude` straight into a TLS failure.
         assert!(MANAGED_KEYS.contains(&KEY_NODE_EXTRA_CA_CERTS));
+        // The compaction window is managed, so disconnect takes it away with
+        // the rest (`disconnect_zero_residue.rs` is the behavioural pin).
+        assert!(MANAGED_KEYS.contains(&KEY_AUTO_COMPACT_WINDOW));
         assert!(!MANAGED_KEYS.contains(&"ANTHROPIC_BETAS"));
+    }
+
+    /// The window is listed only while there is a value and the key is ours;
+    /// the routing keys are listed always.
+    #[test]
+    fn managed_keys_list_the_window_only_while_it_has_a_value_of_ours() {
+        let routing = [
+            KEY_BASE_URL,
+            KEY_CUSTOM_HEADERS,
+            KEY_HTTPS_PROXY,
+            KEY_NO_PROXY,
+            KEY_NODE_EXTRA_CA_CERTS,
+        ];
+        assert_eq!(managed_keys_for(None, true), routing);
+        assert_eq!(managed_keys_for(Some("433000"), false), routing);
+        assert_eq!(managed_keys_for(None, false), routing);
+        assert_eq!(managed_keys_for(Some("433000"), true), MANAGED_KEYS);
+    }
+
+    /// Ownership of the window key is the marker's `managed` list; a value in
+    /// `env` the marker never listed is the user's.
+    #[test]
+    fn a_window_the_marker_never_listed_is_the_users() {
+        let mut env = Map::new();
+        env.insert(
+            KEY_AUTO_COMPACT_WINDOW.into(),
+            Value::String("300000".into()),
+        );
+        let listed = vec![KEY_AUTO_COMPACT_WINDOW.to_string()];
+        // Present and listed: ours (we wrote it, the user may have edited it).
+        assert!(window_is_ours(&listed, Some(&env)));
+        // Present and unlisted: theirs.
+        assert!(!window_is_ours(&[], Some(&env)));
+        // Absent: ours to write.
+        assert!(window_is_ours(&[], Some(&Map::new())));
+        assert!(window_is_ours(&[], None));
+    }
+
+    #[test]
+    fn window_drift_covers_every_ownership_and_value_case() {
+        // Ours and current.
+        assert_eq!(window_drift(true, Some("433000"), Some("433000")), None);
+        // Ours and stale, or ours and missing.
+        assert!(window_drift(true, Some("633000"), Some("433000"))
+            .unwrap()
+            .contains("expected \"433000\""));
+        assert!(window_drift(true, None, Some("433000"))
+            .unwrap()
+            .contains("missing"));
+        // The user's: left alone whatever the org says.
+        assert_eq!(window_drift(false, Some("300000"), Some("433000")), None);
+        assert_eq!(window_drift(false, Some("300000"), None), None);
+        // Nothing in the file yet and the org wants one: drift, so the
+        // reconcile pass writes it.
+        assert!(window_drift(false, None, Some("433000"))
+            .unwrap()
+            .contains("does not carry yet"));
+        // Ours and the org stopped setting one: drift, so it is removed.
+        assert!(window_drift(true, Some("433000"), None)
+            .unwrap()
+            .contains("stale"));
+        // Nothing anywhere.
+        assert_eq!(window_drift(false, None, None), None);
     }
 
     #[test]

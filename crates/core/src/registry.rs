@@ -70,6 +70,12 @@ pub struct ConnectInput {
     /// the engine is not routing, which is what makes the proxy integrations'
     /// `connect` refuse rather than point a tool's whole egress at nothing.
     pub engine_proxy_url: Option<String>,
+    /// The selected org's compaction window in tokens, as persisted with the
+    /// org ([`crate::account::compaction_window`]); `None` leaves every
+    /// harness at its own default. Each integration maps it to its tool's
+    /// knob through [`crate::integrations::compaction::harness_knobs`], or
+    /// ignores it where the table there says the tool gets nothing.
+    pub compaction_window: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

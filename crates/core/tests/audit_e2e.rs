@@ -414,7 +414,7 @@ fn api_key_mode_emits_without_a_selected_org_and_ignores_one() {
     );
 
     // Leftover org from an earlier OAuth session: still not sent.
-    account::set_org("org-uuid-1", "Example Org").unwrap();
+    account::set_org("org-uuid-1", "Example Org", None).unwrap();
     assert!(matches!(
         audit::credential(None),
         Some(Credential { org_id: None, .. })
@@ -449,7 +449,7 @@ fn unknown_port_is_null_rather_than_zero() {
     let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
     account::save("https://gw.example.test", Some("sk-gw-stored")).unwrap();
-    account::set_org("org-uuid-1", "Example Org").unwrap();
+    account::set_org("org-uuid-1", "Example Org", None).unwrap();
 
     // Drain the arrange emits before the mock exists. `emit_best_effort` spawns
     // a detached thread that resolves the endpoint seam when it *runs*, not when

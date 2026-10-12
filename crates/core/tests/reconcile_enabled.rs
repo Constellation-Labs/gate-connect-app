@@ -394,3 +394,57 @@ fn managed_drift_without_relay_is_left_alone() {
     let after = fs::read(env::claude_code_settings_path().unwrap()).unwrap();
     assert_eq!(before, after);
 }
+
+/// The org's compaction window reaches `settings.json` through the same
+/// sweep that wires a tool up, and *follows* the org: on start and on an org
+/// switch the app records the org's value and runs this sweep, so a managed
+/// window that no longer matches reads as drift and is rewritten - or removed
+/// once the org stops setting one.
+#[test]
+fn the_org_window_is_applied_and_follows_the_org_through_reconcile() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    account::set_org("org-1", "Org One", Some(400_000)).unwrap();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+
+    let env_block = || -> serde_json::Value {
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap(),
+        )
+        .unwrap();
+        settings.get("env").cloned().unwrap()
+    };
+    let window_key = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+    assert_eq!(env_block()[window_key], serde_json::json!("433000"));
+
+    // The org's value moved (dashboard change seen by the startup probe, or
+    // a switch to another org): the file is stale until the sweep runs.
+    assert!(account::set_compaction_window(Some(600_000)).unwrap());
+    match claude_status() {
+        Status::Drifted(reason) => assert!(reason.contains(window_key), "{reason}"),
+        other => panic!("a stale managed window must read as drift, got {other}"),
+    }
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+    assert_eq!(env_block()[window_key], serde_json::json!("633000"));
+
+    // The org stops setting one: the key goes, and nothing else moves.
+    assert!(account::set_compaction_window(None).unwrap());
+    assert!(matches!(claude_status(), Status::Drifted(_)));
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+    assert!(
+        env_block().get(window_key).is_none(),
+        "a window the org no longer sets must be removed: {}",
+        env_block()
+    );
+    assert!(env_block().get("HTTPS_PROXY").is_some());
+
+    // Recording the same value again is not a change, so nothing re-applies.
+    assert!(!account::set_compaction_window(None).unwrap());
+}

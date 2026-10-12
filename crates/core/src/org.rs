@@ -26,6 +26,44 @@ pub struct Org {
     pub name: String,
     pub slug: String,
     pub role: String,
+    /// The user's effective compaction window for this org, in tokens, from
+    /// the org's `clientConfig: { compactionWindow }`; `None` means the
+    /// harness default. Mapped to each harness's own knob by
+    /// [`crate::integrations::compaction`].
+    ///
+    /// Read leniently: absent (an older Gate without the field), `null`, a
+    /// non-object `clientConfig`, a non-integer or an integer outside Gate's
+    /// own 100000-1000000 range all read as `None` and never as a parse error.
+    /// The org list is what the org picker and the startup probe stand on, so
+    /// a field this optional must never take them down.
+    ///
+    /// Flattened on the way out: the frontend sees `compactionWindow`, not
+    /// the nested wire shape.
+    #[serde(
+        rename(deserialize = "clientConfig", serialize = "compactionWindow"),
+        default,
+        deserialize_with = "compaction_window_from_client_config"
+    )]
+    pub compaction_window: Option<u32>,
+}
+
+/// Gate's own range for `compactionWindow`. A value outside it is not one
+/// this Gate hands out, so it reads as "no window" rather than being clamped
+/// into something the user never asked for.
+const COMPACTION_WINDOW_RANGE: std::ops::RangeInclusive<u64> = 100_000..=1_000_000;
+
+/// `clientConfig` → `compactionWindow`, with every malformed shape reading as
+/// `None`. See [`Org::compaction_window`].
+fn compaction_window_from_client_config<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .get("compactionWindow")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|w| COMPACTION_WINDOW_RANGE.contains(w))
+        .and_then(|w| u32::try_from(w).ok()))
 }
 
 /// Shape of the `GET /v1/me/orgs` response: `{ user, orgs: [...] }`. We only
@@ -253,6 +291,59 @@ mod tests {
         assert_eq!(orgs[0].slug, "acme");
         assert_eq!(orgs[0].role, "owner");
         assert_eq!(orgs[1].org_id, "org-uuid-2");
+        // No `clientConfig` at all: an older Gate, and nothing to map.
+        assert_eq!(orgs[0].compaction_window, None);
+        assert_eq!(orgs[1].compaction_window, None);
+    }
+
+    /// One org per shape the field can take on the wire. None of them may fail
+    /// the parse: the org list is what sign-in and the startup probe stand on.
+    #[test]
+    fn compaction_window_reads_leniently_from_client_config() {
+        let body = r#"{
+          "user": { "id": "u-1", "email": "dev@example.test" },
+          "orgs": [
+            { "orgId": "present", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": 400000 } },
+            { "orgId": "null", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": null } },
+            { "orgId": "absent-field", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": {} },
+            { "orgId": "absent-block", "name": "n", "slug": "s", "role": "owner" },
+            { "orgId": "string", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": "500k" } },
+            { "orgId": "too-low", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": 99999 } },
+            { "orgId": "too-high", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": 1000001 } },
+            { "orgId": "negative", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": -400000 } },
+            { "orgId": "fraction", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": 400000.5 } },
+            { "orgId": "block-not-object", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": "400000" },
+            { "orgId": "edges", "name": "n", "slug": "s", "role": "owner",
+              "clientConfig": { "compactionWindow": 1000000 } }
+          ]
+        }"#;
+        let orgs = parse_orgs(body).expect("every shape parses");
+        let by_id = |id: &str| {
+            orgs.iter()
+                .find(|o| o.org_id == id)
+                .unwrap_or_else(|| panic!("org {id}"))
+                .compaction_window
+        };
+        assert_eq!(by_id("present"), Some(400_000));
+        assert_eq!(by_id("null"), None);
+        assert_eq!(by_id("absent-field"), None);
+        assert_eq!(by_id("absent-block"), None);
+        assert_eq!(by_id("string"), None, "Claude Code would read 500k as 500");
+        assert_eq!(by_id("too-low"), None);
+        assert_eq!(by_id("too-high"), None);
+        assert_eq!(by_id("negative"), None);
+        assert_eq!(by_id("fraction"), None);
+        assert_eq!(by_id("block-not-object"), None);
+        assert_eq!(by_id("edges"), Some(1_000_000));
     }
 
     #[test]
@@ -263,10 +354,20 @@ mod tests {
             name: "Acme".into(),
             slug: "acme".into(),
             role: "owner".into(),
+            compaction_window: Some(400_000),
         };
         let json = serde_json::to_string(&org).unwrap();
         assert!(json.contains("\"orgId\":\"org-uuid-1\""), "got {json}");
         assert!(!json.contains("org_id"), "got {json}");
+        // Flat for the frontend, and never under the wire's `clientConfig`.
+        assert!(json.contains("\"compactionWindow\":400000"), "got {json}");
+        assert!(!json.contains("clientConfig"), "got {json}");
+        let none = Org {
+            compaction_window: None,
+            ..org
+        };
+        let json = serde_json::to_string(&none).unwrap();
+        assert!(json.contains("\"compactionWindow\":null"), "got {json}");
     }
 
     #[test]

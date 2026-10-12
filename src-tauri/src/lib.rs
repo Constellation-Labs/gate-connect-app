@@ -150,6 +150,7 @@ async fn connect_tool(slug: String) -> Result<StatusDto, String> {
             gateway_base_url: account.gateway_base_url,
             relay_base_url: gate_connect_core::proxy::relay_base_url(),
             engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
+            compaction_window: account.compaction_window,
         };
         integ.connect(&input).map_err(|e| format!("{e:#}"))?;
         Ok(status_for(integ.as_ref()))
@@ -529,12 +530,28 @@ async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
 
 /// Persist the selected org and push it into a running engine/relay so
 /// `X-Gate-Org-Id` takes effect live (no restart).
+///
+/// `compaction_window` is the org's `clientConfig.compactionWindow` from the
+/// list the picker showed. It is written into the managed tool configs (Claude
+/// Code's `settings.json` env block), so an org switch re-runs the reconcile
+/// pass: a connected tool whose managed knob no longer matches the org reads
+/// as drifted and is rewritten. Best-effort, after the org is persisted: a
+/// tool that cannot be rewritten must not undo the switch.
 #[tauri::command]
-async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
+async fn set_org(
+    org_id: String,
+    org_name: String,
+    compaction_window: Option<u32>,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::account::set_org(&org_id, &org_name).map_err(|e| format!("{e:#}"))?;
+        gate_connect_core::account::set_org(&org_id, &org_name, compaction_window)
+            .map_err(|e| format!("{e:#}"))?;
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         gate_connect_core::proxy::manager().refresh_org(&org_id);
+        if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
+            eprintln!("[gate] provider config reconcile on org switch failed: {e}");
+            report_backend_error("provider_reconcile", format!("{e:#}"));
+        }
         Ok::<(), String>(())
     })
     .await

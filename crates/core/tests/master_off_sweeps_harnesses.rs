@@ -98,6 +98,7 @@ fn connect_opencode() {
             gateway_base_url: "https://gateway.example.com".into(),
             relay_base_url: Some("http://127.0.0.1:8402".into()),
             engine_proxy_url: Some("http://127.0.0.1:8403".into()),
+            compaction_window: None,
         })
         .expect("connect opencode");
     let status = integ.status().unwrap();
@@ -371,6 +372,7 @@ fn connect_codex(port: u16) {
             gateway_base_url: "https://gateway.example.com".into(),
             relay_base_url: Some(format!("http://127.0.0.1:{port}")),
             engine_proxy_url: None,
+            compaction_window: None,
         })
         .expect("connect codex");
 }

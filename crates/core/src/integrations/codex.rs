@@ -398,6 +398,12 @@ impl Integration for Codex {
                 "Codex is not installed on this machine - install it from https://developers.openai.com/codex first"
             );
         }
+        // `input.compaction_window` is deliberately not mapped to
+        // `model_auto_compact_token_limit`. Codex's compaction call is
+        // cache-cold today (0% cached on 192/192 prod calls, measured
+        // 2026-10-12), so compacting earlier costs more on 18-30% of threads
+        // at every threshold. `super::compaction::harness_knobs` returns
+        // `None` for Codex and says when that changes; nothing here reads it.
         let relay_base = input.relay_base_url.as_deref().context(
             "the Gate proxy relay is not running - enable the proxy before connecting Codex",
         )?;

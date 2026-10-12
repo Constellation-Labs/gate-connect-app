@@ -36,6 +36,11 @@ export interface Org {
   name: string;
   slug: string;
   role: string;
+  /** The user's effective compaction window for this org, in tokens; null
+   * leaves every connected tool at its own default. Written into the managed
+   * tool configs (Claude Code today) and read by them at their next session
+   * start. */
+  compactionWindow: number | null;
 }
 
 /** Cognito OAuth sign-in state, mirrored from the keychain token bundle. */
@@ -100,8 +105,11 @@ export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
 
 /** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
  * live (no restart). */
-export const setOrg = (orgId: string, orgName: string) =>
-  invoke<void>("set_org", { orgId, orgName });
+export const setOrg = (
+  orgId: string,
+  orgName: string,
+  compactionWindow: number | null,
+) => invoke<void>("set_org", { orgId, orgName, compactionWindow });
 
 /** Dev-mode gateway switch: repoint the account at another environment and
  *  forget the stored Gate key, so the UI can prompt for a new one. */

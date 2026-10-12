@@ -164,6 +164,7 @@ fn connect_input(relay_port: u16) -> ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
         relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
         engine_proxy_url: Some(format!("http://127.0.0.1:{relay_port}")),
+        compaction_window: None,
     }
 }
 
@@ -180,11 +181,12 @@ fn claude_code_disconnect_leaves_no_gate_residue() {
         r#"{
   "env": {
     "HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:9977",
-    "NO_PROXY": "localhost,127.0.0.1,::1"
+    "NO_PROXY": "localhost,127.0.0.1,::1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "433000"
   },
   "_gateConnect": {
     "previousEnv": {},
-    "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "HTTPS_PROXY", "NO_PROXY"]
+    "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "HTTPS_PROXY", "NO_PROXY", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
   }
 }
 "#,
@@ -207,6 +209,10 @@ fn claude_code_disconnect_leaves_no_gate_residue() {
     assert!(
         !after.contains("NO_PROXY"),
         "the loopback bypass Gate wrote alongside the proxy must go with it"
+    );
+    assert!(
+        !after.contains("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "the compaction window Gate wrote for the org must go with the rest"
     );
     assert!(
         !after.contains("_gateConnect"),
@@ -1056,5 +1062,228 @@ fn opencode_changes_are_recorded_too() {
     assert!(
         changed_at(&cfg).is_some_and(|t| t > 0),
         "disconnect is a change"
+    );
+}
+
+/// `connect_input` with the org's compaction window set, the way the app hands
+/// it over from `account.json`.
+fn connect_input_with_window(relay_port: u16, window: Option<u32>) -> ConnectInput {
+    ConnectInput {
+        compaction_window: window,
+        ..connect_input(relay_port)
+    }
+}
+
+fn claude_env_and_managed(settings: &std::path::Path) -> (serde_json::Value, Vec<String>) {
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(settings).unwrap()).unwrap();
+    let managed = after
+        .get("_gateConnect")
+        .and_then(|m| m.get("managed"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let env = after.get("env").cloned().unwrap_or(serde_json::Value::Null);
+    (env, managed)
+}
+
+/// The org's compaction window rides in the managed env block as Claude
+/// Code's own knob, listed as managed so disconnect takes it away with the
+/// proxy keys. The value is the mapped one (`window + 33000`, see
+/// `integrations::compaction`), rendered as a plain integer: Claude Code
+/// would read "433k" as 433.
+#[test]
+fn claude_code_connect_writes_the_org_window_and_disconnect_takes_it_away() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_ca_cert();
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude
+        .connect(&connect_input_with_window(9977, Some(400_000)))
+        .unwrap();
+
+    let (env_block, managed) = claude_env_and_managed(&settings);
+    assert_eq!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        Some(&serde_json::json!("433000")),
+        "the window is written as Claude Code's knob, plain integer: {env_block}"
+    );
+    assert!(
+        managed
+            .iter()
+            .any(|k| k == "CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "the window must be listed as managed so disconnect reverts it: {managed:?}"
+    );
+
+    claude.disconnect().unwrap();
+    let after = fs::read_to_string(&settings).unwrap_or_default();
+    assert!(
+        !after.contains("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "zero residue: the window must go with the other managed keys: {after}"
+    );
+    assert!(!after.contains("_gateConnect"), "{after}");
+}
+
+/// No window from the org means no key at all - not an empty string, not a
+/// default. And a window we wrote earlier is removed again once the org
+/// stops setting one, with the managed list shrinking to match, so the file
+/// ends exactly as a connect that never had a window would leave it.
+#[test]
+fn claude_code_omits_the_window_without_a_value_and_removes_a_stale_one() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_ca_cert();
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+
+    claude
+        .connect(&connect_input_with_window(9977, None))
+        .unwrap();
+    let (env_block, managed) = claude_env_and_managed(&settings);
+    assert!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none(),
+        "no window, no key: {env_block}"
+    );
+    assert!(
+        !managed
+            .iter()
+            .any(|k| k == "CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "an unwritten key must not be listed as managed: {managed:?}"
+    );
+    let without_window = fs::read_to_string(&settings).unwrap();
+
+    // The org sets one: written. Then stops: removed, file back as it was.
+    claude
+        .connect(&connect_input_with_window(9977, Some(600_000)))
+        .unwrap();
+    let (env_block, _) = claude_env_and_managed(&settings);
+    assert_eq!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        Some(&serde_json::json!("633000"))
+    );
+    claude
+        .connect(&connect_input_with_window(9977, None))
+        .unwrap();
+    let (env_block, managed) = claude_env_and_managed(&settings);
+    assert!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none(),
+        "a window the org no longer sets must be removed: {env_block}"
+    );
+    assert!(!managed
+        .iter()
+        .any(|k| k == "CLAUDE_CODE_AUTO_COMPACT_WINDOW"));
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        without_window,
+        "removing the window must leave the file as a windowless connect left it"
+    );
+}
+
+/// A `CLAUDE_CODE_AUTO_COMPACT_WINDOW` the user put in `env` themselves, with
+/// no Gate marker claiming it, is a choice to keep: connect neither replaces
+/// nor snapshots it, the marker never lists it, and disconnect leaves it
+/// where it was. The proxy keys are overridden and restored; this one is
+/// a preference, not a routing requirement.
+#[test]
+fn claude_code_leaves_a_user_owned_window_alone() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_ca_cert();
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{
+  "env": {
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000",
+    "FOO": "bar"
+  }
+}
+"#,
+    )
+    .unwrap();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+
+    claude
+        .connect(&connect_input_with_window(9977, Some(400_000)))
+        .unwrap();
+    let (env_block, managed) = claude_env_and_managed(&settings);
+    assert_eq!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        Some(&serde_json::json!("300000")),
+        "the user's own window must not be replaced by the org's: {env_block}"
+    );
+    assert!(
+        !managed
+            .iter()
+            .any(|k| k == "CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "a key we did not write must not be claimed as managed: {managed:?}"
+    );
+    assert_eq!(
+        env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
+        Some("http://gate-claude-code:route@127.0.0.1:9977"),
+        "routing is still written alongside the untouched window"
+    );
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert!(
+        after["_gateConnect"]["previousEnv"]
+            .get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+            .is_none(),
+        "a value we never replaced has nothing to restore: {after}"
+    );
+
+    // A second connect with the same inputs changes nothing.
+    let before = fs::read_to_string(&settings).unwrap();
+    claude
+        .connect(&connect_input_with_window(9977, Some(400_000)))
+        .unwrap();
+    assert_eq!(fs::read_to_string(&settings).unwrap(), before);
+
+    claude.disconnect().unwrap();
+    let (env_block, _) = claude_env_and_managed(&settings);
+    assert_eq!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        Some(&serde_json::json!("300000")),
+        "disconnect must leave the user's window where it was: {env_block}"
+    );
+    assert_eq!(env_block.get("FOO"), Some(&serde_json::json!("bar")));
+    assert!(env_block.get("HTTPS_PROXY").is_none());
+}
+
+/// Codex gets nothing for a window this round: its compaction call is
+/// cache-cold, so an earlier trigger costs more on 18-30% of threads (see
+/// `integrations::compaction`). The same connect that writes Claude Code's
+/// knob must leave `config.toml` without `model_auto_compact_token_limit`.
+#[test]
+fn codex_connect_writes_nothing_for_a_window() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let dir = env::codex_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("auth.json"), r#"{"auth_mode":"apikey"}"#).unwrap();
+
+    find(ToolId::Codex)
+        .unwrap()
+        .connect(&connect_input_with_window(9977, Some(400_000)))
+        .unwrap();
+
+    let config = fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(
+        config.contains("[model_providers.gate]"),
+        "the routing block is still written: {config}"
+    );
+    assert!(
+        !config.contains("model_auto_compact_token_limit") && !config.contains("compact"),
+        "Codex must not be handed a compaction threshold while its compaction call is \
+         cache-cold: {config}"
     );
 }

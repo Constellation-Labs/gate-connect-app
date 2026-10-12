@@ -39,6 +39,8 @@ pub struct Account {
     pub gateway_base_url: String,
     pub api_key: String,
     pub auth_mode: AuthMode,
+    /// The selected org's compaction window; see [`compaction_window`].
+    pub compaction_window: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,6 +65,14 @@ struct AccountFile {
     org_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     org_name: Option<String>,
+    /// The selected org's `clientConfig.compactionWindow` as the gateway last
+    /// reported it (sign-in, org switch, or the startup probe). Cached here so
+    /// the tool integrations can write and verify their knob from disk, with
+    /// no network call on the connect or status path. Travels with the org:
+    /// cleared whenever `org_id` is. Absent in files written before the field
+    /// existed and for an org with no window set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compaction_window: Option<u32>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -113,6 +123,7 @@ pub fn load() -> Result<Option<Account>> {
         gateway_base_url: file.gateway_base_url,
         api_key,
         auth_mode: file.auth_mode,
+        compaction_window: file.compaction_window,
     }))
 }
 
@@ -211,12 +222,14 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     let auth_mode = existing.as_ref().map(|f| f.auth_mode).unwrap_or_default();
     let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
     let org_name = existing.as_ref().and_then(|f| f.org_name.clone());
+    let compaction_window = existing.as_ref().and_then(|f| f.compaction_window);
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
         auth_mode,
         org_id,
         org_name,
+        compaction_window,
     })?;
 
     if let Some(key) = api_key {
@@ -274,18 +287,22 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
         auth_mode,
         org_id: None,
         org_name: None,
+        compaction_window: None,
     })?;
     Ok(())
 }
 
 /// Persist the selected organization (OAuth mode). `org_id` is the UUID
-/// injected on `X-Gate-Org-Id`; `org_name` is cached for display. Requires an
-/// existing `account.json`.
-pub fn set_org(org_id: &str, org_name: &str) -> Result<()> {
+/// injected on `X-Gate-Org-Id`; `org_name` is cached for display;
+/// `compaction_window` is the org's `clientConfig.compactionWindow` as listed
+/// (see [`crate::org::Org::compaction_window`]). Requires an existing
+/// `account.json`.
+pub fn set_org(org_id: &str, org_name: &str, compaction_window: Option<u32>) -> Result<()> {
     let mut file = read_account_file()?.context("no account configured")?;
     let gateway_base_url = file.gateway_base_url.clone();
     file.org_id = Some(org_id.to_string());
     file.org_name = Some(org_name.to_string());
+    file.compaction_window = compaction_window;
     write_account_file(&file)?;
     // After the write, so the emit authenticates as the org the operator just
     // switched *to* - the trail lands where the subsequent traffic will.
@@ -301,7 +318,35 @@ pub fn clear_org() -> Result<()> {
     let mut file = read_account_file()?.context("no account configured")?;
     file.org_id = None;
     file.org_name = None;
+    file.compaction_window = None;
     write_account_file(&file)
+}
+
+/// Record the selected org's compaction window as the gateway reports it now
+/// (the startup probe re-reads `GET /v1/me/orgs` on every launch, and the
+/// value can change in the dashboard while the app is closed). Returns whether
+/// the stored value moved, so the caller knows to re-apply the managed tool
+/// configs that carry it. A no-op with no org selected: the window travels
+/// with the org, and nothing may be stored for an org the user has not picked.
+pub fn set_compaction_window(compaction_window: Option<u32>) -> Result<bool> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    if file.org_id.is_none() || file.compaction_window == compaction_window {
+        return Ok(false);
+    }
+    file.compaction_window = compaction_window;
+    write_account_file(&file)?;
+    Ok(true)
+}
+
+/// The selected org's compaction window, or `None` when no org is selected or
+/// the org sets none. Cheap disk read that never touches the keychain, for the
+/// integrations' `status()` to check the knob they wrote against the value it
+/// should carry now.
+pub fn compaction_window() -> Option<u32> {
+    read_account_file()
+        .ok()
+        .flatten()
+        .and_then(|f| f.compaction_window)
 }
 
 /// The currently selected `(org_id, org_name)`, or `None` if the user hasn't

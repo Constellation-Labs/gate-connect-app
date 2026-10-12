@@ -44,7 +44,7 @@ export function OrgPicker({
     setChoosing(org.orgId);
     setError(null);
     try {
-      await setOrg(org.orgId, org.name);
+      await setOrg(org.orgId, org.name, org.compactionWindow ?? null);
       onDone();
     } catch (err) {
       setError(classifyError(err, "generic"));

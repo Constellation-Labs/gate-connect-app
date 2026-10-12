@@ -527,7 +527,7 @@ fn spawn_orgs_mock() -> String {
         if let Ok((mut stream, _)) = listener.accept() {
             let mut tmp = [0u8; 2048];
             let _ = stream.read(&mut tmp);
-            let body = r#"{"user":{"id":"u-cli","email":"cli@example.test"},"orgs":[{"orgId":"org-cli-1","name":"CLI Org","slug":"cli-org","role":"owner"}]}"#;
+            let body = r#"{"user":{"id":"u-cli","email":"cli@example.test"},"orgs":[{"orgId":"org-cli-1","name":"CLI Org","slug":"cli-org","role":"owner","clientConfig":{"compactionWindow":400000}}]}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -618,6 +618,12 @@ fn login_oauth_captures_redirect_selects_org_and_records_mode() {
         account_json.contains("\"org_id\": \"org-cli-1\""),
         "account.json should record the selected org: {account_json}"
     );
+    // And the org's client config, which `connect` writes into the managed
+    // tool configs from here (no second network call).
+    assert!(
+        account_json.contains("\"compaction_window\": 400000"),
+        "account.json should record the org's compaction window: {account_json}"
+    );
 }
 
 /// The headless trust flag has to be *asked for*, on both halves of the pair.
@@ -647,4 +653,66 @@ fn machine_wide_ca_trust_is_opt_in_on_both_trust_and_untrust() {
         untrust.contains("--system-trust"),
         "untrust-ca should offer the matching flag, or a machine-wide install has no supported removal: {untrust}"
     );
+}
+
+/// The org's compaction window, recorded with the org at sign-in, rides into
+/// `settings.json` as `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (mapped: window +
+/// 33000, plain integer) and leaves with the other managed keys on
+/// disconnect. A window the user set by hand is never ours: it survives both.
+#[test]
+fn claude_code_connect_carries_the_org_window_and_disconnect_removes_it() {
+    let h = Harness::new();
+    fs::create_dir_all(h.home().join(".claude")).unwrap();
+    h.login();
+    // The org and its client config, as `login --oauth` records them.
+    let account = h
+        .home()
+        .join("app-support")
+        .join("Gate Connect")
+        .join("account.json");
+    let with_org = read(&account).replacen(
+        '{',
+        r#"{ "org_id": "org-cli-1", "org_name": "CLI Org", "compaction_window": 400000,"#,
+        1,
+    );
+    fs::write(&account, with_org).unwrap();
+    let _engine = h.seed_engine_proxy();
+
+    h.run_ok(&["connect", "claude-code"]);
+    let settings: PathBuf = h.home().join(".claude").join("settings.json");
+    let body = read(&settings);
+    assert!(
+        body.contains(r#""CLAUDE_CODE_AUTO_COMPACT_WINDOW": "433000""#),
+        "the org window must be written as Claude Code's knob: {body}"
+    );
+
+    h.run_ok(&["disconnect", "claude-code"]);
+    let after = fs::read_to_string(&settings).unwrap_or_default();
+    assert!(
+        !after.contains("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "zero residue: the window must leave with the managed keys: {after}"
+    );
+    assert!(!after.contains("_gateConnect"), "{after}");
+
+    // The user's own window, outside Gate's managed block, is left alone by
+    // both halves.
+    fs::write(
+        &settings,
+        r#"{ "env": { "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000" } }"#,
+    )
+    .unwrap();
+    h.run_ok(&["connect", "claude-code"]);
+    let body = read(&settings);
+    assert!(
+        body.contains(r#""CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000""#),
+        "a user-set window must not be replaced by the org's: {body}"
+    );
+    assert!(!body.contains("433000"), "{body}");
+    h.run_ok(&["disconnect", "claude-code"]);
+    let after = read(&settings);
+    assert!(
+        after.contains(r#""CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000""#),
+        "a user-set window must survive disconnect: {after}"
+    );
+    assert!(!after.contains("HTTPS_PROXY"), "{after}");
 }
