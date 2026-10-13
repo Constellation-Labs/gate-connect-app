@@ -135,6 +135,9 @@ fn missed_config_change(changes: &[Change], start: u64) -> bool {
         .iter()
         .rposition(|change| change.at <= start)
         .is_none_or(|loaded| {
+            // The newest change is the current one, so a process that loaded it
+            // is current - even when its view is `None`, a legacy stamp the
+            // process started after, which is what the single stamp said too.
             loaded + 1 != changes.len()
                 && (changes[loaded].view.is_none() || changes[loaded].view != current.view)
         })

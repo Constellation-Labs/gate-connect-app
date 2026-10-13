@@ -567,7 +567,7 @@ export function TrayApp() {
     async (slug: string, next: boolean) => {
       setActionError(null);
       if (await routing.setAppRouted(slug, next)) {
-        await runningApps.offerAfterChange([slug]);
+        await runningApps.offerAfterChange([slug], next ? "on" : "off");
       }
     },
     [routing, runningApps],

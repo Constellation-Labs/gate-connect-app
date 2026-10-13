@@ -163,11 +163,23 @@ describe("ApplyChangesDialog closing", () => {
   });
 });
 
-describe("Codex after a routing change", () => {
+const claudeCode: DialogReopenTool = {
+  key: "claude-code:Claude Code",
+  slug: "claude-code",
+  name: "Claude Code",
+  stage: "reopen_required",
+  running: true,
+  canReopen: false,
+  verifiable: true,
+  routeInUse: null,
+  requestedRoute: null,
+};
+
+describe("Codex after routing is turned on", () => {
   it("names the per-conversation tools on a line of their own", () => {
     render(
       <ApplyChangesDialog
-        tools={[{ ...codex, key: "claude-code:Claude Code", slug: "claude-code", name: "Claude Code" }]}
+        tools={[claudeCode]}
         conversations={["Codex"]}
         onCloseApps={noop}
         onReopenLater={noop}

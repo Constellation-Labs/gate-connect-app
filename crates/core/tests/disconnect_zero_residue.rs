@@ -1223,8 +1223,6 @@ fn hermes_leaves_a_user_owned_proxy_alone() {
 /// a same-second write cannot hide a missing one.
 #[test]
 fn only_gates_own_changes_move_the_reopen_bound() {
-    use gate_connect_core::config_changes::changed_at;
-
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
 
@@ -1276,6 +1274,13 @@ fn only_gates_own_changes_move_the_reopen_bound() {
         changed_at(&settings).is_some_and(|t| t > 0),
         "disconnect is a change"
     );
+}
+
+/// Unix seconds of the newest change Gate recorded for `path`.
+fn changed_at(path: &std::path::Path) -> Option<u64> {
+    gate_connect_core::config_changes::history(path)
+        .last()
+        .map(|change| change.at)
 }
 
 /// A quit takes Gate out and the next launch puts it back. The record keeps
@@ -1335,8 +1340,6 @@ fn a_view_gate_did_not_record_is_kept_when_the_next_write_finds_it() {
 /// Not only Claude Code: every integration writes through the same record.
 #[test]
 fn opencode_changes_are_recorded_too() {
-    use gate_connect_core::config_changes::changed_at;
-
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     seed_relay_port(9977);

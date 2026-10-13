@@ -43,7 +43,7 @@ pub(crate) fn load_object_json5(path: &Path) -> Result<Option<Map<String, Value>
 /// carry other user config; the atomic write keeps a crash mid-write from
 /// corrupting the tool's own file.
 pub(crate) fn write_object(path: &Path, settings: &Map<String, Value>) -> Result<()> {
-    write_object_with_view(path, settings, <[u8]>::to_vec)
+    write_object_with_view(path, settings, crate::config_changes::whole_file)
 }
 
 /// [`write_object`], with `view` taking the file's bytes to the part a running

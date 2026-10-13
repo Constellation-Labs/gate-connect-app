@@ -192,16 +192,18 @@ A fourth was decided by the user on 2026-10-13:
 
 - **Codex is never offered for closing after a routing change.**
   `App/Codex/apply-changes` (`1336:13885`) draws Codex as the tool to close,
-  and measured on Codex that close fixes nothing: a conversation keeps the
-  route it started with however often Codex restarts, even when resumed, and
-  every new conversation takes the new route without one. So a routing change
-  with only Codex running raises `NewConversationsDialog` ("New conversations
-  are protected") instead, a mixed set leaves Codex off the list and names it
-  on one line, and Codex's verdict never reads "Reopen to finish" for a config
-  change (`reopen_pending_for`; a certificate re-mint still counts). A **model**
-  change still offers the close, because Codex's model list comes from its
-  app-server daemon, which reloads only once no session is open. Raise it with
-  design, and do not redraw it from the frame.
+  and measured on Codex that close fixes nothing: a conversation pins its
+  provider name when it starts, so one started off Gate stays off Gate however
+  often Codex restarts, and every new conversation takes the new route without
+  one. So turning routing **on** with only Codex running raises
+  `NewConversationsDialog` ("New conversations are protected", and only over a
+  verdict that reads On), a mixed set leaves Codex off the list and names it
+  on one line, and turning routing **off** leaves Codex out without a word.
+  Codex's verdict never reads "Reopen to finish" (`verdict_asks_for_reopen`):
+  config changes do not strand it, and it never loads Gate's certificate. A
+  **model** change still offers the close, because Codex's model list comes
+  from its app-server daemon, which reloads only once no session is open.
+  Raise it with design, and do not redraw it from the frame.
 
 If you find a fifth of these, raise it rather than deciding it.
 

@@ -953,12 +953,19 @@ fn write_settings(settings: &Map<String, Value>) -> Result<()> {
 /// without a restart - so a change to Gate's model list is not one a running
 /// `claude` misses.
 fn routing_view(bytes: &[u8]) -> Vec<u8> {
+    // A blank file reads as absent, as `load_object` reads it.
+    if bytes.trim_ascii().is_empty() {
+        return Vec::new();
+    }
     serde_json::from_slice::<Value>(bytes)
         .map(|settings| {
             settings
                 .get("env")
                 .and_then(Value::as_object)
                 .map(|env| {
+                    // Sorted here rather than trusted to be: `serde_json::Map`
+                    // keeps insertion order whenever any crate in the build
+                    // turns on its `preserve_order` feature.
                     let sorted: std::collections::BTreeMap<&String, &Value> = env.iter().collect();
                     serde_json::to_vec(&sorted).unwrap_or_default()
                 })
@@ -999,6 +1006,7 @@ mod tests {
             routing_view(br#"{"env":{"A":"1","B":"3"}}"#)
         );
         assert_eq!(routing_view(br#"{"model":"x"}"#), routing_view(b""));
+        assert_eq!(routing_view(b" \n"), routing_view(b""));
         assert_eq!(routing_view(b"not json"), b"not json");
     }
 

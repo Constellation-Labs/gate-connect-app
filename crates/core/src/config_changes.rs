@@ -47,10 +47,14 @@
 //! write that failed, the CLI racing the app, a shutdown between the two).
 //! Either way a process could have started on a view the record never saw,
 //! and the next write would put the recorded view back and call that process
-//! current. So every write first fingerprints the file it is about to replace,
-//! and a view other than the last recorded one goes in as a change of its own,
-//! stamped one second after that last change - the earliest it can have
-//! happened, so a process in the gap is judged stale rather than current.
+//! current. So every write that changes the file first fingerprints the file it
+//! is about to replace, and a view other than the last recorded one goes in as
+//! a change of its own, stamped one second after that last change - the
+//! earliest it can have happened, so a process in the gap is judged stale
+//! rather than current. Only a write that changes the file looks: a pass that
+//! leaves the bytes alone would otherwise record the tool's own edits on every
+//! reconnect, and for a tool whose view is the whole file that is a reopen
+//! notice for nothing.
 //!
 //! **Bounded.** Each path keeps its newest [`MAX_CHANGES`], and a path whose
 //! newest change is older than [`MAX_AGE_SECS`] is dropped the next time
@@ -127,12 +131,13 @@ pub(crate) fn write_with_view(
 ) -> Result<()> {
     let current = fs::read(path).ok();
     crate::primitives::write_file(path, bytes, mode)?;
-    let written = (current.as_deref() != Some(bytes)).then(|| view(bytes));
-    record(
-        path,
-        &view(current.as_deref().unwrap_or_default()),
-        written.as_deref(),
-    );
+    if current.as_deref() != Some(bytes) {
+        record(
+            path,
+            &view(current.as_deref().unwrap_or_default()),
+            &view(bytes),
+        );
+    }
     Ok(())
 }
 
@@ -145,22 +150,18 @@ pub(crate) fn remove(path: &Path) -> Result<()> {
 /// [`remove`] for a tool that writes through [`write_with_view`], so the file
 /// being removed is read the same way.
 pub(crate) fn remove_with_view(path: &Path, view: fn(&[u8]) -> Vec<u8>) -> Result<()> {
-    let Ok(current) = fs::read(path) else {
+    if !path.exists() {
         return Ok(());
-    };
+    }
+    let current = fs::read(path).unwrap_or_default();
     fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
-    record(path, &view(&current), Some(b""));
+    record(path, &view(&current), &view(b""));
     Ok(())
 }
 
-fn whole_file(bytes: &[u8]) -> Vec<u8> {
+/// The routing view of a tool that acts on its whole file.
+pub(crate) fn whole_file(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
-}
-
-/// Unix seconds of the newest change recorded for the file at `path`, or `None`
-/// when there is none.
-pub fn changed_at(path: &Path) -> Option<u64> {
-    history(path).last().map(|change| change.at)
 }
 
 /// Gate's changes to the file at `path`, oldest first. Empty when it has no
@@ -172,14 +173,14 @@ pub fn history(path: &Path) -> Vec<Change> {
         .unwrap_or_default()
 }
 
-/// Record what a write found on disk and, when it changed the file, what it
-/// left there. `written` is `None` for a write that left the bytes alone.
+/// Record a change: the view a write found on disk, when it is not the last one
+/// recorded, and the view it left there.
 ///
 /// Best effort. The configuration write has already landed when this runs, so
 /// failing the caller here would report a connect as failed while the tool is
 /// routed. A missing stamp can cost a reopen notice, and the log says why; the
 /// next write's look at the file is what recovers the change it lost.
-fn record(path: &Path, found: &[u8], written: Option<&[u8]>) {
+fn record(path: &Path, found: &[u8], written: &[u8]) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -187,7 +188,7 @@ fn record(path: &Path, found: &[u8], written: Option<&[u8]>) {
     let saved = load().and_then(|mut stamps| {
         let changes = stamps.entry(key(path)).or_default();
         let observed = observe(changes, now, fingerprint(found));
-        let appended = written.is_some_and(|view| append(changes, now, fingerprint(view)));
+        let appended = append(changes, now, fingerprint(written));
         if !observed && !appended {
             return Ok(());
         }
@@ -226,12 +227,16 @@ fn observe(changes: &mut Vec<Change>, now: u64, view: String) -> bool {
 
 /// Add a change to one path's list, unless its view is the one already in
 /// place, and keep the list to [`MAX_CHANGES`]. Whether it was added.
-fn append(changes: &mut Vec<Change>, at: u64, view: String) -> bool {
-    if changes
-        .last()
-        .is_some_and(|last| last.view.as_deref() == Some(view.as_str()))
-    {
-        return false;
+///
+/// Never stamped before the change it follows: a clock stepped back would
+/// otherwise leave the list out of order, and [`crate::reopen`] reads what a
+/// process loaded off that order.
+fn append(changes: &mut Vec<Change>, mut at: u64, view: String) -> bool {
+    if let Some(last) = changes.last() {
+        if last.view.as_deref() == Some(view.as_str()) {
+            return false;
+        }
+        at = at.max(last.at);
     }
     changes.push(Change {
         at,
@@ -365,6 +370,14 @@ mod tests {
         prune(&mut stamps, now);
         let kept: Vec<&str> = stamps.keys().map(String::as_str).collect();
         assert_eq!(kept, ["edge", "old-then-new"]);
+    }
+
+    #[test]
+    fn a_clock_stepped_back_never_puts_a_change_before_the_last() {
+        let mut changes = Vec::new();
+        append(&mut changes, 300, "gate".into());
+        append(&mut changes, 200, "own".into());
+        assert_eq!(changes.last().map(|c| c.at), Some(300));
     }
 
     #[test]

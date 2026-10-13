@@ -82,6 +82,21 @@ export type RunningAppsStage =
   /** Signalled. Each tool is now followed to its own conclusion. */
   | { kind: "work"; tools: ReopenTool[]; slugs?: string[] };
 
+/**
+ * Why a close is being offered, which decides what a per-conversation tool
+ * (`routesNewConversations`) is told. Required at every call site, because
+ * each answer is wrong for some caller:
+ *
+ * - `on`: routing was turned on. Its next conversation is protected without a
+ *   restart, so it is told that rather than offered a close.
+ * - `off`: routing was turned off. Closing fixes nothing and there is nothing
+ *   to reassure about, so it is left out without a word.
+ * - `model`: its model list changed. That comes from Codex's app-server daemon,
+ *   which reloads only once no session is open, so the close is offered.
+ * - `reopen`: the pane's reopen card asked. Offered like any other tool.
+ */
+export type OfferReason = "on" | "off" | "model" | "reopen";
+
 export interface RunningApps {
   stage: RunningAppsStage | null;
   /**
@@ -89,10 +104,9 @@ export interface RunningApps {
    *
    * `slugs` are the tools whose configs the write actually touched. Omitting
    * them asks about every tool, which only the master toggle means. `change`
-   * says what the write moved: a route reaches a per-conversation tool's next
-   * conversation on its own, a model does not.
+   * says why: see [`OfferReason`].
    */
-  offerAfterChange: (slugs?: string[], change?: "route" | "model") => Promise<void>;
+  offerAfterChange: (slugs: string[] | undefined, change: OfferReason) => Promise<void>;
   closeApps: () => Promise<void>;
   /** Move one row, for an action the shell owns: a retried write, a tool put
    *  back on its own defaults. Scoped to one slug on purpose - AG-566 AC 10
@@ -199,7 +213,7 @@ export function useRunningApps({
    * to close apps that may not be open.
    */
   const offerAfterChange = useCallback(
-    async (slugs?: string[], change: "route" | "model" = "route") => {
+    async (slugs: string[] | undefined, change: OfferReason) => {
       try {
         // Narrowed to what actually changed. A master toggle passes nothing and
         // still offers everything, because it moved every tool's route; a single
@@ -220,9 +234,22 @@ export function useRunningApps({
           verdicts,
         );
         const perConversation = (t: ReopenTool) =>
-          change === "route" && routesNewConversations(t.slug);
+          (change === "on" || change === "off") && routesNewConversations(t.slug);
         const tools = found.filter((t) => !perConversation(t));
-        const conversations = found.filter(perConversation).map((t) => t.name);
+        // Said only over a verdict that reads On: "protected" is a claim about
+        // the user's traffic, and a write that landed is not a route that works.
+        const conversations =
+          change === "on"
+            ? found
+                .filter((t) => perConversation(t) && verdicts.get(t.slug)?.state === "on")
+                .map((t) => t.name)
+            : [];
+        if (tools.length === 0 && found.length > 0 && conversations.length === 0) {
+          // Only a per-conversation tool is running, and either routing went off
+          // or the route is not working yet: nothing to close, and nothing true
+          // to say beyond what its row already says.
+          return;
+        }
         if (tools.length === 0 && conversations.length === 0) {
           // Same answer as an empty scan: every process the walk yielded was
           // one no slug claims, so there is no tool here to offer anything

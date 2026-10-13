@@ -3354,8 +3354,8 @@ fn agent_process_names(slug: &str) -> Vec<&'static str> {
 /// **Gate's record, not the file's mtime.** The mtime moved on the tool's own
 /// edits too - Claude Code rewrites `settings.json` on every permission
 /// approval - and each one made every older process read as stale with
-/// nothing Gate routes by changed. [`gate_connect_core::config_changes`] is
-/// stamped only when Gate's write actually changed the file.
+/// nothing Gate routes by changed. [`gate_connect_core::config_changes`]
+/// records a change only when Gate's write actually changed the file.
 ///
 /// Empty for a tool with no configuration file of its own (the environment
 /// channel) and for one Gate has no recorded change to. Both mean the same
@@ -3409,8 +3409,8 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Is a process for this one tool running that predates the last change to that
-/// tool's configuration, and is therefore still using whatever it loaded then?
+/// Is a process for this one tool running that loaded a configuration other than
+/// the one in place now, and is therefore still using whatever it loaded then?
 ///
 /// Narrowed to one tool *and* given a durable bound, which is what a per-tool
 /// verdict needs: it has to say which row to mark, and survive a restart of
@@ -3421,20 +3421,22 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
 /// it is made from: the process names for the slug, their start times, and
 /// Gate's history of changes to the configuration file.
 ///
-/// **Codex's configuration changes do not count here, its certificate does.**
-/// Codex reads its route per conversation (`integrations::codex`): every
-/// conversation started after a change takes the new route without a restart,
-/// and none already open ever does, so a process older than the change is
-/// neither a reason to call the row Not protected nor something reopening
-/// would fix. The certificate is still read once per process. This is the one
-/// place the verdict and [`agent_needs_reopen`] part ways: the process-level
-/// answer still says the process predates the config, which the reopen flow's
-/// watch needs after a model change, when closing Codex is what lets its
-/// app-server daemon reload the model list.
+/// **Never for Codex** ([`verdict_asks_for_reopen`]). Codex reads its route per
+/// conversation (`integrations::codex`): every conversation started after a
+/// change takes the new route without a restart, and none already open ever
+/// does, so a process older than the change is neither a reason to call the
+/// row Not protected nor something reopening would fix. Nor does a certificate
+/// re-mint touch it: Codex reaches Gate only through the loopback relay, over
+/// plain HTTP, and never loads Gate's certificate. This is the one place the
+/// verdict and [`agent_needs_reopen`] part ways: the process-level answer still
+/// says the process predates the config, which the reopen flow's watch needs
+/// after a model change, when closing Codex is what lets its app-server daemon
+/// reload the model list. The frontend's `routesNewConversations` is the same
+/// fact, and the two move together.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn reopen_pending_for(slug: &str) -> bool {
     let wanted = agent_process_names(slug);
-    if wanted.is_empty() {
+    if wanted.is_empty() || !verdict_asks_for_reopen(slug) {
         // No process table walk for a tool the walk could not recognise, and
         // no stat either. `process_names_known: false` below is the same
         // answer, stated where the decision lives.
@@ -3445,13 +3447,16 @@ fn reopen_pending_for(slug: &str) -> bool {
     gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
         process_names_known: true,
         process_starts: &starts,
-        config_changes: &if slug == ToolId::Codex.slug() {
-            Vec::new()
-        } else {
-            config_changes_of(slug)
-        },
+        config_changes: &config_changes_of(slug),
         ca_cert_changed_at: ca_cert_changed_at_unix(),
     })
+}
+
+/// Whether a tool's verdict can read "Reopen to finish" at all. False for
+/// Codex alone; see [`reopen_pending_for`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn verdict_asks_for_reopen(slug: &str) -> bool {
+    slug != ToolId::Codex.slug()
 }
 
 /// One tool's routing verdict, flattened for the frontend.
@@ -7648,6 +7653,18 @@ mod tests {
     /// `NODE_EXTRA_CA_CERTS` and what `proxy_env` exports. If the tools are
     /// ever pointed somewhere else, this should move with them rather than
     /// keep naming a path nobody reads.
+    /// Codex alone never reads "Reopen to finish": it routes per conversation
+    /// and never loads the certificate. Pinned beside the frontend's
+    /// `routesNewConversations`, which says the same thing about the same slug.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn only_codex_is_spared_a_reopen_verdict() {
+        assert!(!verdict_asks_for_reopen("codex"));
+        for slug in ["claude-code", "opencode", "hermes", "anthropic", "chatgpt"] {
+            assert!(verdict_asks_for_reopen(slug), "{slug}");
+        }
+    }
+
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn reopen_source_is_the_file_tools_read() {

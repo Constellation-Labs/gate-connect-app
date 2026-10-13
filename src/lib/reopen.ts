@@ -213,15 +213,20 @@ export function reopenKey(agent: RunningAgent): string {
 /**
  * Whether a tool reads its route per conversation rather than per process, so
  * a routing change reaches every conversation started after it without a
- * restart, and none already open however often it restarts.
+ * restart, and closing the tool fixes none already open.
  *
- * Codex only, measured: a conversation pins its provider when it starts, and
- * one started off Gate stays off Gate even when resumed after a restart
- * (`integrations::codex`). Closing it would end work and fix nothing, so a
- * routing change tells the user new conversations are protected instead of
- * offering the close. A model change still offers it: Codex's model list comes
- * from its app-server daemon, which loads it once and is refreshed only when no
- * session is open.
+ * Codex only, measured: a conversation pins its provider *name* when it starts
+ * and resolves that name against the config when it is resumed
+ * (`integrations::codex`). One started off Gate therefore stays off Gate
+ * however often Codex restarts; one started on Gate goes through Gate while
+ * routing is on, and straight to the provider through the passthrough stub once
+ * it is off. Either way a restart changes nothing, so `OfferReason` decides what
+ * the user is told instead. A model change still offers the close: Codex's
+ * model list comes from its app-server daemon, which loads it once and is
+ * refreshed only when no session is open.
+ *
+ * The backend's `verdict_asks_for_reopen` is the same fact; the two move
+ * together.
  */
 export function routesNewConversations(slug: string): boolean {
   return slug === "codex";

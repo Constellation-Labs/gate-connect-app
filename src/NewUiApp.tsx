@@ -1439,7 +1439,8 @@ export function NewUiApp() {
   });
 
   /**
-   * The reopen flow draws a dialog for the offer only.
+   * The reopen flow draws a dialog for the offer, and for the note a
+   * per-conversation tool gets in its place (`NewConversationsDialog`).
    * `work` runs with nothing on screen, so the rail carries it, and a CLI
    * waiting for its user to reopen it can stay there indefinitely. It used to
    * end on a "Change is ready" dialog once every tool verified; that dialog is
@@ -1570,7 +1571,7 @@ export function NewUiApp() {
       setActionError(null);
       if (await routing.setAppRouted(slug, next, force)) {
         // Only this tool's processes: its route is the only one that moved.
-        await runningApps.offerAfterChange([slug]);
+        await runningApps.offerAfterChange([slug], next ? "on" : "off");
       }
     },
     [routing, runningApps],
@@ -2741,7 +2742,7 @@ export function NewUiApp() {
         name={app.name}
         routeInUse={verdict.route_in_use}
         requestedRoute={verdict.requested_route}
-        onReopen={() => void runningApps.offerAfterChange([openTool])}
+        onReopen={() => void runningApps.offerAfterChange([openTool], "reopen")}
       />
     );
   }, [view, openTool, verdicts, apps, runningApps]);

@@ -590,15 +590,17 @@ function newConversationsLine(names: string[]): string {
 }
 
 /**
- * What a routing change did for a tool that routes per conversation, when that
- * is the only kind running: nothing to close, so no close to offer.
+ * What turning routing on did for a tool that routes per conversation, when
+ * that is the only kind running: nothing to close, so no close to offer. Shown
+ * only over a verdict that reads On (`useRunningApps`).
  *
  * **Not in the Figma, and it replaces a drawn flow.** `App/Codex/apply-changes`
  * (`1336:13885`) draws Codex as the tool to close. Measured on Codex, a
- * conversation keeps the route it started with however often Codex restarts,
- * and every new one takes the new route without a restart, so that close ended
- * work and fixed nothing. Decided by the user on 2026-10-13; raise it with
- * design rather than redrawing it from the frame.
+ * conversation pins its provider when it starts, so a restart routes none that
+ * are already open, and every new one takes the new route without a restart:
+ * that close ended work and fixed nothing. Decided by the user on 2026-10-13;
+ * raise it with design rather than redrawing it from the frame. 600 wide, the
+ * width `Modal` gives a dialog no frame draws.
  */
 export function NewConversationsDialog({
   names,
@@ -612,10 +614,9 @@ export function NewConversationsDialog({
       tone="success"
       icon="shieldCheck"
       title="New conversations are protected"
-      subtitle={`${joinNames(names)} picks up the change in every conversation you start from now on`}
+      subtitle={`${joinNames(names)} ${names.length === 1 ? "picks" : "pick"} up the change in every conversation you start from now on`}
       primary={{ label: "Got it", onClick: onDone }}
       onDismiss={onDone}
-      width={512}
     >
       <ModalNote>
         <p>Conversations already open keep the route they started with.</p>
