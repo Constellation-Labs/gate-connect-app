@@ -92,6 +92,9 @@ export interface OrgFixture {
   name: string;
   slug: string;
   role: string;
+  /** The org's clientConfig.compactionWindow as GET /v1/me/orgs reports it;
+   *  null leaves every connected tool at its own default. */
+  compactionWindow: number | null;
 }
 
 /** Everything the fake backend serves. Plain data: it crosses into the page
@@ -248,8 +251,8 @@ export function defaultState(): BackendState {
       expires_at_unix: 4102444800,
     },
     orgs: [
-      { orgId: "org-1", name: "Constellation Labs", slug: "constellation", role: "admin" },
-      { orgId: "org-2", name: "Side Project", slug: "side-project", role: "member" },
+      { orgId: "org-1", name: "Constellation Labs", slug: "constellation", role: "admin", compactionWindow: null },
+      { orgId: "org-2", name: "Side Project", slug: "side-project", role: "member", compactionWindow: 400000 },
     ],
     accountKeyPrefix: null,
     proxy: {

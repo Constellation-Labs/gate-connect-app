@@ -26,7 +26,12 @@ test.describe("sign in", () => {
     await app.page.getByText("Constellation Labs").click();
 
     await expect(app.page.getByRole("heading", { name: /connected/i })).toBeVisible();
-    expect(await app.lastCall("set_org")).toEqual({ orgId: "org-1", orgName: "Constellation Labs" });
+    // The org's compaction window travels with the pick (null: no window set).
+    expect(await app.lastCall("set_org")).toEqual({
+      orgId: "org-1",
+      orgName: "Constellation Labs",
+      compactionWindow: null,
+    });
 
     // Routing is off and there is a proxy subsystem, so Success offers the
     // last step rather than claiming to be routing.
@@ -38,6 +43,20 @@ test.describe("sign in", () => {
     await app.page.getByRole("button", { name: "Install certificate" }).click();
     await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
     expect((await app.state()).proxy.running).toBe(true);
+  });
+
+  test("picking an org with a compaction window forwards it to the backend", async ({ boot }) => {
+    const app = await boot(NO_ACCOUNT);
+    await app.page.getByRole("button", { name: /Sign in with Constellation/ }).click();
+    // Side Project carries clientConfig.compactionWindow 400000 in the fixture;
+    // the backend writes it into the managed tool configs from the set_org call.
+    await app.page.getByText("Side Project").click();
+    await expect(app.page.getByRole("heading", { name: /connected/i })).toBeVisible();
+    expect(await app.lastCall("set_org")).toEqual({
+      orgId: "org-2",
+      orgName: "Side Project",
+      compactionWindow: 400000,
+    });
   });
 
   test("the API key path saves the key and skips the org picker", async ({ boot }) => {
