@@ -17,7 +17,7 @@
 #      reach the real gateway, whatever it decides to call;
 #   3. ci/e2e/mock-gateway.mjs on 443 with that leaf, logging every request.
 #
-# Then: install from the dmg, launch, "Use an API key", type a made-up key,
+# Then: install from the dmg, launch, walk the intro, "Use an API key", type a made-up key,
 # "Connect and continue", and assert the signed-in state twice: the window moves
 # on to "Name this device", and account.json carries the key's prefix.
 #
@@ -116,6 +116,17 @@ open "$APP"
 "${AX[@]}" wait-window 90
 "${AX[@]}" dump >"$OUT/01-launched.ax.txt" 2>&1 || true
 screencapture -x "$OUT/01-launched.png" || true
+endstep
+
+# A first launch opens the intro window: a welcome frame and three steps, each
+# with Next, the last with "Get started", which closes it.
+step "intro"
+"${AX[@]}" wait-text 60 "Welcome to Gate Connect"
+for n in 2 3 4; do
+  "${AX[@]}" click 30 "Next"
+  "${AX[@]}" wait-text 30 "Step $n of 4"
+done
+"${AX[@]}" click 30 "Get started"
 endstep
 
 step "welcome"
