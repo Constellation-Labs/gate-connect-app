@@ -365,6 +365,28 @@ mod tests {
         assert_eq!(drift, vec![], "stamping drift against the manifest");
     }
 
+    /// AG-1040: OpenAI merged the Codex desktop app into the ChatGPT desktop
+    /// app, and the manifest keeps one entry for both. `client_tool` stamps the
+    /// Codex mode's agents with the ChatGPT app's slug on that promise, so a
+    /// manifest that split them again, or dropped the app below Works, must
+    /// fail here rather than leave the stamp filing traffic under the wrong
+    /// support level.
+    #[test]
+    fn the_chatgpt_desktop_app_and_its_codex_mode_are_one_works_entry() {
+        let manifest = load().unwrap();
+        assert!(
+            manifest.harnesses.iter().all(|h| h.id != "codex-desktop"),
+            "the manifest lists codex-desktop again; the Codex mode stamp assumes one entry"
+        );
+        let app = manifest
+            .harnesses
+            .iter()
+            .find(|h| h.id == "chatgpt-desktop")
+            .expect("no chatgpt-desktop entry");
+        assert_eq!(app.tier, "works");
+        assert_eq!(app.routing.proxy_domain.as_deref(), Some("chatgpt-apps"));
+    }
+
     // --- each drift variant fires, on fixtures
 
     fn fixture() -> Manifest {
