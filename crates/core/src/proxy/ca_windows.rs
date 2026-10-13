@@ -620,3 +620,180 @@ fn remove_ca_material() -> Result<()> {
         Err(e) => Err(e).with_context(|| format!("removing {}", cert.display())),
     }
 }
+
+/// bedf13a: a `certutil` that crashes on this host must cost one failed check,
+/// not the machine. These pin the three parts of that fix: the bounded wait,
+/// the crash reading, and the cooldown in [`is_trusted`].
+///
+/// Windows only, because the whole module is (`proxy/mod.rs` includes it on
+/// Windows alone). Spelled `#[cfg(test)]` rather than `all(test, windows)` so
+/// `env::tests::every_seam_is_read_through_the_helper`, which splits each file
+/// at that exact attribute, reads the scratch-home save and restore below as
+/// test code.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::process::ExitStatusExt;
+
+    /// A child that outlives [`CERTUTIL_TIMEOUT`] is killed and answers `None`,
+    /// at the timeout rather than whenever the child gives up. `ping` stands in
+    /// for a hung `certutil`: it takes about 29s, and certutil cannot be made
+    /// to hang on purpose.
+    #[test]
+    fn certutil_bounded_kills_a_child_that_outlives_the_timeout() {
+        let mut hung = Command::new("ping");
+        hung.args(["-n", "30", "127.0.0.1"]);
+        let started = Instant::now();
+        let finished = certutil_bounded(hung).expect("ping spawns");
+        let took = started.elapsed();
+        assert!(
+            finished.is_none(),
+            "a child past the timeout is killed, not waited on: {finished:?} after {took:?}"
+        );
+        assert!(
+            took >= CERTUTIL_TIMEOUT && took < CERTUTIL_TIMEOUT + Duration::from_secs(5),
+            "gave up after {took:?}, not at the {CERTUTIL_TIMEOUT:?} timeout"
+        );
+    }
+
+    /// A child that finishes in time hands back its own exit status.
+    #[test]
+    fn certutil_bounded_returns_the_status_of_a_child_that_finishes() {
+        let mut quick = Command::new("cmd");
+        quick.args(["/C", "exit 3"]);
+        let started = Instant::now();
+        let status = certutil_bounded(quick)
+            .expect("cmd spawns")
+            .expect("cmd finishes well inside the timeout");
+        assert_eq!(status.code(), Some(3));
+        assert!(started.elapsed() < CERTUTIL_TIMEOUT);
+    }
+
+    /// An exit code with NTSTATUS severity ERROR is a crash; anything else is
+    /// certutil's own answer, including a declined trust dialog.
+    #[test]
+    fn crash_code_tells_a_crash_from_a_decision() {
+        let exit = ExitStatus::from_raw;
+        assert_eq!(crash_code(&exit(0xC000_0005)), Some(0xC000_0005));
+        assert_eq!(crash_code(&exit(0xC000_0409)), Some(0xC000_0409));
+        assert_eq!(crash_code(&exit(0)), None);
+        assert_eq!(crash_code(&exit(1)), None);
+        assert_eq!(
+            crash_code(&exit(0x8000_0003)),
+            None,
+            "a warning is not a crash"
+        );
+    }
+
+    /// Points the per-user paths at a scratch home holding a CA cert, and puts
+    /// both back, with the trust probe cleared, however the test ends.
+    struct ScratchCa {
+        home: PathBuf,
+        prev: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ScratchCa {
+        fn new() -> Self {
+            let lock = crate::env::path_env_lock();
+            let home = std::env::temp_dir().join(format!(
+                "gate-ca-windows-{}-{:?}",
+                std::process::id(),
+                thread::current().id()
+            ));
+            let _ = fs::remove_dir_all(&home);
+            fs::create_dir_all(&home).unwrap();
+            let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+            std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+            let path = cert_path().unwrap();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // Any PEM block will do: the thumbprint is the SHA-1 of its bytes.
+            fs::write(
+                &path,
+                "-----BEGIN CERTIFICATE-----\nR2F0ZSB0ZXN0IENB\n-----END CERTIFICATE-----\n",
+            )
+            .unwrap();
+            forget_trust_reading();
+            Self {
+                home,
+                prev,
+                _lock: lock,
+            }
+        }
+
+        fn thumb(&self) -> String {
+            cert_thumbprint()
+                .unwrap()
+                .expect("the scratch cert is there")
+        }
+
+        /// Make the probe look like certutil last failed `ago`, with `last` the
+        /// reading before that.
+        fn failed(&self, ago: Duration, last: Option<(String, bool)>) {
+            let mut probe = TRUST_PROBE.lock().unwrap();
+            probe.last = last;
+            probe.failed_at = Some(
+                Instant::now()
+                    .checked_sub(ago)
+                    .expect("the clock reaches back that far"),
+            );
+        }
+    }
+
+    impl Drop for ScratchCa {
+        fn drop(&mut self) {
+            forget_trust_reading();
+            match self.prev.take() {
+                Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+                None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
+
+    /// Inside the cooldown, `is_trusted` serves the last reading for this CA
+    /// and spawns nothing. Without the cooldown it would ask certutil, which
+    /// has never heard of this scratch cert, and answer false.
+    #[test]
+    fn is_trusted_serves_the_last_reading_during_the_cooldown() {
+        let ca = ScratchCa::new();
+        ca.failed(Duration::from_secs(1), Some((ca.thumb(), true)));
+        assert!(
+            is_trusted().expect("a cached reading is served"),
+            "inside the cooldown the last reading for this CA stands"
+        );
+    }
+
+    /// With nothing cached for this CA, the cooldown reports itself rather
+    /// than inventing an untrusted CA, which would send `ensure_trusted` at a
+    /// re-install and its dialog.
+    #[test]
+    fn is_trusted_reports_the_cooldown_when_it_has_no_reading_for_this_ca() {
+        let ca = ScratchCa::new();
+        ca.failed(
+            Duration::from_secs(1),
+            Some(("A READING FOR ANOTHER CA".into(), true)),
+        );
+        let err = is_trusted().expect_err("no reading to serve");
+        assert!(
+            err.to_string().contains("is not being re-run"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// The cooldown ends: past it, the probe is allowed to run again.
+    #[test]
+    fn the_cooldown_lapses_after_its_length() {
+        let ca = ScratchCa::new();
+        ca.failed(CERTUTIL_COOLDOWN, Some((ca.thumb(), true)));
+        assert_eq!(trust_reading_during_cooldown(&ca.thumb()).unwrap(), None);
+        ca.failed(
+            CERTUTIL_COOLDOWN - Duration::from_secs(1),
+            Some((ca.thumb(), false)),
+        );
+        assert_eq!(
+            trust_reading_during_cooldown(&ca.thumb()).unwrap(),
+            Some(false)
+        );
+    }
+}

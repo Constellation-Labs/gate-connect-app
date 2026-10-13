@@ -13,11 +13,13 @@
 //! corner radius, its own space behaviour and a click-outside watcher, none of
 //! which a regular window wants. The dock icon is back with them gone.
 
-use gate_connect_core::{account, registry, Status, ToolId};
+use gate_connect_core::{account, Status, ToolId};
 
 mod commands;
 mod platform;
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use platform::TauriApp;
 use platform::TauriPlatform;
 
 /// How a challenge-solve attempt ended; reported to the engine so the cooldown
@@ -879,13 +881,9 @@ fn list_providers() -> Vec<gate_connect_core::provider::ProviderState> {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 async fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::proxy::manager()
-            .status()
-            .map_err(|e| format!("{e:#}"))
-    })
-    .await
-    .map_err(|e| format!("proxy status join error: {e}"))?
+    tauri::async_runtime::spawn_blocking(|| commands::proxy_status(&TauriPlatform))
+        .await
+        .map_err(|e| format!("proxy status join error: {e}"))?
 }
 
 /// Read the browser stores, once, for the note the window raises when
@@ -898,7 +896,7 @@ async fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 async fn proxy_browser_store() -> Result<Option<gate_connect_core::proxy::NssTrust>, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::proxy::probe_browser_store)
+    tauri::async_runtime::spawn_blocking(|| commands::proxy_browser_store(&TauriPlatform))
         .await
         .map_err(|e| format!("browser store probe join error: {e}"))
 }
@@ -909,40 +907,11 @@ async fn proxy_enable<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
     // Off the main thread: enable can block on the CA-trust admin prompt
-    // and waits up to 10s for engine readiness.
-    let state = tauri::async_runtime::spawn_blocking(|| {
-        // Master ON is one policy shared with the CLI and the startup
-        // auto-enable: persist the intent (so the startup auto-enable
-        // re-routes after a restart - whether the app relaunches at boot is
-        // governed separately by "Launch at login"), restore the provider
-        // selection around the engine start, and surface best-effort hiccups
-        // without blocking the proxy from coming up.
-        let (_, warnings) = gate_connect_core::routing::enable().map_err(|e| format!("{e:#}"))?;
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        refresh_codex_daemon_when_idle("routing on");
-        for w in warnings {
-            eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
-            report_backend_failure(w.component, &w.error);
-        }
-        // Status re-read rather than enable's own state: the post-enable
-        // restore pass can flip domains, and the UI wants the settled set.
-        gate_connect_core::proxy::manager()
-            .status()
-            .map_err(|e| format!("{e:#}"))
-    })
-    .await
-    .map_err(|e| format!("proxy enable join error: {e}"))??;
-    // Refresh the tray for the new routing state on every platform: retint the
-    // mark, recolor the status dot (green on / gray off), and update the
-    // tooltip where supported (macOS + Windows).
-    update_tray_status(&app, state.running);
-    // Crash safety net: routing is now on, but with no login item registered a
-    // crash would strand the system proxy at a dead port with nothing
-    // relaunching at boot to run the startup self-heal. (macOS/Windows only;
-    // see the function's doc for why Linux is excluded.)
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    arm_crash_safety_net(&app);
-    Ok(state)
+    // and waits up to 10s for engine readiness. The tray refresh and the
+    // crash safety net after it run there too, in the same order.
+    tauri::async_runtime::spawn_blocking(move || commands::proxy_enable(&TauriApp { app }))
+        .await
+        .map_err(|e| format!("proxy enable join error: {e}"))?
 }
 
 /// Crash safety net for a session with routing on but no login item: register
@@ -1024,44 +993,17 @@ async fn proxy_disable<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
     // Off the main thread: disable runs system-proxy subprocesses and joins
-    // the engine thread.
-    let state = tauri::async_runtime::spawn_blocking(|| {
-        // Master OFF is one policy shared with the CLI: sweep + disconnect
-        // everything managed before the proxy stops, then clear the routing
-        // intent so explicit "off" is sticky across restarts (whether the app
-        // relaunches at boot is governed separately by "Launch at login").
-        // Best-effort hiccups surface as warnings and never block the kill
-        // switch.
-        let (state, warnings) =
-            gate_connect_core::routing::disable().map_err(|e| format!("{e:#}"))?;
-        for w in warnings {
-            eprintln!(
-                "[gate] proxy disable: {} failed: {:#}",
-                w.component, w.error
-            );
-            report_backend_failure(w.component, &w.error);
-        }
-        Ok::<_, String>(state)
-    })
-    .await
-    .map_err(|e| format!("proxy disable join error: {e}"))??;
-    // Refresh the tray for the new routing state on every platform: retint the
-    // mark, recolor the status dot (green on / gray off), and update the
-    // tooltip where supported (macOS + Windows).
-    update_tray_status(&app, state.running);
-    // A deferred launch-at-login opt-out can complete now: with routing off,
-    // deregistering can no longer strand the system proxy across a restart.
-    complete_pending_autostart_disable(&app);
-    Ok(state)
+    // the engine thread. The tray refresh and the deferred opt-out after it
+    // run there too, in the same order.
+    tauri::async_runtime::spawn_blocking(move || commands::proxy_disable(&TauriApp { app }))
+        .await
+        .map_err(|e| format!("proxy disable join error: {e}"))?
 }
 
 // Launch at login. A standalone user setting (Settings screen) that owns the
 // login item directly - it is no longer armed/disarmed by the routing toggle.
-//
-// Disabling it while routing is on is two-step: the opt-out marker and the
-// defer-vs-deregister decision live in `gate_connect_core::proxy::
-// autostart_optout` (see its module docs for the full rationale), and only
-// the OS login-item calls live here.
+// The commands' bodies are in `commands.rs`; the safe-point helpers they share
+// with startup and exit stay here.
 
 /// Finish a deferred launch-at-login opt-out: deregister the login item and
 /// clear the marker. Call only when the system proxy is known to be safe
@@ -1095,6 +1037,7 @@ fn complete_pending_autostart_disable<R: tauri::Runtime>(app: &tauri::AppHandle<
 /// list still shows the app during that window, and Settings explains why.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(serde::Serialize)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct LaunchAtLoginStatus {
     enabled: bool,
     pending_disable: bool,
@@ -1105,16 +1048,7 @@ struct LaunchAtLoginStatus {
 fn launch_at_login_status<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<LaunchAtLoginStatus, String> {
-    use tauri_plugin_autostart::ManagerExt;
-    let registered = app
-        .autolaunch()
-        .is_enabled()
-        .map_err(|e| format!("{e:#}"))?;
-    let pending = gate_connect_core::proxy::autostart_optout::pending();
-    Ok(LaunchAtLoginStatus {
-        enabled: registered && !pending,
-        pending_disable: pending,
-    })
+    commands::launch_at_login_status(&TauriApp { app })
 }
 
 /// Re-apply the crash-restart policy to the LaunchAgent.
@@ -1367,26 +1301,7 @@ fn set_launch_at_login<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     enabled: bool,
 ) -> Result<(), String> {
-    use gate_connect_core::proxy::autostart_optout;
-    use tauri_plugin_autostart::ManagerExt;
-    // This marker/login-item read-then-write and `arm_crash_safety_net`
-    // share no lock; see the accepted-race note on that function.
-    let mgr = app.autolaunch();
-    if enabled {
-        autostart_optout::set_pending(false).map_err(|e| format!("{e:#}"))?;
-        mgr.enable().map_err(|e| format!("{e:#}"))?;
-        // The plugin has just rewritten the LaunchAgent from its template,
-        // taking the crash-restart policy with it. Put it back.
-        #[cfg(target_os = "macos")]
-        arm_crash_restart(&app);
-        Ok(())
-    } else if autostart_optout::record_disable().map_err(|e| format!("{e:#}"))? {
-        mgr.disable().map_err(|e| format!("{e:#}"))
-    } else {
-        // Routing is on: the opt-out is deferred and the login item stays
-        // registered until the next safe point.
-        Ok(())
-    }
+    commands::set_launch_at_login(&TauriApp { app }, enabled)
 }
 
 /// What Gate would and would not see of this Hermes install right now.
@@ -1420,7 +1335,7 @@ async fn hermes_upstream_coverage(
 ) -> Result<gate_connect_core::integrations::hermes::Coverage, String> {
     // Off the main thread, like `connect_tool`: this reads `config.yaml` and the
     // domain catalog, and a sync command runs on the thread the webview waits on.
-    tauri::async_runtime::spawn_blocking(gate_connect_core::integrations::hermes::upstream_coverage)
+    tauri::async_runtime::spawn_blocking(|| commands::hermes_upstream_coverage(&TauriPlatform))
         .await
         .map_err(|e| format!("coverage join error: {e}"))
 }
@@ -1431,18 +1346,7 @@ fn proxy_set_domain(
     slug: String,
     enabled: bool,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
-    let state = gate_connect_core::proxy::manager()
-        .set_domain(&slug, enabled)
-        .map_err(|e| format!("{e:#}"))?;
-
-    // Audited here rather than inside `ProxyManager::set_domain`, because
-    // `provider::enable` / `provider::disable` drive that method internally -
-    // instrumenting it there would turn one operator action into N+1 events.
-    // This command is the operator toggling one domain by hand.
-    if let Ok(Some(base_url)) = gate_connect_core::account::load_base_url() {
-        gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
-    }
-    Ok(state)
+    commands::proxy_set_domain(&TauriPlatform, &slug, enabled)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1453,10 +1357,7 @@ async fn proxy_set_env_export(
     // Off the main thread: this shells out to `launchctl` on macOS and
     // broadcasts a settings change to every top-level window on Windows.
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::proxy::set_env_export(enabled).map_err(|e| format!("{e:#}"))?;
-        gate_connect_core::proxy::manager()
-            .status()
-            .map_err(|e| format!("{e:#}"))
+        commands::proxy_set_env_export(&TauriPlatform, enabled)
     })
     .await
     .map_err(|e| format!("env export join error: {e}"))?
@@ -1466,26 +1367,18 @@ async fn proxy_set_env_export(
 #[tauri::command]
 async fn proxy_trust_ca() -> Result<gate_connect_core::proxy::ProxyState, String> {
     // Off the main thread: trusting the CA pops an interactive prompt.
-    tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::proxy::manager()
-            .trust_ca()
-            .map_err(|e| format!("{e:#}"))
-    })
-    .await
-    .map_err(|e| format!("trust join error: {e}"))?
+    tauri::async_runtime::spawn_blocking(|| commands::proxy_trust_ca(&TauriPlatform))
+        .await
+        .map_err(|e| format!("trust join error: {e}"))?
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 async fn proxy_untrust_ca() -> Result<gate_connect_core::proxy::ProxyState, String> {
     // Off the main thread: untrusting the CA can pop an interactive prompt.
-    tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::proxy::manager()
-            .untrust_ca()
-            .map_err(|e| format!("{e:#}"))
-    })
-    .await
-    .map_err(|e| format!("untrust join error: {e}"))?
+    tauri::async_runtime::spawn_blocking(|| commands::proxy_untrust_ca(&TauriPlatform))
+        .await
+        .map_err(|e| format!("untrust join error: {e}"))?
 }
 
 /// Bytes of `src-tauri/icons/tray.png` compiled in so the menu bar gets
@@ -2982,9 +2875,10 @@ struct VerdictDto {
 /// real `async fn` handing the work to `spawn_blocking`, not as
 /// `#[tauri::command(async)]` on a sync fn. That attribute does not move a sync
 /// body to the blocking pool: the macro inlines it into `async_runtime::spawn`,
-/// so it runs on a tokio *worker*, with the runtime entered. Both probes below
-/// are blocking HTTP, and reqwest's blocking client asserts against being
-/// called from an entered worker in debug builds - it builds and immediately
+/// so it runs on a tokio *worker*, with the runtime entered. Both probes in
+/// [`commands::routing_verdicts`] are blocking HTTP, and reqwest's blocking
+/// client asserts against being called from an entered worker in debug
+/// builds - it builds and immediately
 /// drops a throwaway runtime purely to detect the case. The resulting panic
 /// took the task with it, so the webview's `invoke` promise never settled and
 /// the refresh hung.
@@ -2993,99 +2887,17 @@ struct VerdictDto {
 async fn routing_verdicts() -> Vec<VerdictDto> {
     // A join error means the probe itself panicked. An empty sweep is what this
     // command already returns when it can tell nothing about any tool.
-    tauri::async_runtime::spawn_blocking(routing_verdicts_now)
+    tauri::async_runtime::spawn_blocking(|| commands::routing_verdicts(&TauriPlatform))
         .await
         .unwrap_or_default()
 }
 
-/// What [`routing_verdicts_now`] remembers between sweeps. See
+/// What [`commands::routing_verdicts`] remembers between sweeps. See
 /// [`gate_connect_core::routing_health::VerdictHold`].
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 static VERDICT_HOLD: std::sync::LazyLock<
     std::sync::Mutex<gate_connect_core::routing_health::VerdictHold>,
 > = std::sync::LazyLock::new(Default::default);
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn routing_verdicts_now() -> Vec<VerdictDto> {
-    use gate_connect_core::routing_health::{self, ConfigState, Evidence};
-
-    let route = gate_connect_core::proxy::probe_relay_route();
-    let session = probe_session_health();
-    // One read for the whole sweep, like the two probes: every row that needs to
-    // name the Gate route names the same one.
-    let gate_route = gate_connect_core::account::load_base_url()
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "Constellation Gate".to_string());
-
-    let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
-    let integrations = registry::registry();
-    let checked: Vec<_> = integrations
-        .iter()
-        .filter(|integ| !integ.hidden_in_ui())
-        .map(|integ| {
-            let status = integ.status();
-            let installed = !matches!(status, Ok(gate_connect_core::Status::NotInstalled));
-            let slug = integ.id().to_string();
-            let config = ConfigState::from_status(&status);
-            let verdict = routing_health::verdict_for(&Evidence {
-                installed,
-                config,
-                route,
-                session,
-                reopen_pending: reopen_pending_for(&slug),
-            });
-            // The log keeps what the check found; only the row is held.
-            recorded.push((slug.clone(), verdict));
-            (integ, slug, config, verdict)
-        })
-        .collect();
-    // One hold for the process, so both shells draw the same answer. It holds
-    // by time rather than by count of checks, because both shells sweep, so
-    // how many checks arrive depends on how many are open. Taken only here,
-    // after every `status()` above: those read each tool's config off disk,
-    // and holding the lock across them queued one shell's sweep behind the
-    // other's I/O. A poisoned lock only loses the history, which reads as
-    // nothing held.
-    let mut hold = VERDICT_HOLD.lock().unwrap_or_else(|e| e.into_inner());
-    let now = std::time::Instant::now();
-    let verdicts: Vec<VerdictDto> = checked
-        .into_iter()
-        .map(|(integ, slug, config, verdict)| {
-            let verdict = hold.apply(&slug, verdict, now);
-            let reason = verdict.reason();
-            // Only the half that was read off disk. The surfaces draw the pair
-            // when both are present and omit it otherwise, so a reopen notice
-            // now names the action rather than an endpoint nobody measured.
-            let routes = if matches!(reason, Some(routing_health::Reason::ReopenRequired)) {
-                gate_connect_core::reopen::reopen_routes(
-                    config,
-                    &gate_route,
-                    integ.default_upstream_url(),
-                )
-            } else {
-                gate_connect_core::reopen::ReopenRoutes {
-                    in_use: None,
-                    requested: None,
-                }
-            };
-            VerdictDto {
-                slug,
-                state: verdict.as_str(),
-                reason: reason.map(|r| r.as_str()),
-                next_action: reason.map(|r| r.next_action().as_str()),
-                route_in_use: routes.in_use,
-                requested_route: routes.requested,
-            }
-        })
-        .collect();
-    drop(hold);
-    // Persisted after the sweep, not during it: the log is what lets the recovery
-    // summary report a check it did not take, and a half-written sweep would be a
-    // worse record than the previous whole one.
-    gate_connect_core::verdict_log::record_sweep(&recorded);
-    verdicts
-}
 
 /// Ask the gateway whether the stored session still works, mapped onto the
 /// verdict layer's vocabulary.
@@ -3233,7 +3045,7 @@ struct RunningAgent {
     /// Can the routing sweep produce a verdict for this tool at all?
     ///
     /// True exactly for the registry integrations. `routing_verdicts` walks
-    /// [`registry::registry`], so the desktop-app rows - whose slugs are
+    /// [`gate_connect_core::registry::registry`], so the desktop-app rows - whose slugs are
     /// proxy-domain keys - never get an entry there, whatever they are doing.
     ///
     /// Reported rather than inferred because the reopen flow's verification step
@@ -6384,96 +6196,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Gate Connect")
         .run(|app_handle, event| {
-            // On app exit, revert the system proxy so traffic is never stranded
-            // at the now-dead engine port. The engine lives in a process-global
-            // static whose Drop is bypassed at normal exit, so without this the
-            // system proxy stays pointed at a dead listener and kills
-            // connectivity until the next launch's self-heal. disable_quiet()
-            // is promptless and leaves the CA trusted.
+            // On app exit: every tool back on its own settings, the system
+            // proxy reverted, a deferred launch-at-login opt-out finished, and
+            // the routing intent left alone. The body and its reasons are
+            // `commands::exit`, where a test pins all four.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
-                // Put every tool back on its own settings on *every* exit, not
-                // only the one that goes through `quit_app`: the same teardown
-                // (`disconnect_tools_for_quit`), so a quit means one thing
-                // however it arrives.
-                //
-                // `quit_app` is reached by the tray's Quit, the window menu's
-                // and the crash screen's, and by nothing else: macOS Cmd+Q
-                // comes from Tauri's default app menu, and a logout or a
-                // shutdown comes from the OS, and both land here having touched
-                // none of our own code. This used to revert only the tools
-                // whose address dies with this process, leaving the forwarder's
-                // tools pointed at Gate and working with nothing reading their
-                // traffic. After `quit_app` it is skipped: the teardown runs
-                // once per process (`claim_quit_teardown`), because a second
-                // pass after a partial first one is not a no-op.
-                //
-                // Before `disable_quiet` below, deliberately: the provider half
-                // turns domains off in the engine, which has to still be up.
-                //
-                // Not on an updater relaunch: the app is coming straight back,
-                // so the sweep would rewrite every tool's config and the
-                // restore would undo it, costing each of them a restart for
-                // nothing.
-                //
-                // Deliberately does not *veto* the exit. `ExitRequested` can be
-                // prevented - `code` is `None` exactly when something outside
-                // our own code asked to quit, so Cmd+Q could be routed into a
-                // dialog. It is not, because that event also carries a logout
-                // and a shutdown, and an app that puts a dialog in front of
-                // those is an app that hangs the user's logout. For the same
-                // reason the sweep gives up rather than waiting on another
-                // routing operation.
-                //
-                // Unwound rather than trusted not to panic: everything below it
-                // has to run, `disable_quiet` above all, and the sweep is the
-                // largest block on this path.
-                //
-                // No notification either. `quit_app` can fire one because it
-                // runs before the exit; by the time this runs the process is
-                // going away and a notification would be a promise we cannot
-                // keep.
-                if !UPDATER_RELAUNCHING.load(Ordering::Acquire) && claim_quit_teardown() {
-                    match std::panic::catch_unwind(disconnect_tools_for_quit) {
-                        Ok(Ok(teardown)) if teardown.failed.is_empty() => {}
-                        Ok(Ok(teardown)) => eprintln!(
-                            "[gate] {} could not be put back on their own settings on exit",
-                            join_names(&teardown.failed)
-                        ),
-                        Ok(Err(e)) => {
-                            eprintln!("[gate] putting tools back on exit failed: {e}")
-                        }
-                        Err(_) => eprintln!("[gate] putting tools back on exit panicked"),
-                    }
-                }
-                // Reaching this event at all is what
-                // makes the exit clean. Recording it clears the unclean streak,
-                // so a user who quits normally after a crash gets the restart
-                // policy back rather than carrying the streak forever.
-                if let Err(e) = gate_connect_core::crash_restart::record_clean_exit() {
-                    eprintln!("[gate] recording clean exit failed: {e:#}");
-                }
-                if let Err(e) = gate_connect_core::proxy::manager().disable_quiet() {
-                    eprintln!("[gate] reverting proxy on exit failed: {e}");
-                }
-                // The engine's relay goes with this process, parked or not, so
-                // the forwarder should stop asking its port whether it is up.
-                gate_connect_core::proxy::forget_engine_relay_port();
-                // The login item is now a standalone "Launch at login" setting,
-                // decoupled from routing. A deferred opt-out (toggled off while
-                // routing was on) completes here: disable_quiet() above has
-                // reverted the system proxy, so deregistering can no longer
-                // strand it. An updater-driven relaunch is exempt - the app
-                // comes right back, so the pending opt-out stays armed and
-                // routing is restored exactly as the user left it.
-                if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
-                    complete_pending_autostart_disable(app_handle);
-                }
-                // Exit reverts the *system proxy* only. The routing intent is
-                // the user's last explicit toggle and survives every quit: the
-                // next launch, however it happens, restores routing as it was
-                // left. The only durable "off" is the routing switch itself
-                // (proxy_disable clears the intent).
+                commands::exit(&TauriApp {
+                    app: app_handle.clone(),
+                });
             }
             let _ = &event;
             let _ = &app_handle;
