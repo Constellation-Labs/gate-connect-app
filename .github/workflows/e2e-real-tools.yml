@@ -47,10 +47,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # openclaw requires node >=22.19; on Node 20 npm silently skips its
-          # install, so it was inert on every runner. 22 keeps the other CLIs
-          # happy too.
-          node-version: 22
+          # openclaw 2026.9.x requires node >=24.16 <25. On an older Node npm
+          # silently falls back to an older release, or skips the install. An
+          # exact version keeps all three runners on the same Node. The other
+          # CLIs accept 24 too.
+          node-version: 24.21.0
 
       - name: Build gate-connect CLI
         run: cargo build --locked -p gate-connect-cli
@@ -66,11 +67,9 @@ jobs:
       # upstream's doing and says so. Models stay unpinned on purpose: run.sh
       # resolves them at runtime because pinned model ids get retired.
       #
-      # OpenClaw is the exception to "newest release": every 2026.9.x requires
-      # Node >=24.16, and this job runs Node 22. Unpinned, npm quietly fell
-      # back to the newest release whose `engines` accept Node 22 - the
-      # extended-stable line - so that is what every green run tested, and it
-      # is what is pinned. Moving to 2026.9.x means moving the job to Node 24.
+      # OpenClaw is the exception to the 2026-10-01 date. It is pinned to the
+      # newest 2026.9.x, which needs Node >=24.16. That is why setup-node above
+      # is on 24. A move to 2026.10.x belongs in its own PR, like any bump.
       - name: Install AI CLIs
         shell: bash
         run: >-
@@ -78,7 +77,7 @@ jobs:
           @anthropic-ai/claude-code@2.1.286
           @openai/codex@0.159.3
           opencode-ai@1.18.34
-          openclaw@2026.8.35
+          openclaw@2026.9.9
 
       # Hermes is a Python agent installed via the bash install.sh, which
       # symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops the
