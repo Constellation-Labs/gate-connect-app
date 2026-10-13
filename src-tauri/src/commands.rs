@@ -14,7 +14,9 @@ use crate::{
     ToolModelChoiceDto, ToolModelsDto,
 };
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-use crate::{LaunchAtLoginStatus, TeardownReportDto, TeardownToolDto, VerdictDto};
+use crate::{
+    LaunchAtLoginStatus, Relaunch, RunningAgentsDto, TeardownReportDto, TeardownToolDto, VerdictDto,
+};
 use gate_connect_core::account::{AuthMode, BillingMode};
 use gate_connect_core::analytics::{Identity, SaveOutcome};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1157,6 +1159,109 @@ pub(crate) fn set_launch_at_login(
         // registered until the next safe point.
         Ok(())
     }
+}
+
+// ---- Processes ----
+
+/// The running agent processes `only` names (every agent for `None`): what
+/// each one is, and whether it needs a reopen.
+///
+/// The report the webview decides the routing-change takeover from (f2f8c6c):
+/// an empty `agents` is how it learns there is nothing to offer, so this reports
+/// exactly what the walk found and nothing else.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn running_agents(
+    platform: &impl Platform,
+    only: Option<&[String]>,
+) -> RunningAgentsDto {
+    let names = crate::agent_names_for(only);
+    let mut agents = platform.running_agents(&names);
+    // Oldest first: the ones that need a reopen are the ones being looked
+    // for, and a stable order keeps two reports from the same machine
+    // diffable.
+    //
+    // **The tie-break is load-bearing, not tidiness.** `reopen.ts`'s
+    // `reopenTools` keeps the FIRST row per slug, and since the ChatGPT app and
+    // the `codex` it bundles resolve to one slug (AG-947), two rows now compete
+    // to speak for that app. `start_time` is whole seconds and both processes
+    // can land in the same one; the walk itself is a `HashMap` iteration, and
+    // `sort_by_key` is stable, so a tie would hand the row to whichever the map
+    // happened to yield first. When that is the helper the app reports
+    // `can_reopen: false` and the dialog offers no way to reopen it.
+    //
+    // So: relaunchable first among equals, then pid, which is total. Before
+    // the two shared a slug there was no contest and the plain sort was right.
+    agents.sort_by_key(|agent| (agent.started_at_unix, !agent.can_reopen, agent.pid));
+    RunningAgentsDto {
+        scanned_names: names.iter().map(|n| n.to_string()).collect(),
+        agents,
+    }
+}
+
+/// Close running agents so their next launch picks up the routing change, and
+/// queue the apps among them for [`reopen_running_agents`]. Returns how many
+/// processes closed.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn close_running_agents(platform: &impl Platform, only: Option<&[String]>) -> u32 {
+    let closed = platform.close_agents(only);
+    if only.is_none_or(|slugs| slugs.iter().any(|s| s == "codex")) {
+        platform.refresh_codex_daemon_when_idle("close agents");
+    }
+    let mut reopen: Vec<(String, Relaunch)> = Vec::new();
+    for target in &closed {
+        if let (Some(slug), Some(relaunch)) = (target.slug, &target.relaunch) {
+            // One launch per app, however many of its processes were closed.
+            if !reopen.iter().any(|(s, _)| s == slug) {
+                reopen.push((slug.to_string(), relaunch.clone()));
+            }
+        }
+    }
+    if !reopen.is_empty() {
+        let mut guard = platform
+            .pending_reopen()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Replace rather than append for the slugs in hand: a second close of
+        // the same app must not queue a second launch of it.
+        guard.retain(|(slug, _)| !reopen.iter().any(|(s, _)| s == slug));
+        guard.extend(reopen);
+    }
+    closed.len() as u32
+}
+
+/// Put back the apps [`close_running_agents`] closed, once their old
+/// instances are gone (bounded). Returns how many were launched.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn reopen_running_agents(platform: &impl Platform, only: Option<&[String]>) -> u32 {
+    let pending: Vec<(String, Relaunch)> = {
+        let mut guard = platform
+            .pending_reopen()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (take, keep): (Vec<_>, Vec<_>) = guard
+            .drain(..)
+            .partition(|(slug, _)| only.is_none_or(|slugs| slugs.iter().any(|s| s == slug)));
+        *guard = keep;
+        take
+    };
+    if pending.is_empty() {
+        return 0;
+    }
+
+    // Bounded wait for the old instances to go. 5s is long enough for an app
+    // asked to quit gracefully and short enough that a user watching a button
+    // does not conclude it is broken.
+    let names: Vec<&str> = crate::AGENT_PROCESSES
+        .iter()
+        .filter(|(slug, _, _, _)| pending.iter().any(|(s, _)| s == slug))
+        .map(|(_, name, _, _)| *name)
+        .collect();
+    platform.wait_for_agents_to_exit(&names, std::time::Duration::from_secs(5));
+
+    pending
+        .iter()
+        .filter(|(_, relaunch)| platform.relaunch(relaunch))
+        .count() as u32
 }
 
 // ---- Exit ----
@@ -3029,6 +3134,234 @@ mod tests {
         assert_eq!(
             set_launch_at_login(&platform, false),
             Err("deregister_login_item: refused".into())
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn agent(
+        slug: &str,
+        name: &str,
+        pid: u32,
+        started: u64,
+        can_reopen: bool,
+    ) -> crate::RunningAgent {
+        crate::RunningAgent {
+            slug: slug.into(),
+            name: name.into(),
+            product_name: name.into(),
+            verifiable: ToolId::from_slug(slug).is_some(),
+            can_reopen,
+            pid,
+            started_at_unix: started,
+            needs_reopen: true,
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn closed(slug: Option<&'static str>, pid: u32, relaunch: Option<&str>) -> crate::CloseTarget {
+        crate::CloseTarget {
+            pid: sysinfo::Pid::from_u32(pid),
+            started: 0,
+            slug,
+            name: slug.unwrap_or("?").into(),
+            surface: Some(if relaunch.is_some() {
+                crate::Surface::App
+            } else {
+                crate::Surface::Cli
+            }),
+            relaunch: relaunch.map(|path| Relaunch::Path(path.into())),
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn app(path: &str) -> Relaunch {
+        Relaunch::Path(path.into())
+    }
+
+    /// f2f8c6c, the Rust half. The routing-change takeover is skipped in the
+    /// webview when `running_agents` comes back empty, so with nothing running
+    /// the report must say exactly that: no rows, and the names it looked for,
+    /// so "none of these" is not read as "no AI tools at all".
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn running_agents_reports_none_when_nothing_is_running() {
+        let platform = FakePlatform::default();
+        let report = running_agents(&platform, None);
+        assert!(
+            report.agents.is_empty(),
+            "nothing running, nothing reported"
+        );
+        assert_eq!(
+            report.scanned_names,
+            ["claude", "codex", "opencode", "hermes", "Claude", "ChatGPT"]
+        );
+        assert_eq!(
+            platform.calls(),
+            [r#"running_agents ["claude", "codex", "opencode", "hermes", "Claude", "ChatGPT"]"#]
+        );
+
+        let report = running_agents(&platform, Some(&["codex".to_string()]));
+        assert!(report.agents.is_empty());
+        assert_eq!(report.scanned_names, ["codex"]);
+    }
+
+    /// Only the named tools are asked about, and a tool with no process of its
+    /// own narrows the walk to nothing rather than widening it to everything.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn running_agents_asks_only_about_the_named_tools() {
+        let platform = FakePlatform {
+            agents: vec![
+                agent("codex", "codex", 7, 100, false),
+                agent("claude-code", "claude", 8, 100, false),
+            ],
+            ..FakePlatform::default()
+        };
+        let report = running_agents(&platform, Some(&["codex".to_string()]));
+        assert_eq!(report.agents.len(), 1);
+        assert_eq!(report.agents[0].slug, "codex");
+        assert!(report.agents[0].verifiable);
+
+        let report = running_agents(&platform, Some(&["openclaw".to_string()]));
+        assert!(report.agents.is_empty());
+        assert!(report.scanned_names.is_empty());
+        assert_eq!(platform.calls()[1], "running_agents []");
+    }
+
+    /// Oldest first; on a tie the relaunchable row wins, then the lower pid.
+    /// The ChatGPT app and its bundled `codex` share a slug and can share a
+    /// start second, and the webview keeps the first row per slug.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn running_agents_puts_the_relaunchable_row_first_on_a_tie() {
+        let platform = FakePlatform {
+            agents: vec![
+                agent("chatgpt", "ChatGPT", 40, 200, false),
+                agent("chatgpt", "ChatGPT", 50, 200, true),
+                agent("codex", "codex", 30, 200, false),
+                agent("claude-code", "claude", 90, 100, false),
+            ],
+            ..FakePlatform::default()
+        };
+        let pids: Vec<u32> = running_agents(&platform, None)
+            .agents
+            .iter()
+            .map(|a| a.pid)
+            .collect();
+        assert_eq!(pids, [90, 50, 30, 40]);
+    }
+
+    /// Each closed app is queued once, a second close replaces its entry rather
+    /// than adding one, and a CLI is never queued. Codex's daemon refresh is
+    /// owed only when the close could have touched Codex.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn close_running_agents_queues_each_app_once() {
+        let platform = FakePlatform {
+            closes: std::sync::Mutex::new(vec![
+                closed(Some("chatgpt"), 1, Some("/Applications/ChatGPT.app")),
+                closed(Some("chatgpt"), 2, Some("/Applications/ChatGPT.app")),
+                closed(Some("codex"), 3, None),
+                closed(None, 4, Some("/somewhere/else")),
+            ]),
+            pending_reopen: std::sync::Mutex::new(vec![
+                ("chatgpt".into(), app("/old/ChatGPT.app")),
+                ("anthropic".into(), app("/Applications/Claude.app")),
+            ]),
+            ..FakePlatform::default()
+        };
+        assert_eq!(close_running_agents(&platform, None), 4);
+        assert_eq!(
+            platform.calls(),
+            [
+                "close_agents None",
+                "refresh_codex_daemon_when_idle close agents"
+            ]
+        );
+        assert_eq!(
+            *platform.pending_reopen.lock().unwrap(),
+            [
+                ("anthropic".to_string(), app("/Applications/Claude.app")),
+                ("chatgpt".to_string(), app("/Applications/ChatGPT.app")),
+            ]
+        );
+
+        let only = ["anthropic".to_string()];
+        let platform = FakePlatform {
+            closes: std::sync::Mutex::new(vec![closed(
+                Some("anthropic"),
+                5,
+                Some("/Applications/Claude.app"),
+            )]),
+            ..FakePlatform::default()
+        };
+        assert_eq!(close_running_agents(&platform, Some(&only)), 1);
+        assert_eq!(platform.calls(), [r#"close_agents Some(["anthropic"])"#]);
+
+        let platform = FakePlatform::default();
+        assert_eq!(
+            close_running_agents(&platform, Some(&["codex".to_string()])),
+            0
+        );
+        assert_eq!(
+            platform.calls(),
+            [
+                r#"close_agents Some(["codex"])"#,
+                "refresh_codex_daemon_when_idle close agents"
+            ]
+        );
+        assert!(platform.pending_reopen.lock().unwrap().is_empty());
+    }
+
+    /// The reopen takes only the named apps off the queue, waits for their old
+    /// processes before launching, and counts the launches that started. An
+    /// empty queue launches nothing and waits for nothing.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn reopen_running_agents_launches_what_was_queued_after_the_wait() {
+        let queued = || {
+            std::sync::Mutex::new(vec![
+                ("anthropic".to_string(), app("/Applications/Claude.app")),
+                ("chatgpt".to_string(), app("/Applications/ChatGPT.app")),
+            ])
+        };
+        let platform = FakePlatform {
+            pending_reopen: queued(),
+            relaunch_fails: vec![app("/Applications/ChatGPT.app")],
+            ..FakePlatform::default()
+        };
+        assert_eq!(reopen_running_agents(&platform, None), 1);
+        assert_eq!(
+            platform.calls(),
+            [
+                r#"wait_for_agents_to_exit ["Claude", "ChatGPT"] 5s"#,
+                r#"relaunch Path("/Applications/Claude.app")"#,
+                r#"relaunch Path("/Applications/ChatGPT.app")"#,
+            ]
+        );
+        assert!(platform.pending_reopen.lock().unwrap().is_empty());
+
+        let platform = FakePlatform {
+            pending_reopen: queued(),
+            ..FakePlatform::default()
+        };
+        assert_eq!(
+            reopen_running_agents(&platform, Some(&["anthropic".to_string()])),
+            1
+        );
+        assert_eq!(
+            *platform.pending_reopen.lock().unwrap(),
+            [("chatgpt".to_string(), app("/Applications/ChatGPT.app"))]
+        );
+        // A second reopen of the same app finds nothing left to launch.
+        assert_eq!(
+            reopen_running_agents(&platform, Some(&["anthropic".to_string()])),
+            0
+        );
+        assert_eq!(
+            platform.calls().len(),
+            2,
+            "no second wait, no second launch"
         );
     }
 
