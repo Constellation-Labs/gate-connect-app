@@ -473,11 +473,16 @@ export function ReviewConfigDialog({
  */
 export function ApplyChangesDialog({
   tools,
+  conversations = [],
   closing = false,
   onCloseApps,
   onReopenLater,
 }: {
   tools: DialogReopenTool[];
+  /** Running tools that route per conversation (`routesNewConversations`).
+   *  Never rows here, since closing them fixes nothing; one line says what the
+   *  change did for them. */
+  conversations?: string[];
   closing?: boolean;
   onCloseApps: () => void;
   onReopenLater: () => void;
@@ -570,7 +575,51 @@ export function ApplyChangesDialog({
             </p>
           )}
         </div>
+        {conversations.length > 0 && (
+          <p className="text-sm leading-5 text-base-foreground">
+            {newConversationsLine(conversations)}
+          </p>
+        )}
       </div>
+    </Modal>
+  );
+}
+
+function newConversationsLine(names: string[]): string {
+  return `New ${joinNames(names)} conversations are protected. Ones already open keep the route they started with.`;
+}
+
+/**
+ * What a routing change did for a tool that routes per conversation, when that
+ * is the only kind running: nothing to close, so no close to offer.
+ *
+ * **Not in the Figma, and it replaces a drawn flow.** `App/Codex/apply-changes`
+ * (`1336:13885`) draws Codex as the tool to close. Measured on Codex, a
+ * conversation keeps the route it started with however often Codex restarts,
+ * and every new one takes the new route without a restart, so that close ended
+ * work and fixed nothing. Decided by the user on 2026-10-13; raise it with
+ * design rather than redrawing it from the frame.
+ */
+export function NewConversationsDialog({
+  names,
+  onDone,
+}: {
+  names: string[];
+  onDone: () => void;
+}) {
+  return (
+    <Modal
+      tone="success"
+      icon="shieldCheck"
+      title="New conversations are protected"
+      subtitle={`${joinNames(names)} picks up the change in every conversation you start from now on`}
+      primary={{ label: "Got it", onClick: onDone }}
+      onDismiss={onDone}
+      width={512}
+    >
+      <ModalNote>
+        <p>Conversations already open keep the route they started with.</p>
+      </ModalNote>
     </Modal>
   );
 }

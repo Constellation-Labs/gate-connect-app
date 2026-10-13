@@ -211,6 +211,23 @@ export function reopenKey(agent: RunningAgent): string {
 }
 
 /**
+ * Whether a tool reads its route per conversation rather than per process, so
+ * a routing change reaches every conversation started after it without a
+ * restart, and none already open however often it restarts.
+ *
+ * Codex only, measured: a conversation pins its provider when it starts, and
+ * one started off Gate stays off Gate even when resumed after a restart
+ * (`integrations::codex`). Closing it would end work and fix nothing, so a
+ * routing change tells the user new conversations are protected instead of
+ * offering the close. A model change still offers it: Codex's model list comes
+ * from its app-server daemon, which loads it once and is refreshed only when no
+ * session is open.
+ */
+export function routesNewConversations(slug: string): boolean {
+  return slug === "codex";
+}
+
+/**
  * The tools this flow is about, from the process scan and the last sweep.
  *
  * Built from the scan rather than from the list of slugs that were written,

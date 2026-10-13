@@ -134,6 +134,7 @@ import type { DialogOrganization } from "./components/gc/dialogs";
 import {
   reopenSubjects,
   ApplyChangesDialog,
+  NewConversationsDialog,
   ModelPickerDialog,
   TeardownLeftBehindDialog,
   UseGateModelDialog,
@@ -1489,7 +1490,7 @@ export function NewUiApp() {
       // the same notice, scoped to this tool for the reason `routeApp` gives.
       // `false` means Gate does not manage its config right now: nothing on
       // disk moved, so there is nothing to restart for.
-      else if (applied) await runningApps.offerAfterChange([tool]);
+      else if (applied) await runningApps.offerAfterChange([tool], "model");
     },
     [openTool, toolModels, runningApps],
   );
@@ -3327,9 +3328,15 @@ export function NewUiApp() {
         ) : runningApps.stage?.kind === "offer" ? (
           <ApplyChangesDialog
             tools={reopenSubjects(runningApps.stage.tools)}
+            conversations={runningApps.stage.conversations}
             closing={runningApps.stage.closing}
             onCloseApps={() => void runningApps.closeApps()}
             onReopenLater={runningApps.dismiss}
+          />
+        ) : runningApps.stage?.kind === "conversations" ? (
+          <NewConversationsDialog
+            names={runningApps.stage.names}
+            onDone={runningApps.dismiss}
           />
         ) : modelOverlay?.kind === "picker" ? (
           <ModelPickerDialog

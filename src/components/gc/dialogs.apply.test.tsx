@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ApplyChangesDialog } from "./dialogs";
+import { ApplyChangesDialog, NewConversationsDialog } from "./dialogs";
 import type { DialogReopenTool } from "./dialogs";
 
 const noop = () => {};
@@ -160,5 +160,28 @@ describe("ApplyChangesDialog closing", () => {
 
     expect(onCloseApps).not.toHaveBeenCalled();
     expect(onReopenLater).not.toHaveBeenCalled();
+  });
+});
+
+describe("Codex after a routing change", () => {
+  it("names the per-conversation tools on a line of their own", () => {
+    render(
+      <ApplyChangesDialog
+        tools={[{ ...codex, key: "claude-code:Claude Code", slug: "claude-code", name: "Claude Code" }]}
+        conversations={["Codex"]}
+        onCloseApps={noop}
+        onReopenLater={noop}
+      />,
+    );
+    expect(screen.getByText(/New Codex conversations are protected/)).toBeTruthy();
+  });
+
+  it("offers nothing to close when only Codex is running", () => {
+    const onDone = vi.fn();
+    render(<NewConversationsDialog names={["Codex"]} onDone={onDone} />);
+    expect(screen.getByText("New conversations are protected")).toBeTruthy();
+    expect(screen.queryByText(/close/i)).toBeNull();
+    fireEvent.click(screen.getByText("Got it"));
+    expect(onDone).toHaveBeenCalled();
   });
 });

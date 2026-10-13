@@ -2909,21 +2909,22 @@ fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
     agent_row_of(process).map(|(slug, _, _, _)| *slug)
 }
 
-/// Did this agent start before the last change to something it reads once at
-/// launch, and so is still using what it loaded then?
+/// Did this agent load something it reads once at launch that has changed
+/// since, and so is still using what it loaded then?
 ///
 /// The per-process form of [`reopen_pending_for`], and the same decision:
 /// [`gate_connect_core::reopen::reopen_pending`] over this process's start, its
-/// tool's configuration file and Gate's CA certificate. One rule, so the count,
-/// the listing and the per-tool verdict cannot disagree about a process.
+/// tool's configuration history and Gate's CA certificate. One rule, so the
+/// count and the listing cannot disagree about a process; the per-tool verdict
+/// departs from it for Codex alone, as [`reopen_pending_for`] explains.
 ///
-/// **The configuration's time is Gate's record, not its mtime.** The mtime
+/// **The configuration's history is Gate's record, not its mtime.** The mtime
 /// moved on the tool's own edits too - Claude Code rewrites `settings.json` on
 /// every permission approval - and each one made every older process read as
 /// stale with nothing Gate routes by changed.
-/// [`gate_connect_core::config_changes`] is stamped only when Gate's write
-/// actually changed the file. A hand edit to a routing value is what this
-/// gives up, and the config status still reports that one.
+/// [`gate_connect_core::config_changes`] records a change only when Gate's
+/// write actually changed the file, and a hand edit to a routing value only
+/// when Gate next writes over it; the config status reports that one sooner.
 ///
 /// **Not "started before routing came up".** That was the rule until the
 /// forwarder fronted both the proxy and the relay, and it asked the wrong
@@ -3417,8 +3418,19 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
 ///
 /// The decision itself is [`gate_connect_core::reopen::reopen_pending`], which
 /// is pure and carries the reasoning. This function is only the three readings
-/// it is made from: the process names for the slug, their start times, and the
-/// configuration file's mtime.
+/// it is made from: the process names for the slug, their start times, and
+/// Gate's history of changes to the configuration file.
+///
+/// **Codex's configuration changes do not count here, its certificate does.**
+/// Codex reads its route per conversation (`integrations::codex`): every
+/// conversation started after a change takes the new route without a restart,
+/// and none already open ever does, so a process older than the change is
+/// neither a reason to call the row Not protected nor something reopening
+/// would fix. The certificate is still read once per process. This is the one
+/// place the verdict and [`agent_needs_reopen`] part ways: the process-level
+/// answer still says the process predates the config, which the reopen flow's
+/// watch needs after a model change, when closing Codex is what lets its
+/// app-server daemon reload the model list.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn reopen_pending_for(slug: &str) -> bool {
     let wanted = agent_process_names(slug);
@@ -3433,7 +3445,11 @@ fn reopen_pending_for(slug: &str) -> bool {
     gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
         process_names_known: true,
         process_starts: &starts,
-        config_changes: &config_changes_of(slug),
+        config_changes: &if slug == ToolId::Codex.slug() {
+            Vec::new()
+        } else {
+            config_changes_of(slug)
+        },
         ca_cert_changed_at: ca_cert_changed_at_unix(),
     })
 }
