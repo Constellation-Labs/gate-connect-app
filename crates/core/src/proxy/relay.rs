@@ -1913,4 +1913,58 @@ mod tests {
         .await;
         assert_eq!(got.as_deref(), Some("fresh"));
     }
+
+    /// Fix 53e6757, relay half: a standalone `proxy relay` started while an
+    /// enabled proxy is routing must refuse, naming the engine, rather than
+    /// start a second host that shadows it. The routing snapshot on disk is
+    /// what "enabled" means across processes, so the test writes one into a
+    /// hermetic home and asks `serve` to start.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn serve_refuses_while_an_enabled_proxy_hosts_the_relay() {
+        struct Home {
+            dir: std::path::PathBuf,
+            _guard: std::sync::MutexGuard<'static, ()>,
+        }
+        impl Drop for Home {
+            fn drop(&mut self) {
+                std::env::remove_var("GATE_CONNECT_TEST_HOME");
+                std::env::remove_var("GATE_CONNECT_TEST_SECRETS");
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let guard = crate::env::path_env_lock();
+        let dir = std::env::temp_dir().join(format!("gate-connect-relay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("secrets")).unwrap();
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", dir.join("secrets"));
+        let _home = Home { dir, _guard: guard };
+
+        // Nothing in the home but the snapshot: no account, so a `serve` that
+        // got past the check fails on the account load instead of serving.
+        #[cfg(target_os = "macos")]
+        super::super::system_proxy::save_snapshot(&[]).expect("seed the snapshot");
+        #[cfg(target_os = "windows")]
+        super::super::system_proxy::save_snapshot(&super::super::system_proxy::ProxySnapshot {
+            enable: 0,
+            server: String::new(),
+            bypass: String::new(),
+            auto_config_url: String::new(),
+        })
+        .expect("seed the snapshot");
+        #[cfg(target_os = "linux")]
+        super::super::system_proxy::save_snapshot(&super::super::system_proxy::ProxySnapshot {
+            block_present: false,
+            gnome_proxy: None,
+        })
+        .expect("seed the snapshot");
+        assert!(super::super::engine_likely_running());
+
+        let err = serve().expect_err("serve must refuse beside an enabled proxy");
+        assert!(
+            err.to_string().contains("already hosts this relay"),
+            "serve must refuse because the proxy is enabled, not for another reason: {err:#}"
+        );
+    }
 }

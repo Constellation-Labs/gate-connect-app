@@ -164,7 +164,70 @@ fn build_dropin(assignments: &[(&'static str, String)]) -> String {
 /// reconfigure the developer's own desktop and leave it that way. Every
 /// session-facing side effect below is skipped under the seam.
 fn session_effects_suppressed() -> bool {
+    #[cfg(test)]
+    if session_recorder::active() {
+        return false;
+    }
     crate::env::test_seam("GATE_CONNECT_TEST_HOME").is_some()
+}
+
+/// Test-only stand-in for the login session: while a test holds a
+/// [`session_recorder::Recording`], every session-facing command is written
+/// down on that thread instead of run. That is what lets a unit test check what
+/// "off" says to the session without the session being the developer's own.
+/// Compiled out of every non-test build.
+#[cfg(test)]
+mod session_recorder {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static COMMANDS: RefCell<Option<Vec<Vec<String>>>> = const { RefCell::new(None) };
+    }
+
+    /// Records on this thread until dropped.
+    pub(super) struct Recording;
+
+    impl Recording {
+        pub(super) fn start() -> Self {
+            COMMANDS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+            Recording
+        }
+
+        /// Every command recorded so far, as `program arg arg ...`, cleared.
+        pub(super) fn take(&self) -> Vec<String> {
+            COMMANDS.with(|c| {
+                c.borrow_mut()
+                    .as_mut()
+                    .map(|commands| commands.drain(..).map(|argv| argv.join(" ")).collect())
+                    .unwrap_or_default()
+            })
+        }
+    }
+
+    impl Drop for Recording {
+        fn drop(&mut self) {
+            COMMANDS.with(|c| *c.borrow_mut() = None);
+        }
+    }
+
+    pub(super) fn active() -> bool {
+        COMMANDS.with(|c| c.borrow().is_some())
+    }
+
+    /// Record `program args` if a recording is running; `true` when it was.
+    pub(super) fn record(program: &str, args: &[String]) -> bool {
+        COMMANDS.with(|c| match c.borrow_mut().as_mut() {
+            Some(commands) => {
+                commands.push(
+                    std::iter::once(program.to_string())
+                        .chain(args.iter().cloned())
+                        .collect(),
+                );
+                true
+            }
+            None => false,
+        })
+    }
 }
 
 /// How long a session-facing command gets before it is killed.
@@ -190,6 +253,13 @@ const SESSION_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// get` does, six times per enable and once more per key on the off path.
 /// Leaving the writes unbounded closed half of a hang.
 fn run_best_effort(program: &str, args: &[&str]) -> bool {
+    #[cfg(test)]
+    if session_recorder::record(
+        program,
+        &args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+    ) {
+        return true;
+    }
     let mut cmd = std::process::Command::new(crate::primitives::system_program(program));
     cmd.args(args);
     match crate::primitives::output_bounded(cmd, SESSION_CMD_TIMEOUT) {
@@ -229,6 +299,19 @@ fn run_best_effort(program: &str, args: &[&str]) -> bool {
 /// relaunched - nothing can change that.
 fn push_to_session(assignments: &[(&'static str, String)]) {
     if session_effects_suppressed() {
+        return;
+    }
+    #[cfg(test)]
+    if session_recorder::record(
+        "dbus-update-activation-environment",
+        &std::iter::once("--systemd".to_string())
+            .chain(
+                assignments
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}")),
+            )
+            .collect::<Vec<_>>(),
+    ) {
         return;
     }
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
@@ -791,5 +874,60 @@ mod tests {
                 "{rendered} is missing {host}"
             );
         }
+    }
+
+    /// Fix b886b26: "off" has to reach the session that is already running.
+    /// The variables are *unset* from the `systemd --user` manager (an empty
+    /// push leaves `http_proxy=` behind for every app launched after), and
+    /// GNOME's live proxy keys go back to what the user had, because a browser
+    /// that is already open reads nothing else.
+    #[test]
+    fn off_unsets_the_session_variables_and_hands_gnome_its_keys_back() {
+        with_temp_env(|| {
+            let session = session_recorder::Recording::start();
+            enable(41234).unwrap();
+            let on = session.take();
+            assert!(
+                on.contains(&"gsettings set org.gnome.system.proxy mode 'manual'".to_string()),
+                "enable points GNOME at the engine: {on:#?}"
+            );
+
+            let prior = vec![
+                GsettingsEntry {
+                    schema: "org.gnome.system.proxy".into(),
+                    key: "mode".into(),
+                    value: "'auto'".into(),
+                },
+                GsettingsEntry {
+                    schema: "org.gnome.system.proxy.https".into(),
+                    key: "host".into(),
+                    value: "'corp-proxy.example'".into(),
+                },
+            ];
+            restore(&ProxySnapshot {
+                block_present: false,
+                gnome_proxy: Some(prior),
+            })
+            .unwrap();
+            let off = session.take();
+
+            let unset = format!(
+                "systemctl --user unset-environment {}",
+                PROXY_VARS.join(" ")
+            );
+            assert!(
+                off.contains(&unset),
+                "off must unset the variables, not only blank them: {off:#?}"
+            );
+            assert!(
+                off.contains(&"gsettings set org.gnome.system.proxy mode 'auto'".to_string())
+                    && off.contains(
+                        &"gsettings set org.gnome.system.proxy.https host 'corp-proxy.example'"
+                            .to_string()
+                    ),
+                "off must put the user's GNOME proxy keys back: {off:#?}"
+            );
+            assert!(!dropin_present().unwrap());
+        });
     }
 }
