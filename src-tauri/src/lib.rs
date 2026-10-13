@@ -3024,7 +3024,7 @@ fn teardown_report() -> TeardownReportDto {
 
 /// One running AI tool, as the diagnostics report lists it.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct RunningAgent {
     /// The tool this process belongs to, from [`AGENT_PROCESSES`]. Carried so a
     /// caller that offered to close a set of tools can tie each process back to
@@ -3128,9 +3128,16 @@ struct RunningAgentsDto {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
-    let names = agent_names_for(only.as_deref());
+    commands::running_agents(&TauriPlatform, only.as_deref())
+}
+
+/// One [`RunningAgent`] per agent process named in `names`, in walk order.
+/// The process table half of [`running_agents`]; the order and the report are
+/// `commands::running_agents`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn list_running_agents(names: &[&str]) -> Vec<RunningAgent> {
     let mut agents = Vec::new();
-    for_each_agent_process(&names, |process| {
+    for_each_agent_process(names, |process| {
         let started_at_unix = process.start_time();
         let slug = agent_slug_of(process).unwrap_or_default();
         agents.push(RunningAgent {
@@ -3156,26 +3163,7 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
             needs_reopen: agent_needs_reopen(process, None),
         });
     });
-    // Oldest first: the ones that need a reopen are the ones being looked
-    // for, and a stable order keeps two reports from the same machine
-    // diffable.
-    //
-    // **The tie-break is load-bearing, not tidiness.** `reopen.ts`'s
-    // `reopenTools` keeps the FIRST row per slug, and since the ChatGPT app and
-    // the `codex` it bundles resolve to one slug (AG-947), two rows now compete
-    // to speak for that app. `start_time` is whole seconds and both processes
-    // can land in the same one; the walk itself is a `HashMap` iteration, and
-    // `sort_by_key` is stable, so a tie would hand the row to whichever the map
-    // happened to yield first. When that is the helper the app reports
-    // `can_reopen: false` and the dialog offers no way to reopen it.
-    //
-    // So: relaunchable first among equals, then pid, which is total. Before
-    // the two shared a slug there was no contest and the plain sort was right.
-    agents.sort_by_key(|agent| (agent.started_at_unix, !agent.can_reopen, agent.pid));
-    RunningAgentsDto {
-        scanned_names: names.iter().map(|n| n.to_string()).collect(),
-        agents,
-    }
+    agents
 }
 
 /// How long an agent gets to quit on its own before Gate stops waiting. A
@@ -3469,30 +3457,7 @@ fn codex_sessions_open() -> bool {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn close_running_agents(only: Option<Vec<String>>) -> u32 {
-    let (closed, _) = close_agents(only.as_deref());
-    if only
-        .as_deref()
-        .is_none_or(|slugs| slugs.iter().any(|s| s == "codex"))
-    {
-        refresh_codex_daemon_when_idle("close agents");
-    }
-    let mut reopen: Vec<(String, Relaunch)> = Vec::new();
-    for target in &closed {
-        if let (Some(slug), Some(relaunch)) = (target.slug, &target.relaunch) {
-            // One launch per app, however many of its processes were closed.
-            if !reopen.iter().any(|(s, _)| s == slug) {
-                reopen.push((slug.to_string(), relaunch.clone()));
-            }
-        }
-    }
-    if !reopen.is_empty() {
-        let mut guard = PENDING_REOPEN.lock().unwrap_or_else(|e| e.into_inner());
-        // Replace rather than append for the slugs in hand: a second close of
-        // the same app must not queue a second launch of it.
-        guard.retain(|(slug, _)| !reopen.iter().any(|(s, _)| s == slug));
-        guard.extend(reopen);
-    }
-    closed.len() as u32
+    commands::close_running_agents(&TauriPlatform, only.as_deref())
 }
 
 /// Was `pid` started under another agent, at any depth? `parent_of` and
@@ -3813,41 +3778,22 @@ fn launch(target: &std::path::Path) -> bool {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn reopen_running_agents(only: Option<Vec<String>>) -> u32 {
-    let pending: Vec<(String, Relaunch)> = {
-        let mut guard = PENDING_REOPEN.lock().unwrap_or_else(|e| e.into_inner());
-        let (take, keep): (Vec<_>, Vec<_>) = guard.drain(..).partition(|(slug, _)| {
-            only.as_deref()
-                .is_none_or(|slugs| slugs.iter().any(|s| s == slug))
-        });
-        *guard = keep;
-        take
-    };
-    if pending.is_empty() {
-        return 0;
-    }
+    commands::reopen_running_agents(&TauriPlatform, only.as_deref())
+}
 
-    // Bounded wait for the old instances to go. 5s is long enough for an app
-    // asked to quit gracefully and short enough that a user watching a button
-    // does not conclude it is broken.
-    let names: Vec<&str> = AGENT_PROCESSES
-        .iter()
-        .filter(|(slug, _, _, _)| pending.iter().any(|(s, _)| s == slug))
-        .map(|(_, name, _, _)| *name)
-        .collect();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+/// Wait, bounded by `within`, until no agent process named in `names` is
+/// running, for [`reopen_running_agents`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn wait_for_agents_to_exit(names: &[&str], within: std::time::Duration) {
+    let deadline = std::time::Instant::now() + within;
     loop {
         let mut still_running = false;
-        for_each_agent_process(&names, |_| still_running = true);
+        for_each_agent_process(names, |_| still_running = true);
         if !still_running || std::time::Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
-
-    pending
-        .iter()
-        .filter(|(_, relaunch)| relaunch.spawn())
-        .count() as u32
 }
 
 /// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the

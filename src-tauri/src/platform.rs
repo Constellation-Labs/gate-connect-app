@@ -321,6 +321,27 @@ pub(crate) trait Processes {
     /// predates the config. Returns at once; the wait is on its own thread.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn refresh_codex_daemon_when_idle(&self, why: &'static str);
+
+    /// One row per running agent process named in `names`, in walk order.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn running_agents(&self, names: &[&str]) -> Vec<crate::RunningAgent>;
+
+    /// Ask the agents `only` names (every agent for `None`) to quit, wait for
+    /// them, and hand back the ones that closed.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn close_agents(&self, only: Option<&[String]>) -> Vec<crate::CloseTarget>;
+
+    /// The apps Gate closed and means to put back, by slug.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn pending_reopen(&self) -> &std::sync::Mutex<Vec<(String, crate::Relaunch)>>;
+
+    /// Wait, at most `within`, for every agent named in `names` to be gone.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn wait_for_agents_to_exit(&self, names: &[&str], within: std::time::Duration);
+
+    /// Launch one closed app again. True when the launch started.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn relaunch(&self, target: &crate::Relaunch) -> bool;
 }
 
 /// The account file, and the Gate key in the OS secret store.
@@ -879,6 +900,31 @@ impl<T: Tauri> Processes for T {
     fn refresh_codex_daemon_when_idle(&self, why: &'static str) {
         crate::refresh_codex_daemon_when_idle(why);
     }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn running_agents(&self, names: &[&str]) -> Vec<crate::RunningAgent> {
+        crate::list_running_agents(names)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn close_agents(&self, only: Option<&[String]>) -> Vec<crate::CloseTarget> {
+        crate::close_agents(only).0
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn pending_reopen(&self) -> &std::sync::Mutex<Vec<(String, crate::Relaunch)>> {
+        &crate::PENDING_REOPEN
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn wait_for_agents_to_exit(&self, names: &[&str], within: std::time::Duration) {
+        crate::wait_for_agents_to_exit(names, within);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn relaunch(&self, target: &crate::Relaunch) -> bool {
+        target.spawn()
+    }
 }
 
 impl<T: Tauri> Account for T {
@@ -1231,6 +1277,21 @@ pub(crate) mod fake {
         /// The quit teardown panics.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         pub quit_panics: bool,
+
+        // ---- Processes ----
+        /// What the process walk finds. The walk keeps the rows whose process
+        /// name it was asked for.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        pub agents: Vec<crate::RunningAgent>,
+        /// What the next close closes. Taken by it.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        pub closes: Mutex<Vec<crate::CloseTarget>>,
+        /// The reopen queue.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        pub pending_reopen: Mutex<Vec<(String, crate::Relaunch)>>,
+        /// Relaunches that will not start.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        pub relaunch_fails: Vec<crate::Relaunch>,
 
         // ---- Login item ----
         pub login_item: Mutex<bool>,
@@ -1732,6 +1793,38 @@ pub(crate) mod fake {
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn refresh_codex_daemon_when_idle(&self, why: &'static str) {
             self.record(format!("refresh_codex_daemon_when_idle {why}"));
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn running_agents(&self, names: &[&str]) -> Vec<crate::RunningAgent> {
+            self.record(format!("running_agents {names:?}"));
+            self.agents
+                .iter()
+                .filter(|agent| names.contains(&agent.name.as_str()))
+                .cloned()
+                .collect()
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn close_agents(&self, only: Option<&[String]>) -> Vec<crate::CloseTarget> {
+            self.record(format!("close_agents {only:?}"));
+            std::mem::take(&mut *self.closes.lock().unwrap())
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn pending_reopen(&self) -> &Mutex<Vec<(String, crate::Relaunch)>> {
+            &self.pending_reopen
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn wait_for_agents_to_exit(&self, names: &[&str], within: std::time::Duration) {
+            self.record(format!("wait_for_agents_to_exit {names:?} {within:?}"));
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn relaunch(&self, target: &crate::Relaunch) -> bool {
+            self.record(format!("relaunch {target:?}"));
+            !self.relaunch_fails.contains(target)
         }
     }
 
