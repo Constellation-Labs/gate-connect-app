@@ -15,6 +15,11 @@
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
+mod commands;
+mod platform;
+
+use platform::TauriPlatform;
+
 /// How a challenge-solve attempt ended; reported to the engine so the cooldown
 /// message can name the failure. Only the solve window uses it, hence the cfg.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1223,7 +1228,7 @@ async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
 /// password prompt appears, etc.
 #[tauri::command]
 fn app_platform() -> &'static str {
-    std::env::consts::OS
+    commands::app_platform(&TauriPlatform)
 }
 
 /// OS marketing name AND version ("Ubuntu 25.10", "macOS 15.3 (24D60)").
@@ -3018,7 +3023,7 @@ fn set_device_name(name: String) -> Result<(), String> {
 /// `quit_notice_body`).
 #[tauri::command]
 fn set_notifications(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_notifications(enabled).map_err(|e| format!("{e:#}"))
+    commands::set_notifications(&TauriPlatform, enabled)
 }
 
 /// Turn the sound on security notifications on or off (AG-578).
@@ -3206,18 +3211,7 @@ async fn cowork_setting_check() -> Option<&'static str> {
 /// send path is its own story.
 #[tauri::command]
 fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))?;
-    // Every window runs its own analytics client, and only the one the user
-    // clicked in knows the answer changed. Broadcast it so the tray and the
-    // intro stop (or start) too, instead of acting on the answer they read at
-    // launch until the next one (AG-960).
-    if let Some(handle) = APP_HANDLE.get() {
-        let _ = handle.emit(
-            ANALYTICS_CONSENT_EVENT,
-            serde_json::json!({ "share_diagnostics": enabled, "recorded": true }),
-        );
-    }
-    Ok(())
+    commands::set_share_diagnostics(&TauriPlatform, enabled)
 }
 
 /// What this install is identified as in analytics; see
