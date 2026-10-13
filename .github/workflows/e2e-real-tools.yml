@@ -105,6 +105,31 @@ jobs:
             | bash -s -- --skip-browser --commit "$HERMES_COMMIT"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # Windows gets install.ps1 at the same pinned commit. It does take a
+      # browser opt-out: -SkipBrowser is install.sh's --skip-browser (both pass
+      # `--without agent-browser` to Hermes' package manager), so no
+      # Playwright/Chromium download happens. -SkipComputerUse drops the
+      # cua-driver the same way, and -NonInteractive skips the setup and gateway
+      # stages that would prompt. The launcher lands in
+      # %LOCALAPPDATA%\hermes\bin, which the installer adds to the user PATH
+      # only, so it is added to GITHUB_PATH here. timeout-minutes bounds the
+      # step, so a stalled download fails it rather than the whole job.
+      - name: Install Hermes (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'hermes-install.ps1'
+          curl.exe -fsSL --retry 5 -o $installer "https://raw.githubusercontent.com/NousResearch/hermes-agent/$env:HERMES_COMMIT/scripts/install.ps1"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File $installer -Commit $env:HERMES_COMMIT -SkipBrowser -SkipComputerUse -NonInteractive
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $bin = Join-Path $env:LOCALAPPDATA 'hermes\bin'
+          Get-ChildItem $bin
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
       # timeout-minutes bounds the step so a hung tool can't run for hours; on
       # timeout the runner kills the process tree and the diagnostics step below
