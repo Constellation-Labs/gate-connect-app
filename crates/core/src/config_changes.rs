@@ -40,6 +40,18 @@
 //! equals the last one recorded adds nothing to that comparison and is not
 //! kept.
 //!
+//! **What was on disk is recorded too, when it is not what Gate last wrote.**
+//! Skipping a write that restores the recorded view is only safe if nothing
+//! happened in between, and two things can: a hand edit that strips Gate's
+//! values, and a quit whose revert landed while its record did not (a store
+//! write that failed, the CLI racing the app, a shutdown between the two).
+//! Either way a process could have started on a view the record never saw,
+//! and the next write would put the recorded view back and call that process
+//! current. So every write first fingerprints the file it is about to replace,
+//! and a view other than the last recorded one goes in as a change of its own,
+//! stamped one second after that last change - the earliest it can have
+//! happened, so a process in the gap is judged stale rather than current.
+//!
 //! **Bounded.** Each path keeps its newest [`MAX_CHANGES`], and a path whose
 //! newest change is older than [`MAX_AGE_SECS`] is dropped the next time
 //! anything is recorded. A process older than every change a path still
@@ -101,28 +113,48 @@ impl Stored {
 /// through [`crate::primitives::write_file`], which leaves the content alone
 /// and only corrects the mode.
 pub(crate) fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    write_with_view(path, bytes, mode, bytes)
+    write_with_view(path, bytes, mode, whole_file)
 }
 
-/// [`write`], with `view` as the part of the file a running process acts on.
-pub(crate) fn write_with_view(path: &Path, bytes: &[u8], mode: u32, view: &[u8]) -> Result<()> {
-    let changed = fs::read(path).map_or(true, |current| current != bytes);
+/// [`write`], with `view` taking a file's bytes to the part of it a running
+/// process acts on. It is applied to the file being replaced as well as to the
+/// new one, so an absent file reads as `view(b"")`.
+pub(crate) fn write_with_view(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    view: fn(&[u8]) -> Vec<u8>,
+) -> Result<()> {
+    let current = fs::read(path).ok();
     crate::primitives::write_file(path, bytes, mode)?;
-    if changed {
-        record(path, view);
-    }
+    let written = (current.as_deref() != Some(bytes)).then(|| view(bytes));
+    record(
+        path,
+        &view(current.as_deref().unwrap_or_default()),
+        written.as_deref(),
+    );
     Ok(())
 }
 
 /// Remove a tool configuration, recording the change when there was one to
 /// remove. An absent file's view is empty.
 pub(crate) fn remove(path: &Path) -> Result<()> {
-    if !path.exists() {
+    remove_with_view(path, whole_file)
+}
+
+/// [`remove`] for a tool that writes through [`write_with_view`], so the file
+/// being removed is read the same way.
+pub(crate) fn remove_with_view(path: &Path, view: fn(&[u8]) -> Vec<u8>) -> Result<()> {
+    let Ok(current) = fs::read(path) else {
         return Ok(());
-    }
+    };
     fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
-    record(path, b"");
+    record(path, &view(&current), Some(b""));
     Ok(())
+}
+
+fn whole_file(bytes: &[u8]) -> Vec<u8> {
+    bytes.to_vec()
 }
 
 /// Unix seconds at which Gate last changed the file at `path`, or `None` when
@@ -140,16 +172,25 @@ pub fn history(path: &Path) -> Vec<Change> {
         .unwrap_or_default()
 }
 
+/// Record what a write found on disk and, when it changed the file, what it
+/// left there. `written` is `None` for a write that left the bytes alone.
+///
 /// Best effort. The configuration write has already landed when this runs, so
 /// failing the caller here would report a connect as failed while the tool is
-/// routed. A missing stamp costs a reopen notice, and the log says why.
-fn record(path: &Path, view: &[u8]) {
+/// routed. A missing stamp can cost a reopen notice, and the log says why; the
+/// next write's look at the file is what recovers the change it lost.
+fn record(path: &Path, found: &[u8], written: Option<&[u8]>) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let saved = load().and_then(|mut stamps| {
-        append(stamps.entry(key(path)).or_default(), now, fingerprint(view));
+        let changes = stamps.entry(key(path)).or_default();
+        let observed = observe(changes, now, fingerprint(found));
+        let appended = written.is_some_and(|view| append(changes, now, fingerprint(view)));
+        if !observed && !appended {
+            return Ok(());
+        }
         stamps.retain(|_, changes| {
             changes
                 .last()
@@ -166,14 +207,26 @@ fn record(path: &Path, view: &[u8]) {
     }
 }
 
+/// Add the view a write found on disk as a change of its own, when it is not
+/// the last one recorded, stamped one second after that last change and no
+/// later than `now`. A path with no record has nothing to contradict. Whether
+/// anything was added.
+fn observe(changes: &mut Vec<Change>, now: u64, view: String) -> bool {
+    changes
+        .last()
+        .filter(|last| last.view.as_deref() != Some(view.as_str()))
+        .map(|last| last.at.saturating_add(1).min(now))
+        .is_some_and(|at| append(changes, at, view))
+}
+
 /// Add a change to one path's list, unless its view is the one already in
-/// place, and keep the list to [`MAX_CHANGES`].
-fn append(changes: &mut Vec<Change>, at: u64, view: String) {
+/// place, and keep the list to [`MAX_CHANGES`]. Whether it was added.
+fn append(changes: &mut Vec<Change>, at: u64, view: String) -> bool {
     if changes
         .last()
         .is_some_and(|last| last.view.as_deref() == Some(view.as_str()))
     {
-        return;
+        return false;
     }
     changes.push(Change {
         at,
@@ -181,6 +234,7 @@ fn append(changes: &mut Vec<Change>, at: u64, view: String) {
     });
     let excess = changes.len().saturating_sub(MAX_CHANGES);
     changes.drain(..excess);
+    true
 }
 
 fn fingerprint(view: &[u8]) -> String {
@@ -257,6 +311,42 @@ mod tests {
         let mut changes = vec![Change { at: 10, view: None }];
         append(&mut changes, 20, "a".into());
         assert_eq!(changes.len(), 2);
+    }
+
+    #[test]
+    fn a_view_gate_did_not_write_goes_in_just_after_the_last_change() {
+        let mut changes = Vec::new();
+        append(&mut changes, 100, "gate".into());
+        assert!(observe(&mut changes, 300, "own".into()));
+        append(&mut changes, 300, "gate".into());
+        let seen: Vec<(u64, &str)> = changes
+            .iter()
+            .map(|c| (c.at, c.view.as_deref().unwrap()))
+            .collect();
+        assert_eq!(seen, [(100, "gate"), (101, "own"), (300, "gate")]);
+    }
+
+    #[test]
+    fn the_view_last_recorded_is_not_observed_again() {
+        let mut changes = Vec::new();
+        append(&mut changes, 100, "gate".into());
+        assert!(!observe(&mut changes, 300, "gate".into()));
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn a_path_with_no_record_observes_nothing() {
+        let mut changes = Vec::new();
+        assert!(!observe(&mut changes, 300, "own".into()));
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn an_observed_change_is_never_stamped_after_now() {
+        let mut changes = Vec::new();
+        append(&mut changes, 300, "gate".into());
+        observe(&mut changes, 300, "own".into());
+        assert_eq!(changes.last().map(|c| c.at), Some(300));
     }
 
     #[test]

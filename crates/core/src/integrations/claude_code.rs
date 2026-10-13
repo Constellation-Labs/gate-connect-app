@@ -567,7 +567,7 @@ impl Integration for ClaudeCode {
         // The file now holds nothing but our additions - remove it rather
         // than leaving a stray `{}` behind (matching Codex's disconnect).
         if settings.is_empty() {
-            crate::config_changes::remove(&path)?;
+            crate::config_changes::remove_with_view(&path, routing_view)?;
             return Ok(());
         }
         write_settings(&settings)
@@ -937,28 +937,28 @@ fn load_settings() -> Result<Option<Map<String, Value>>> {
 }
 
 fn write_settings(settings: &Map<String, Value>) -> Result<()> {
-    super::json_config::write_object_with_view(
-        &settings_path()?,
-        settings,
-        Some(&routing_view(settings)),
-    )
+    super::json_config::write_object_with_view(&settings_path()?, settings, routing_view)
 }
 
 /// What a running `claude` acted on: the `env` block, which is everything Gate
-/// routes and picks models by. The rest of the file is Claude Code's own and
-/// it rewrites it at will - a permission approval, a model switch - so a view
-/// that took it in would read every round trip of Gate's values as news.
-/// Sorted, so a reordering is not a change; empty when there is no `env`,
-/// which is also how a removed file reads.
-fn routing_view(settings: &Map<String, Value>) -> Vec<u8> {
-    settings
-        .get("env")
-        .and_then(Value::as_object)
-        .map(|env| {
-            let sorted: std::collections::BTreeMap<&String, &Value> = env.iter().collect();
-            serde_json::to_vec(&sorted).unwrap_or_default()
+/// routes by. The rest of the file is Claude Code's own and it rewrites it at
+/// will - a permission approval, a model switch - so a view that took it in
+/// would read every round trip of Gate's values as news. Sorted, so a
+/// reordering is not a change; empty when there is no `env`, which is also how
+/// a removed file reads. A file that is not JSON is its own bytes.
+fn routing_view(bytes: &[u8]) -> Vec<u8> {
+    serde_json::from_slice::<Value>(bytes)
+        .map(|settings| {
+            settings
+                .get("env")
+                .and_then(Value::as_object)
+                .map(|env| {
+                    let sorted: std::collections::BTreeMap<&String, &Value> = env.iter().collect();
+                    serde_json::to_vec(&sorted).unwrap_or_default()
+                })
+                .unwrap_or_default()
         })
-        .unwrap_or_default()
+        .unwrap_or_else(|_| bytes.to_vec())
 }
 
 use super::json_config::ensure_object;
