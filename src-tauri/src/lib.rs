@@ -13,7 +13,7 @@
 //! corner radius, its own space behaviour and a click-outside watcher, none of
 //! which a regular window wants. The dock icon is back with them gone.
 
-use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
+use gate_connect_core::{account, registry, Status, ToolId};
 
 mod commands;
 mod platform;
@@ -182,63 +182,18 @@ fn tool_status(slug: String) -> Result<StatusDto, String> {
 async fn connect_tool(slug: String) -> Result<StatusDto, String> {
     // Off the main thread: connect does config-file I/O that shouldn't
     // block the UI thread.
-    tauri::async_runtime::spawn_blocking(move || {
-        let integ = resolve_integration(&slug)?;
-        let account = account::load()
-            .map_err(|e| format!("{e:#}"))?
-            .ok_or_else(|| "Sign in to Gate AI first".to_string())?;
-        // Auto-enable the proxy so the reverse-proxy relay is live: relay-routed
-        // tool configs point at the loopback relay, which only exists while the
-        // engine runs. Idempotent if the proxy is already on.
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        {
-            // Persist the routing intent too, and before the engine comes up
-            // (see `routing::enable` for the ordering): connecting a tool is
-            // as deliberate a "route through Gate" as the master switch, and
-            // this engine start must survive a restart - the tool's config
-            // keeps pointing at the relay across a quit, so a launch that
-            // doesn't bring the relay back leaves the tool dialing a dead
-            // loopback port while its ledger row still reads connected.
-            // Deliberately not the full `routing::enable` ceremony: a connect
-            // is scoped to one tool, so it must not also restore providers a
-            // master-off swept.
-            if let Err(e) = gate_connect_core::proxy::intent::set_intent(true) {
-                eprintln!("[gate] persisting routing intent on connect failed: {e}");
-                report_backend_error("routing_intent", format!("{e:#}"));
-            }
-            gate_connect_core::proxy::manager()
-                .enable()
-                .map_err(|e| format!("{e:#}"))?;
-        }
-        let input = ConnectInput {
-            gateway_base_url: account.gateway_base_url,
-            billing_mode: account.billing_mode,
-            relay_base_url: gate_connect_core::proxy::relay_base_url(),
-            engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
-        };
-        integ.connect(&input).map_err(|e| format!("{e:#}"))?;
-        Ok(status_for(integ.as_ref()))
-    })
-    .await
-    .map_err(|e| format!("connect join error: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || commands::connect_tool(&TauriPlatform, &slug))
+        .await
+        .map_err(|e| format!("connect join error: {e}"))?
 }
 
 #[tauri::command]
 async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
     // Off the main thread: disconnect does config-file I/O that shouldn't
     // block the UI thread.
-    tauri::async_runtime::spawn_blocking(move || {
-        let integ = resolve_integration(&slug)?;
-        integ.disconnect().map_err(|e| format!("{e:#}"))?;
-        Ok(status_for(integ.as_ref()))
-    })
-    .await
-    .map_err(|e| format!("disconnect join error: {e}"))?
-}
-
-fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>, String> {
-    let id = ToolId::from_slug(slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;
-    registry::find(id).ok_or_else(|| "integration missing from registry".to_string())
+    tauri::async_runtime::spawn_blocking(move || commands::disconnect_tool(&TauriPlatform, &slug))
+        .await
+        .map_err(|e| format!("disconnect join error: {e}"))?
 }
 
 #[derive(Serialize)]
@@ -271,47 +226,9 @@ static ACCOUNT_RECONCILE_REPORTED: AtomicBool = AtomicBool::new(false);
 /// so on the main thread a save holding it, or a CLI logout, would stall the UI.
 #[tauri::command]
 async fn get_account() -> Result<Option<AccountDto>, String> {
-    tauri::async_runtime::spawn_blocking(read_account)
+    tauri::async_runtime::spawn_blocking(|| commands::get_account(&TauriPlatform))
         .await
         .map_err(|e| format!("get_account join error: {e}"))?
-}
-
-fn read_account() -> Result<Option<AccountDto>, String> {
-    // Reconcile the stored account against its on-disk anchor before reading it,
-    // so the first-run-vs-home decision this call drives always sees a
-    // consistent view. An uninstall that removed Gate Connect's files but left
-    // its OS keychain entry behind (macOS drag-to-trash, or a deep uninstaller
-    // that purges Application Support but can't touch the keychain). Dropping
-    // that orphaned key here, rather than on a startup thread that races this
-    // read, means it can't briefly route the user to a half-signed-in home. A
-    // key-less account.json (URL but no key) is left intact - it's a pending-key
-    // state and the read below reports has_api_key=false, so the UI routes to
-    // key entry. Best-effort: a reconcile hiccup must not flip a signed-in user
-    // to first-run, so we log and fall through to the read below.
-    if let Err(e) = account::reconcile() {
-        eprintln!("account reconcile failed: {e}");
-        if !ACCOUNT_RECONCILE_REPORTED.swap(true, Ordering::AcqRel) {
-            report_backend_error("account_reconcile", format!("{e:#}"));
-        }
-    }
-    let Some(gateway_base_url) = account::load_base_url().map_err(|e| format!("{e:#}"))? else {
-        return Ok(None);
-    };
-    let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
-    let auth_mode = account::auth_mode().map_err(|e| format!("{e:#}"))?;
-    let billing_mode = account::billing_mode().map_err(|e| format!("{e:#}"))?;
-    let (org_id, org_name) = match account::selected_org().map_err(|e| format!("{e:#}"))? {
-        Some((id, name)) => (Some(id), Some(name)),
-        None => (None, None),
-    };
-    Ok(Some(AccountDto {
-        gateway_base_url,
-        has_api_key,
-        auth_mode,
-        billing_mode,
-        org_id,
-        org_name,
-    }))
 }
 
 /// Leading characters of the stored Gate key, for the "show which key" reveal
@@ -320,7 +237,7 @@ fn read_account() -> Result<Option<AccountDto>, String> {
 /// reveal, to keep even the prefix out of view until asked.
 #[tauri::command]
 fn get_account_key_prefix() -> Result<Option<String>, String> {
-    account::api_key_prefix().map_err(|e| format!("{e:#}"))
+    commands::get_account_key_prefix(&TauriPlatform)
 }
 
 /// Is this gateway base URL's scheme acceptable?
@@ -363,86 +280,21 @@ fn base_url_scheme_error() -> String {
 
 #[tauri::command]
 async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
-    if base_url.len() > 2048 {
-        return Err("base url is unexpectedly long (>2048 bytes)".into());
-    }
-    let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if !base_url_scheme_ok(&parsed) {
-        return Err(base_url_scheme_error());
-    }
-    if parsed.host_str().is_none() {
-        return Err("base url is missing a host".into());
-    }
-    let key = api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    if let Some(k) = key.as_deref() {
-        validate_api_key(k, "sk-")?;
-    }
     // Off the main thread: keychain write plus up to three tool-config
     // rewrites, none of which should block the UI thread.
-    let done = tauri::async_runtime::spawn_blocking(move || {
-        account::save(&base_url, key.as_deref()).map_err(|e| format!("{e:#}"))?;
-        // A rotated key is hot-swapped into the running proxy engine below;
-        // the relay injects it live per request, so no tool config embeds it.
-        if let Some(k) = key.as_deref() {
-            // Pasting a key selects the legacy path explicitly.
-            account::set_auth_mode(account::AuthMode::ApiKey).map_err(|e| format!("{e:#}"))?;
-            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            {
-                let manager = gate_connect_core::proxy::manager();
-                // Drop any live OAuth bearer from the running engine now that
-                // we're in ApiKey mode. The background refresh loop is gated on
-                // OAuth mode, so it won't clear it; and a still-valid Cognito
-                // session would otherwise keep overriding the pasted key until
-                // the token expired. No-op when routing is off.
-                manager.refresh_token("");
-                manager.refresh_api_key(k);
-            }
-        }
-        Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::save_account(&TauriPlatform, &base_url, api_key.as_deref())
     })
     .await
-    .map_err(|e| format!("save join error: {e}"))?;
-    // What changed: the key, the gateway, or both.
-    if done.is_ok() {
-        signal_session_changed();
-    }
-    done
+    .map_err(|e| format!("save join error: {e}"))?
 }
 
 #[tauri::command]
 async fn clear_account() -> Result<(), String> {
     // Off the main thread: per-tool config I/O that shouldn't freeze the UI.
-    let done = tauri::async_runtime::spawn_blocking(|| {
-        // Disconnect managed tools first: clearing the account while their
-        // configs still embed the key would leave them routing to the gateway
-        // with a dead credential on disk. A failure aborts the sign-out.
-        registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
-        // And stop the environment forwarder. It is deliberately left running
-        // across a plain routing-off - that is exactly when the processes
-        // holding our exported variables still need it - so this path and the
-        // CA untrust are the only places it is retired. This is the one an
-        // ordinary user reaches: it is what the Reset button runs
-        // (`App.tsx`'s `forget`, which disables routing and then calls here).
-        gate_connect_core::proxy::forwarder::stop();
-        account::clear().map_err(|e| format!("{e:#}"))
-    })
-    .await
-    .map_err(|e| format!("sign-out join error: {e}"))?;
-    // What changed: the account is gone.
-    if done.is_ok() {
-        // Same reason as the org switch: the events belonged to the account
-        // being cleared, and the feed outlives it.
-        security_feed().reset_for_account_change();
-        signal_session_changed();
-    }
-    // `account::clear` forgot the analytics identity (through `oauth::clear`);
-    // tell every window, so none keeps the account that went (AG-960).
-    announce_stored_analytics_identity();
-    done
+    tauri::async_runtime::spawn_blocking(|| commands::clear_account(&TauriPlatform))
+        .await
+        .map_err(|e| format!("sign-out join error: {e}"))?
 }
 
 /// Dev-mode gateway switch: repoint the account at another environment and
@@ -458,36 +310,12 @@ async fn clear_account() -> Result<(), String> {
 /// disconnect-first order in `clear_account`.
 #[tauri::command]
 async fn switch_gateway(base_url: String) -> Result<(), String> {
-    if base_url.len() > 2048 {
-        return Err("base url is unexpectedly long (>2048 bytes)".into());
-    }
-    let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if !base_url_scheme_ok(&parsed) {
-        return Err(base_url_scheme_error());
-    }
-    if parsed.host_str().is_none() {
-        return Err("base url is missing a host".into());
-    }
     // Off the main thread: per-tool config I/O plus keychain delete.
-    let done = tauri::async_runtime::spawn_blocking(move || {
-        registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
-        // Before the account moves, so the engine can never be up against an
-        // account it wasn't started from. A failure aborts the switch: routing
-        // to the old gateway with the new environment's credential is the state
-        // this whole command exists to avoid.
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager()
-            .shutdown_engine()
-            .map_err(|e| format!("{e:#}"))?;
-        account::switch_gateway(&base_url).map_err(|e| format!("{e:#}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::switch_gateway(&TauriPlatform, &base_url)
     })
     .await
-    .map_err(|e| format!("switch join error: {e}"))?;
-    // What changed: another gateway, and the key with it.
-    if done.is_ok() {
-        signal_session_changed();
-    }
-    done
+    .map_err(|e| format!("switch join error: {e}"))?
 }
 
 // ---- OAuth (Cognito) ----
@@ -526,32 +354,6 @@ impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
             expires_at_unix: t.expires_at_unix,
         }
     }
-}
-
-fn oauth_status_now() -> Result<OAuthStatusDto, String> {
-    // Share the injector's source of truth (`live_session`): refresh a stale
-    // access token so status reflects a live session, and report signed-out when
-    // there's no usable session - never signed in, signed out, or the refresh
-    // token is dead / unreachable. Reporting signed-out here is what routes the
-    // UI back to the sign-in prompt instead of showing a signed-in home that's
-    // actually riding the legacy API-key fallback. Keeping a running engine's
-    // token fresh is the background refresh loop's job (see `run()`), not this
-    // read's, so status stays a read that never mutates engine state.
-    use gate_connect_core::oauth::SessionReading;
-    Ok(match gate_connect_core::oauth::session_reading() {
-        SessionReading::Live(t) => OAuthStatusDto::from(&t),
-        other => OAuthStatusDto {
-            signed_in: false,
-            email: None,
-            sub: None,
-            session: if matches!(other, SessionReading::Unavailable) {
-                "unavailable"
-            } else {
-                "signed_out"
-            },
-            expires_at_unix: 0,
-        },
-    })
 }
 
 /// Run one interactive Cognito login: open the Hosted UI in the browser and
@@ -623,13 +425,13 @@ async fn oauth_begin_login<R: tauri::Runtime>(
 /// Not async and not blocking: it sets a flag the login's own poll loop reads.
 #[tauri::command]
 fn oauth_cancel_login() {
-    gate_connect_core::oauth::cancel_login();
+    commands::oauth_cancel_login(&TauriPlatform);
 }
 
 /// Current OAuth sign-in status (signed in, email, expiry).
 #[tauri::command]
 async fn oauth_status() -> Result<OAuthStatusDto, String> {
-    tauri::async_runtime::spawn_blocking(oauth_status_now)
+    tauri::async_runtime::spawn_blocking(|| commands::oauth_status(&TauriPlatform))
         .await
         .map_err(|e| format!("oauth status join error: {e}"))?
 }
@@ -639,69 +441,18 @@ async fn oauth_status() -> Result<OAuthStatusDto, String> {
 /// key-entry form; choosing the legacy path is an explicit key save.
 #[tauri::command]
 async fn oauth_sign_out() -> Result<(), String> {
-    let done = tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
-        // Say that this was asked for. The state left behind is identical to an
-        // expired session - no token, `auth_mode` still OAuth by design two
-        // lines up - so without this the welcome pane can only guess, and it
-        // guessed "Session expired" over the user's own deliberate click.
-        // Best-effort and after the credential, on the same reasoning as the
-        // cache clear below: a preferences write must not be the reason a
-        // sign-out reports failure.
-        let _ = gate_connect_core::preferences::set_signed_out_deliberately(true);
-        // The held activity readings belong to the org just signed out of, and
-        // signing out is not a disconnect: `account.json` keeps the gateway and
-        // the org, so `activity_cache`'s scope stays byte-identical and every
-        // reading in it would still match and still be served. `account::clear`
-        // covers the disconnect path; this covers the one that leaves the account
-        // file in place. Best effort and after the credential, on the same
-        // reasoning as there: a cache that will not delete must not be the reason
-        // a sign-out reports failure.
-        let _ = gate_connect_core::activity_cache::clear();
-        // Take the token out of a running engine now. The account stays in
-        // OAuth mode and holds no key, so routed requests are refused as
-        // signed out rather than sent under anything.
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager().refresh_token("");
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("oauth sign-out join error: {e}"))?;
-    // What changed: the OAuth session is gone, and `account.json` is not.
-    if done.is_ok() {
-        signal_session_changed();
-    }
-    // `oauth::clear` forgot the analytics identity; tell every window (AG-960).
-    announce_stored_analytics_identity();
-    done
+    tauri::async_runtime::spawn_blocking(|| commands::oauth_sign_out(&TauriPlatform))
+        .await
+        .map_err(|e| format!("oauth sign-out join error: {e}"))?
 }
 
 /// Explicitly set the auth mode. Used when a user chooses the legacy pasted-key
 /// path from the sign-in screen; OAuth sign-in sets it implicitly.
 #[tauri::command]
 async fn set_auth_mode(oauth: bool) -> Result<(), String> {
-    let done = tauri::async_runtime::spawn_blocking(move || {
-        let mode = if oauth {
-            gate_connect_core::account::AuthMode::OAuth
-        } else {
-            gate_connect_core::account::AuthMode::ApiKey
-        };
-        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))?;
-        // An OAuth account holds no key (`account::load`), so neither may a
-        // running engine: see `oauth_begin_login`.
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if oauth {
-            gate_connect_core::proxy::manager().refresh_api_key("");
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("set auth mode join error: {e}"))?;
-    // What changed: which credential the gateway is given.
-    if done.is_ok() {
-        signal_session_changed();
-    }
-    done
+    tauri::async_runtime::spawn_blocking(move || commands::set_auth_mode(&TauriPlatform, oauth))
+        .await
+        .map_err(|e| format!("set auth mode join error: {e}"))?
 }
 
 /// Switch who pays the upstream provider.
@@ -718,45 +469,9 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
 /// is the path back.
 #[tauri::command]
 async fn set_billing_mode(payg: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mode = if payg {
-            gate_connect_core::account::BillingMode::Payg
-        } else {
-            gate_connect_core::account::BillingMode::Byok
-        };
-        gate_connect_core::account::set_billing_mode(mode).map_err(|e| format!("{e:#}"))?;
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager().refresh_mode();
-        reapply_codex_for_mode(mode);
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("set billing mode join error: {e}"))?
-}
-
-/// Rewrite Codex's provider block for `mode`, if Codex is currently routed
-/// through Gate. Silent when Codex isn't installed or isn't connected - there
-/// is nothing to rewrite, and a mode switch is not the place to start routing a
-/// tool the user never connected.
-fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
-    let Some(integ) = registry::find(ToolId::Codex) else {
-        return;
-    };
-    if !matches!(integ.status(), Ok(gate_connect_core::Status::Connected)) {
-        return;
-    }
-    let Ok(Some(account)) = account::load() else {
-        return;
-    };
-    let input = ConnectInput {
-        gateway_base_url: account.gateway_base_url,
-        billing_mode: mode,
-        relay_base_url: gate_connect_core::proxy::relay_base_url(),
-        engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
-    };
-    if let Err(e) = integ.connect(&input) {
-        eprintln!("re-applying Codex for the new billing mode failed: {e:#}");
-    }
+    tauri::async_runtime::spawn_blocking(move || commands::set_billing_mode(&TauriPlatform, payg))
+        .await
+        .map_err(|e| format!("set billing mode join error: {e}"))?
 }
 
 /// Fetch the 24-hour activity overview for the Overview pane (AG-572).
@@ -782,10 +497,8 @@ async fn activity_overview(
     install_id: Option<String>,
     tools: Option<Vec<String>>,
 ) -> Result<String, String> {
-    let clients = gate_connect_core::activity::overview_clients(&tools.unwrap_or_default())?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::overview_json(install_id.as_deref(), &clients)
-            .map_err(envelope)
+        commands::activity_overview(&TauriPlatform, install_id.as_deref(), tools)
     })
     .await
     .map_err(|e| format!("activity overview join error: {e}"))?
@@ -818,12 +531,11 @@ async fn activity_cached_overview(
     install_id: Option<String>,
     tools: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
-    let clients = gate_connect_core::activity::overview_clients(&tools.unwrap_or_default())?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), &clients)
+        commands::activity_cached_overview(&TauriPlatform, install_id.as_deref(), tools)
     })
     .await
-    .map_err(|e| format!("cached activity join error: {e}"))
+    .map_err(|e| format!("cached activity join error: {e}"))?
 }
 
 /// Every held per-tool reading for this installation scope, keyed by slug.
@@ -841,7 +553,7 @@ async fn activity_cached_tool_overviews(
     install_id: Option<String>,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::cached_tool_overviews_json(install_id.as_deref())
+        commands::activity_cached_tool_overviews(&TauriPlatform, install_id.as_deref())
     })
     .await
     .map_err(|e| format!("cached tool activity join error: {e}"))
@@ -858,10 +570,8 @@ async fn activity_tool_events(
     install_id: Option<String>,
     tools: Vec<String>,
 ) -> Result<String, String> {
-    let clients = gate_connect_core::activity::feed_clients(&tools)?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::tool_events_json(install_id.as_deref(), &clients)
-            .map_err(envelope)
+        commands::activity_tool_events(&TauriPlatform, install_id.as_deref(), &tools)
     })
     .await
     .map_err(|e| format!("activity tool events join error: {e}"))?
@@ -872,10 +582,9 @@ async fn activity_tool_events(
 /// [`activity_overview`].
 #[tauri::command]
 async fn activity_installations() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::activity::installations_json)
+    tauri::async_runtime::spawn_blocking(|| commands::activity_installations(&TauriPlatform))
         .await
         .map_err(|e| format!("activity installations join error: {e}"))?
-        .map_err(envelope)
 }
 
 /// This install's per-tool model choices (AG-588).
@@ -891,27 +600,9 @@ async fn activity_installations() -> Result<String, String> {
 /// choice exists.
 #[tauri::command]
 async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        // Configs first: a tool moved off Gate models from inside itself is put
-        // back on its own model here, and the stored choices read below must
-        // already say so.
-        let configured = gate_connect_core::tool_models::states();
-        let prefs = gate_connect_core::preferences::load();
-        ToolModelsDto {
-            tools: prefs
-                .tool_models
-                .into_iter()
-                .map(|(slug, choice)| (slug, ToolModelChoiceDto::from(choice)))
-                .collect(),
-            paid_ack_unix: prefs.gate_model_paid_ack_unix,
-            configured: configured
-                .into_iter()
-                .map(|(slug, view)| (slug.to_string(), ConfiguredModelDto::from(view)))
-                .collect(),
-        }
-    })
-    .await
-    .map_err(|e| format!("tool model preferences join error: {e}"))
+    tauri::async_runtime::spawn_blocking(|| commands::tool_model_preferences(&TauriPlatform))
+        .await
+        .map_err(|e| format!("tool model preferences join error: {e}"))
 }
 
 /// What one tool's own config says about Gate models (R3: the config, not the
@@ -1007,46 +698,14 @@ async fn set_tool_model(
     model_ids: Vec<String>,
     acknowledge_paid_use: bool,
 ) -> Result<bool, String> {
-    // Parsed, not trusted: the slug has to be one this app actually configures,
-    // or the pane would store a choice under a key nothing reads.
-    let Some(tool) = parse_tool(Some(tool))? else {
-        return Err("a tool slug is required to set a model preference".into());
-    };
-    let source = match source.as_str() {
-        "tool" => gate_connect_core::preferences::ModelSource::Tool,
-        "gate" => gate_connect_core::preferences::ModelSource::Gate,
-        other => return Err(format!("unknown model source {other:?}")),
-    };
     tauri::async_runtime::spawn_blocking(move || {
-        // The names and context windows the tool's own picker will show, read
-        // now because the connect that writes them may run offline later. A
-        // catalogue that cannot be read costs the picker its labels, not the
-        // choice.
-        let meta = match source {
-            gate_connect_core::preferences::ModelSource::Gate => {
-                gate_connect_core::gate_models::catalogue_json()
-                    .map(|json| {
-                        gate_connect_core::tool_models::meta_from_catalogue(&json, &model_ids)
-                    })
-                    .unwrap_or_default()
-            }
-            gate_connect_core::preferences::ModelSource::Tool => Vec::new(),
-        };
-        let applied = gate_connect_core::tool_models::choose(
+        commands::set_tool_model(
+            &TauriPlatform,
             tool,
-            source,
+            &source,
             model_ids,
             acknowledge_paid_use,
-            meta,
         )
-        .map_err(|e| format!("{e:#}"))?;
-        // Codex's app-server daemon reads its config and model catalog only
-        // when it starts; see `refresh_codex_daemon_when_idle`.
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if applied && tool == gate_connect_core::registry::ToolId::Codex {
-            refresh_codex_daemon_when_idle("set model");
-        }
-        Ok(applied)
     })
     .await
     .map_err(|e| format!("set tool model join error: {e}"))?
@@ -1059,10 +718,9 @@ async fn set_tool_model(
 /// The picker says so in words rather than drawing an empty list.
 #[tauri::command]
 async fn gate_model_catalogue() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::catalogue_json)
+    tauri::async_runtime::spawn_blocking(|| commands::gate_model_catalogue(&TauriPlatform))
         .await
         .map_err(|e| format!("gate model catalogue join error: {e}"))?
-        .map_err(envelope)
 }
 
 /// This organization's Gate credit balance and plan (AG-588/590/592).
@@ -1072,10 +730,9 @@ async fn gate_model_catalogue() -> Result<String, String> {
 /// envelope and failure taxonomy as [`activity_overview`].
 #[tauri::command]
 async fn gate_credits() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::credits_json)
+    tauri::async_runtime::spawn_blocking(|| commands::gate_credits(&TauriPlatform))
         .await
         .map_err(|e| format!("gate credits join error: {e}"))?
-        .map_err(envelope)
 }
 
 /// Write one line to the diagnostic log from the front end.
@@ -1128,47 +785,20 @@ fn envelope(f: gate_connect_core::activity::Failure) -> String {
 /// tokio worker rather than the blocking pool.
 #[tauri::command]
 async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let listed = gate_connect_core::org::list_current().map_err(|e| format!("{e:#}"));
-        if listed.is_err() && gate_connect_core::oauth::session_rejected() {
-            if let Some(app) = APP_HANDLE.get() {
-                signal_session_dead(app);
-            }
-        }
-        listed
-    })
-    .await
-    .map_err(|e| format!("list orgs join error: {e}"))?
+    tauri::async_runtime::spawn_blocking(|| commands::oauth_list_orgs(&TauriPlatform))
+        .await
+        .map_err(|e| format!("list orgs join error: {e}"))?
 }
 
 /// Persist the selected org and push it into a running engine/relay so
 /// `X-Gate-Org-Id` takes effect live (no restart).
 #[tauri::command]
 async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
-    let done = tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::account::set_org(&org_id, &org_name).map_err(|e| format!("{e:#}"))?;
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager().refresh_org(&org_id);
-        Ok::<(), String>(())
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::set_org(&TauriPlatform, &org_id, &org_name)
     })
     .await
-    .map_err(|e| format!("set org join error: {e}"))?;
-    // What changed: another org, so every figure on screen belongs to the previous one.
-    if done.is_ok() {
-        // The feed included. It is a process singleton, so without this its
-        // buffer, its dedupe set and its catch-up verdict all survive the
-        // switch - and `security_feed_recent` hands the previous org's events
-        // straight back to a window that has just cleared its own copy. That is
-        // the one thing the activity surfaces are not allowed to do: show one
-        // org's traffic under another org's name.
-        //
-        // `reset_for_account_change` was written for exactly this and had no
-        // production caller at all, only a test, so the guarantee its name makes
-        // was never kept.
-        security_feed().reset_for_account_change();
-        signal_session_changed();
-    }
-    done
+    .map_err(|e| format!("set org join error: {e}"))?
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -2293,28 +1923,6 @@ fn queue_backend_error(context: &'static str, message: String, reason: Option<&'
     }
 }
 
-/// Tell every mounted window that the signed-in session moved.
-///
-/// The account is the scope of nearly everything on screen: the org name, the
-/// activity figures, the security feed's buffer, the installation list. Each
-/// shell keys its readings on a credential string built from the account, and
-/// drops them when it changes - but only the window that *made* the change knew,
-/// because none of the mutating commands emitted anything. So the tray kept the
-/// previous org's counts and header until something unrelated woke it, and a
-/// sign-out left figures on screen for an account that could no longer read them.
-///
-/// Emitted after the change has landed, never before: a window that re-read on
-/// the way in would read the state being replaced.
-///
-/// Not to be confused with [`signal_session_dead`] and its
-/// `session-signin-required`, which says the gateway *refused* a session the user
-/// did not change. This one says the user changed it on purpose.
-fn signal_session_changed() {
-    if let Some(handle) = APP_HANDLE.get() {
-        let _ = handle.emit("session-changed", ());
-    }
-}
-
 /// Take one label's buffered failures, leaving every other label's alone.
 ///
 /// Split out of [`drain_backend_errors`] so the test can exercise this exact
@@ -3167,20 +2775,9 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
 /// told too. Best-effort: a failure there leaves the read as it was.
 #[tauri::command]
 async fn analytics_identity() -> Result<gate_connect_core::analytics::Identity, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        use gate_connect_core::analytics;
-        let forgot = analytics::forget_identity_if_signed_out().unwrap_or_else(|e| {
-            eprintln!("analytics identity: finishing a forget failed: {e:#}");
-            false
-        });
-        let identity = analytics::load_identity();
-        if forgot {
-            announce_analytics_identity(identity.clone());
-        }
-        identity
-    })
-    .await
-    .map_err(|e| format!("analytics identity join error: {e}"))
+    tauri::async_runtime::spawn_blocking(|| commands::analytics_identity(&TauriPlatform))
+        .await
+        .map_err(|e| format!("analytics identity join error: {e}"))
 }
 
 /// Record a change of analytics identity, and tell every window, so each one's
@@ -3199,15 +2796,8 @@ async fn analytics_identity() -> Result<gate_connect_core::analytics::Identity, 
 async fn set_analytics_identity(
     identity: gate_connect_core::analytics::Identity,
 ) -> Result<(), String> {
-    use gate_connect_core::analytics::SaveOutcome;
-    tauri::async_runtime::spawn_blocking(move || match gate_connect_core::analytics::save_identity(
-        identity,
-        |stored| announce_analytics_identity(stored.clone()),
-    ) {
-        Ok(SaveOutcome::Saved) => Ok(()),
-        Ok(SaveOutcome::NotLive) => Err(ANALYTICS_IDENTITY_NOT_LIVE.to_string()),
-        Ok(SaveOutcome::Unconfirmed) => Err(ANALYTICS_IDENTITY_UNCONFIRMED.to_string()),
-        Err(e) => Err(format!("{e:#}")),
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::set_analytics_identity(&TauriPlatform, identity)
     })
     .await
     .map_err(|e| format!("analytics identity join error: {e}"))?
@@ -3226,21 +2816,6 @@ const ANALYTICS_IDENTITY_EVENT: &str = "analytics-identity-changed";
 /// The event every window listens on to follow a change of the diagnostics
 /// answer made in another window.
 const ANALYTICS_CONSENT_EVENT: &str = "analytics-consent-changed";
-
-fn announce_analytics_identity(identity: gate_connect_core::analytics::Identity) {
-    if let Some(handle) = APP_HANDLE.get() {
-        let _ = handle.emit(ANALYTICS_IDENTITY_EVENT, identity);
-    }
-}
-
-/// Tell every window what analytics identity is stored now. The core does the
-/// forgetting (`oauth::clear`), so every caller of it, the CLI included,
-/// changes the record; this is the shell's
-/// half, because only the shell has windows to tell. Without it each window
-/// kept the old account for the rest of the session.
-fn announce_stored_analytics_identity() {
-    announce_analytics_identity(gate_connect_core::analytics::load_identity());
-}
 
 /// The process name to look for on behalf of one tool.
 ///
@@ -7547,24 +7122,25 @@ mod tests {
 
     /// Every command that ends the account announces the stored
     /// analytics identity, after the core call that changed it (AG-960). A scan
-    /// of this file's own source, because the commands need a running app.
+    /// of the bodies' source in `commands.rs`, where they moved (AG-903); the
+    /// fake-platform tests there pin the same order by behaviour.
     #[test]
     fn account_changes_announce_the_analytics_identity_after_the_change() {
-        let src = include_str!("lib.rs").replace("\r\n", "\n");
+        let src = include_str!("commands.rs").replace("\r\n", "\n");
         for (start, change) in [
-            ("async fn oauth_sign_out()", "oauth::clear()"),
-            ("async fn clear_account()", "account::clear()"),
+            ("fn oauth_sign_out(", ".clear_oauth_session()"),
+            ("fn clear_account(", ".clear_account()"),
         ] {
             let at = src.find(start).expect(start);
             let body = &src[at..];
             let end = body[start.len()..]
-                .find("\n#[tauri::command]")
+                .find("\n}\n")
                 .map(|i| i + start.len())
                 .unwrap_or(body.len());
             let body = &body[..end];
             let changed = body.find(change).expect(change);
             let announced = body
-                .find("announce_stored_analytics_identity();")
+                .find("announce_stored_analytics_identity(platform);")
                 .unwrap_or_else(|| panic!("{start} must announce the identity"));
             assert!(changed < announced, "{start}: announce after {change}");
         }
