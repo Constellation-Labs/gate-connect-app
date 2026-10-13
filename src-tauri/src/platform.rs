@@ -21,7 +21,7 @@ use gate_connect_core::account::{AuthMode, BillingMode};
 use gate_connect_core::activity::Failure;
 use gate_connect_core::analytics::{Identity, SaveOutcome};
 use gate_connect_core::logging::Level;
-use gate_connect_core::oauth::SessionReading;
+use gate_connect_core::oauth::{OAuthConfig, OAuthTokens, SessionReading};
 use gate_connect_core::org::Org;
 use gate_connect_core::preferences::{GateModelMeta, ModelSource};
 use gate_connect_core::security_feed::{FeedState, SecurityEvent};
@@ -87,6 +87,18 @@ pub(crate) trait Platform:
     fn disconnect_tools_for_quit(
         &self,
     ) -> Result<gate_connect_core::provider::QuitTeardown, String>;
+
+    /// [`Platform::disconnect_tools_for_quit`] off the async runtime, on a
+    /// blocking thread. A teardown that panics comes back as an `Err`.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn disconnect_tools_for_quit_off_thread(
+        &self,
+    ) -> impl std::future::Future<Output = Result<gate_connect_core::provider::QuitTeardown, String>>
+           + Send;
+
+    /// The billing mode the engine injects for.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn injection_billing_mode(&self) -> BillingMode;
 
     /// What each Gate-model tool's own config says, with drift folded back
     /// into the stored choice first.
@@ -308,6 +320,9 @@ pub(crate) trait Windows {
 
     /// Take one window's buffered backend failures, by label.
     fn drain_backend_errors(&self, label: &str) -> Vec<crate::BackendError>;
+
+    /// Record whether the tray popover is on screen.
+    fn set_popover_visible(&self, visible: bool);
 }
 
 /// The AI tools' running processes.
@@ -430,14 +445,31 @@ pub(crate) trait Session {
     /// refresh on a refusal.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn probe_session_health(&self) -> gate_connect_core::routing_health::SessionHealth;
+
+    /// This build's OAuth client. `None` when the build carries none.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn oauth_config(&self) -> Option<OAuthConfig>;
+
+    /// Run one interactive login, opening the sign-in page with `open`, and
+    /// store the tokens it ends with.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn login(
+        &self,
+        config: &OAuthConfig,
+        open: &dyn Fn(&str) -> anyhow::Result<()>,
+    ) -> anyhow::Result<OAuthTokens>;
+
+    /// Clear the "sign in required" flag. True when it was set.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn clear_session_needs_signin(&self) -> bool;
 }
 
 /// What only a holder of the app handle reaches: the tray, and the login item
 /// the autostart plugin owns, with the opt-out marker that defers removing it.
 /// Not required by [`Platform`]; see the module docs.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) trait App {
     /// Retint the tray mark and its status dot for the routing state.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn update_tray_status(&self, routing_on: bool);
 
     /// Register a login item for a routed session that has none, so a crash
@@ -446,15 +478,19 @@ pub(crate) trait App {
     fn arm_crash_safety_net(&self);
 
     /// Finish a deferred launch-at-login opt-out, if one is pending.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn complete_pending_autostart_disable(&self);
 
     /// Whether a login item is registered.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn login_item_registered(&self) -> anyhow::Result<bool>;
 
     /// Register the login item.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn register_login_item(&self) -> anyhow::Result<()>;
 
     /// Remove the login item.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn deregister_login_item(&self) -> anyhow::Result<()>;
 
     /// Put the crash-restart policy back into the LaunchAgent the plugin just
@@ -463,14 +499,44 @@ pub(crate) trait App {
     fn arm_crash_restart(&self);
 
     /// Whether a launch-at-login opt-out is waiting for a safe point.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn autostart_opt_out_pending(&self) -> bool;
 
     /// Set or clear the deferred opt-out marker.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn set_autostart_opt_out_pending(&self, pending: bool) -> anyhow::Result<()>;
 
     /// Record an opt-out. True when the login item can go now; false when
     /// routing is on and the removal waits for a safe point.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn record_autostart_opt_out(&self) -> anyhow::Result<bool>;
+
+    /// Open a URL in the user's browser.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn open_url(&self, url: &str) -> anyhow::Result<()>;
+
+    /// Bring the window with this label back on screen and focus it. False
+    /// when there is no such window.
+    fn refocus_window(&self, label: &str) -> bool;
+
+    /// Build the onboarding window for `source` and focus it.
+    fn open_onboarding_window(&self, source: &'static str) -> anyhow::Result<()>;
+
+    /// Bring the main window back on screen, wherever the user left it.
+    fn reveal_main_window(&self);
+
+    /// Hide the window with this label. False when there is no such window.
+    fn hide_window(&self, label: &str) -> bool;
+
+    /// Emit an app-wide event on this command's own handle.
+    fn emit_app(&self, event: &str, payload: Value);
+
+    /// Show a notification titled "Gate Connect".
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn notify(&self, body: &str);
+
+    /// End the process with this exit code.
+    fn exit_app(&self, code: i32);
 }
 
 /// Reads from the gateway, and the cache that holds them.
@@ -561,7 +627,6 @@ pub(crate) struct TauriPlatform;
 
 /// The running app, for a command generic over the Tauri runtime: the same
 /// platform as [`TauriPlatform`], plus that command's own handle for [`App`].
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) struct TauriApp<R: tauri::Runtime> {
     pub(crate) app: tauri::AppHandle<R>,
 }
@@ -572,7 +637,6 @@ pub(crate) trait Tauri {}
 
 impl Tauri for TauriPlatform {}
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl<R: tauri::Runtime> Tauri for TauriApp<R> {}
 
 impl<T: Tauri> Platform for T {
@@ -639,6 +703,26 @@ impl<T: Tauri> Platform for T {
         &self,
     ) -> Result<gate_connect_core::provider::QuitTeardown, String> {
         crate::disconnect_tools_for_quit()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    // Not an `async fn`: that would hold `&self` across the await, and the
+    // future has to be `Send` for any `T` here, Sync or not.
+    #[allow(clippy::manual_async_fn)]
+    fn disconnect_tools_for_quit_off_thread(
+        &self,
+    ) -> impl std::future::Future<Output = Result<gate_connect_core::provider::QuitTeardown, String>>
+           + Send {
+        async {
+            tauri::async_runtime::spawn_blocking(crate::disconnect_tools_for_quit)
+                .await
+                .unwrap_or_else(|e| Err(format!("join error: {e}")))
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn injection_billing_mode(&self) -> BillingMode {
+        gate_connect_core::account::billing_mode_for_injection()
     }
 
     fn tool_model_states(&self) -> BTreeMap<&'static str, ToolModelView> {
@@ -888,6 +972,10 @@ impl<T: Tauri> Windows for T {
     fn drain_backend_errors(&self, label: &str) -> Vec<crate::BackendError> {
         crate::drain_for_label(label)
     }
+
+    fn set_popover_visible(&self, visible: bool) {
+        crate::POPOVER_VISIBLE.store(visible, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl<T: Tauri> Processes for T {
@@ -1033,10 +1121,31 @@ impl<T: Tauri> Session for T {
     fn probe_session_health(&self) -> gate_connect_core::routing_health::SessionHealth {
         crate::probe_session_health()
     }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn oauth_config(&self) -> Option<OAuthConfig> {
+        OAuthConfig::from_build_env()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn login(
+        &self,
+        config: &OAuthConfig,
+        open: &dyn Fn(&str) -> anyhow::Result<()>,
+    ) -> anyhow::Result<OAuthTokens> {
+        gate_connect_core::oauth::login(config, gate_connect_core::oauth::REDIRECT_PORTS, |url| {
+            open(url)
+        })
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn clear_session_needs_signin(&self) -> bool {
+        crate::SESSION_NEEDS_SIGNIN.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl<R: tauri::Runtime> App for TauriApp<R> {
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn update_tray_status(&self, routing_on: bool) {
         crate::update_tray_status(&self.app, routing_on);
     }
@@ -1046,6 +1155,7 @@ impl<R: tauri::Runtime> App for TauriApp<R> {
         crate::arm_crash_safety_net(&self.app);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn complete_pending_autostart_disable(&self) {
         crate::complete_pending_autostart_disable(&self.app);
     }
@@ -1053,6 +1163,7 @@ impl<R: tauri::Runtime> App for TauriApp<R> {
     // The plugin's error is flattened to its `{:#}` text here, so a caller
     // formatting the `anyhow::Error` with `{:#}` gets the very same string.
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn login_item_registered(&self) -> anyhow::Result<bool> {
         use tauri_plugin_autostart::ManagerExt;
         self.app
@@ -1061,6 +1172,7 @@ impl<R: tauri::Runtime> App for TauriApp<R> {
             .map_err(|e| anyhow::anyhow!("{e:#}"))
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn register_login_item(&self) -> anyhow::Result<()> {
         use tauri_plugin_autostart::ManagerExt;
         self.app
@@ -1069,6 +1181,7 @@ impl<R: tauri::Runtime> App for TauriApp<R> {
             .map_err(|e| anyhow::anyhow!("{e:#}"))
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn deregister_login_item(&self) -> anyhow::Result<()> {
         use tauri_plugin_autostart::ManagerExt;
         self.app
@@ -1082,16 +1195,95 @@ impl<R: tauri::Runtime> App for TauriApp<R> {
         crate::arm_crash_restart(&self.app);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn autostart_opt_out_pending(&self) -> bool {
         gate_connect_core::proxy::autostart_optout::pending()
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn set_autostart_opt_out_pending(&self, pending: bool) -> anyhow::Result<()> {
         gate_connect_core::proxy::autostart_optout::set_pending(pending)
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn record_autostart_opt_out(&self) -> anyhow::Result<bool> {
         gate_connect_core::proxy::autostart_optout::record_disable()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn open_url(&self, url: &str) -> anyhow::Result<()> {
+        use tauri_plugin_opener::OpenerExt;
+        self.app
+            .opener()
+            .open_url(url.to_string(), None::<String>)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    fn refocus_window(&self, label: &str) -> bool {
+        use tauri::Manager;
+        let Some(window) = self.app.get_webview_window(label) else {
+            return false;
+        };
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        true
+    }
+
+    fn open_onboarding_window(&self, source: &'static str) -> anyhow::Result<()> {
+        // Pass `source` as a URL hash, not a query string: `WebviewUrl::App`
+        // with a query string can fail to resolve the page on Windows (blank
+        // window), whereas a hash is a client-side fragment the asset resolver
+        // ignores. The frontend reads `window.location.hash`.
+        let url = tauri::WebviewUrl::App(format!("index.html#{source}").into());
+        let builder = tauri::WebviewWindowBuilder::new(&self.app, "onboarding", url)
+            .title("Gate Connect")
+            .inner_size(1080.0, 720.0)
+            .min_inner_size(760.0, 560.0)
+            .center();
+        // Overlay title bar: the traffic lights float over the white surface so
+        // the window reads as one chrome-less card, per the onboarding design.
+        #[cfg(target_os = "macos")]
+        let builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+        let window = builder.build().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let _ = window.set_focus();
+        Ok(())
+    }
+
+    fn reveal_main_window(&self) {
+        crate::reveal_popover_window(&self.app);
+    }
+
+    fn hide_window(&self, label: &str) -> bool {
+        use tauri::Manager;
+        let Some(window) = self.app.get_webview_window(label) else {
+            return false;
+        };
+        let _ = window.hide();
+        true
+    }
+
+    fn emit_app(&self, event: &str, payload: Value) {
+        use tauri::Emitter;
+        let _ = self.app.emit(event, payload);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn notify(&self, body: &str) {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = self
+            .app
+            .notification()
+            .builder()
+            .title("Gate Connect")
+            .body(body)
+            .show();
+    }
+
+    fn exit_app(&self, code: i32) {
+        self.app.exit(code);
     }
 }
 
@@ -1147,7 +1339,6 @@ impl<T: Tauri> Gateway for T {
 
 #[cfg(test)]
 pub(crate) mod fake {
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     use super::App;
     use super::{
         Account, Gateway, Platform, Prefs, Processes, Proxy, SecurityFeed, Session, Windows,
@@ -1277,6 +1468,9 @@ pub(crate) mod fake {
         /// The quit teardown panics.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         pub quit_panics: bool,
+        /// Tools the quit teardown put back.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        pub quit_managed: usize,
 
         // ---- Processes ----
         /// What the process walk finds. The walk keeps the rows whose process
@@ -1292,6 +1486,19 @@ pub(crate) mod fake {
         /// Relaunches that will not start.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         pub relaunch_fails: Vec<crate::Relaunch>,
+
+        // ---- Windows ----
+        /// Labels of the windows that exist.
+        pub windows: Mutex<HashSet<String>>,
+        pub popover_visible: Mutex<Option<bool>>,
+
+        // ---- Login ----
+        /// Whether this build carries an OAuth client.
+        pub oauth_configured: bool,
+        /// What a completed login stores. The login fails while `None`.
+        pub login_tokens: Option<OAuthTokens>,
+        /// The "sign in required" flag.
+        pub session_needs_signin: Mutex<bool>,
 
         // ---- Login item ----
         pub login_item: Mutex<bool>,
@@ -1488,10 +1695,30 @@ pub(crate) mod fake {
                 panic!("the teardown fell over");
             }
             Ok(gate_connect_core::provider::QuitTeardown {
-                managed: self.quit_failed.len(),
+                managed: self.quit_managed + self.quit_failed.len(),
                 failed: self.quit_failed.clone(),
                 removed: Vec::new(),
             })
+        }
+
+        /// Ready at once. A panic comes back as the join error a panicking
+        /// blocking task gives.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn disconnect_tools_for_quit_off_thread(
+            &self,
+        ) -> impl std::future::Future<
+            Output = Result<gate_connect_core::provider::QuitTeardown, String>,
+        > + Send {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.disconnect_tools_for_quit()
+            }))
+            .unwrap_or_else(|_| Err("join error: task panicked".to_string()));
+            std::future::ready(outcome)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn injection_billing_mode(&self) -> BillingMode {
+            *self.billing_mode.lock().unwrap()
         }
 
         fn tool_model_states(&self) -> BTreeMap<&'static str, ToolModelView> {
@@ -1782,6 +2009,11 @@ pub(crate) mod fake {
                 .map(std::mem::take)
                 .unwrap_or_default()
         }
+
+        fn set_popover_visible(&self, visible: bool) {
+            self.record(format!("set_popover_visible {visible}"));
+            *self.popover_visible.lock().unwrap() = Some(visible);
+        }
     }
 
     impl Processes for FakePlatform {
@@ -1988,10 +2220,38 @@ pub(crate) mod fake {
             self.session_health
                 .unwrap_or(gate_connect_core::routing_health::SessionHealth::Unknown)
         }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn oauth_config(&self) -> Option<gate_connect_core::oauth::OAuthConfig> {
+            self.oauth_configured
+                .then(|| gate_connect_core::oauth::OAuthConfig {
+                    hosted_domain: "auth.example.com".into(),
+                    client_id: "fake-client".into(),
+                    scopes: vec!["openid".into()],
+                })
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn login(
+            &self,
+            _config: &gate_connect_core::oauth::OAuthConfig,
+            open: &dyn Fn(&str) -> anyhow::Result<()>,
+        ) -> anyhow::Result<OAuthTokens> {
+            open("https://auth.example.com/login")?;
+            self.attempt("login", "login")?;
+            self.login_tokens
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("the login timed out"))
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn clear_session_needs_signin(&self) -> bool {
+            std::mem::replace(&mut *self.session_needs_signin.lock().unwrap(), false)
+        }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     impl App for FakePlatform {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn update_tray_status(&self, routing_on: bool) {
             self.record(format!("update_tray_status {routing_on}"));
         }
@@ -2001,21 +2261,25 @@ pub(crate) mod fake {
             self.record("arm_crash_safety_net");
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn complete_pending_autostart_disable(&self) {
             self.record("complete_pending_autostart_disable");
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn login_item_registered(&self) -> anyhow::Result<bool> {
             self.check("login_item_registered")?;
             Ok(*self.login_item.lock().unwrap())
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn register_login_item(&self) -> anyhow::Result<()> {
             self.attempt("register_login_item", "register_login_item")?;
             *self.login_item.lock().unwrap() = true;
             Ok(())
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn deregister_login_item(&self) -> anyhow::Result<()> {
             self.attempt("deregister_login_item", "deregister_login_item")?;
             *self.login_item.lock().unwrap() = false;
@@ -2027,10 +2291,12 @@ pub(crate) mod fake {
             self.record("arm_crash_restart");
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn autostart_opt_out_pending(&self) -> bool {
             *self.opt_out_pending.lock().unwrap()
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn set_autostart_opt_out_pending(&self, pending: bool) -> anyhow::Result<()> {
             self.attempt(
                 "set_autostart_opt_out_pending",
@@ -2042,11 +2308,59 @@ pub(crate) mod fake {
 
         /// Deferred while the engine runs, as the real marker is while routing
         /// is on.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn record_autostart_opt_out(&self) -> anyhow::Result<bool> {
             self.attempt("record_autostart_opt_out", "record_autostart_opt_out")?;
             let routing_on = *self.proxy_running.lock().unwrap();
             *self.opt_out_pending.lock().unwrap() = routing_on;
             Ok(!routing_on)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn open_url(&self, url: &str) -> anyhow::Result<()> {
+            self.attempt("open_url", format!("open_url {url}"))
+        }
+
+        fn refocus_window(&self, label: &str) -> bool {
+            let open = self.windows.lock().unwrap().contains(label);
+            if open {
+                self.record(format!("refocus_window {label}"));
+            }
+            open
+        }
+
+        fn open_onboarding_window(&self, source: &'static str) -> anyhow::Result<()> {
+            self.attempt(
+                "open_onboarding_window",
+                format!("open_onboarding_window index.html#{source}"),
+            )?;
+            self.windows.lock().unwrap().insert("onboarding".into());
+            Ok(())
+        }
+
+        fn reveal_main_window(&self) {
+            self.record("reveal_main_window");
+        }
+
+        fn hide_window(&self, label: &str) -> bool {
+            let open = self.windows.lock().unwrap().contains(label);
+            if open {
+                self.record(format!("hide_window {label}"));
+            }
+            open
+        }
+
+        fn emit_app(&self, event: &str, payload: Value) {
+            self.record(format!("emit_app {event} {payload}"));
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn notify(&self, body: &str) {
+            self.record(format!("notify {body}"));
+        }
+
+        fn exit_app(&self, code: i32) {
+            self.record(format!("exit_app {code}"));
         }
     }
 

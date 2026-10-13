@@ -6,9 +6,7 @@
 //! runtime); what the command decides lives here, where a unit test can run it
 //! against [`crate::platform::fake::FakePlatform`] (AG-903).
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-use crate::platform::App;
-use crate::platform::Platform;
+use crate::platform::{App, Platform};
 use crate::{
     status_for, AccountDto, BackendError, ConfiguredModelDto, OAuthStatusDto, StatusDto, ToolDto,
     ToolModelChoiceDto, ToolModelsDto,
@@ -1262,6 +1260,119 @@ pub(crate) fn reopen_running_agents(platform: &impl Platform, only: Option<&[Str
         .iter()
         .filter(|(_, relaunch)| platform.relaunch(relaunch))
         .count() as u32
+}
+
+// ---- Sign-in ----
+
+/// Run one interactive Cognito login: open the Hosted UI in the browser and
+/// capture the redirect on a loopback listener. Blocks until the user finishes
+/// signing in or the flow times out.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn oauth_begin_login(
+    platform: &(impl Platform + App),
+) -> Result<OAuthStatusDto, String> {
+    let cfg = platform
+        .oauth_config()
+        .ok_or_else(|| "OAuth is not configured in this build".to_string())?;
+    let tokens = platform
+        .login(&cfg, &|url| {
+            platform
+                .open_url(url)
+                .map_err(|e| anyhow::anyhow!("opening the sign-in page: {e}"))
+        })
+        .map_err(|e| format!("{e:#}"))?;
+    // Record that this account authenticates via OAuth so load() stops
+    // requiring a pasted key, and push the fresh token into a running
+    // engine so routing switches to it without waiting for a restart.
+    // The engine's key goes with it: an account that pasted one before
+    // this sign-in would otherwise keep it there, and a later dead session
+    // would be served under it rather than refused (`lacks_gate_credential`).
+    platform
+        .set_auth_mode(AuthMode::OAuth)
+        .map_err(|e| format!("{e:#}"))?;
+    // Whatever ended the last session, this one is live - so the flag stops
+    // describing anything. Best-effort: a preferences write that fails must
+    // not fail a sign-in that succeeded, and the cost of it going unwritten
+    // is one welcome pane that would have said the wrong word, on a screen
+    // the user is no longer looking at.
+    let _ = platform.set_signed_out_deliberately(false);
+    platform.refresh_engine_api_key("");
+    platform.refresh_engine_token(&tokens.access_token);
+    // The session is live again, so the tray stops asking for a sign-in
+    // now rather than on the next refresh tick: until then the red dot
+    // would stay up and a tray click would keep opening this window.
+    if platform.clear_session_needs_signin() {
+        let running = platform.proxy_status().map(|s| s.running).unwrap_or(false);
+        platform.update_tray_status(running);
+    }
+    Ok(OAuthStatusDto::from(&tokens))
+}
+
+// ---- Windows and tray ----
+
+/// Open (or refocus) the full-size onboarding window.
+pub(crate) fn open_onboarding_window(
+    platform: &(impl Platform + App),
+    source: &str,
+) -> Result<(), String> {
+    if platform.refocus_window("onboarding") {
+        return Ok(());
+    }
+    // The frontend only ever sends the two known values; normalize anyway so
+    // nothing arbitrary is spliced into the webview URL.
+    let source = if source == "settings" {
+        "settings"
+    } else {
+        "firstrun"
+    };
+    platform
+        .open_onboarding_window(source)
+        .map_err(|e| e.to_string())
+}
+
+/// Bring the main window back on screen.
+pub(crate) fn reveal_popover(platform: &(impl Platform + App)) {
+    platform.reveal_main_window();
+}
+
+/// Hand a "switch organization" request from the tray popover to the main
+/// window. Reveal first, then emit, then get the popover out of the way.
+pub(crate) fn request_switch_org(platform: &(impl Platform + App)) {
+    platform.reveal_main_window();
+    platform.emit_app("switch-org-requested", Value::Null);
+    // Same hand-over as Expand app: the popover asked the window to take
+    // over, so it gets out of the way.
+    if platform.hide_window("tray") {
+        platform.set_popover_visible(false);
+    }
+}
+
+// ---- Quit ----
+
+/// Quit, putting every tool back on its own settings on the way out, on
+/// macOS and Windows. Linux exits outright: see `quit_app` in lib.rs.
+///
+/// Async so the teardown keeps its blocking thread and the rest stays where
+/// the command runs, as it did before the move.
+pub(crate) async fn quit_app(platform: &(impl Platform + App)) {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        if !platform.claim_quit_teardown() {
+            return;
+        }
+        let outcome = platform.disconnect_tools_for_quit_off_thread().await;
+        if let Err(e) = &outcome {
+            eprintln!("[gate] putting tools back for quit failed: {e}");
+        }
+        if let Some(body) = crate::quit_notice_body(
+            &outcome,
+            || platform.preferences().notifications,
+            || platform.injection_billing_mode() == BillingMode::Payg,
+        ) {
+            platform.notify(&body);
+        }
+    }
+    platform.exit_app(0);
 }
 
 // ---- Exit ----
@@ -3362,6 +3473,264 @@ mod tests {
             platform.calls().len(),
             2,
             "no second wait, no second launch"
+        );
+    }
+
+    /// Drive a command future that never waits: every fake answer is ready.
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let std::task::Poll::Ready(out) = future.as_mut().poll(&mut cx) {
+                return out;
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn notifications_on() -> gate_connect_core::preferences::Preferences {
+        gate_connect_core::preferences::Preferences {
+            notifications: true,
+            ..Default::default()
+        }
+    }
+
+    /// 5634f5a, superseded. The quit warning went on 2026-09-29: every quit now
+    /// puts every tool back on its own settings before the process ends, and
+    /// says so. The teardown has to land before the exit, and a second Quit
+    /// while the first is sweeping does nothing at all.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn quit_app_puts_every_tool_back_before_exit() {
+        let platform = FakePlatform {
+            quit_managed: 2,
+            prefs: notifications_on(),
+            ..signed_in()
+        };
+        block_on(quit_app(&platform));
+        assert_eq!(
+            platform.calls(),
+            [
+                "disconnect_tools_for_quit",
+                "notify Gate removed from tool configs",
+                "exit_app 0",
+            ]
+        );
+
+        block_on(quit_app(&platform));
+        assert_eq!(
+            platform.calls().len(),
+            3,
+            "the second quit leaves it to the first"
+        );
+    }
+
+    /// A teardown that left a tool on Gate, could not run, or fell over still
+    /// ends in an exit, and the notice names what to fix whatever the
+    /// notifications switch says. A clean one with the switch off says nothing.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn quit_app_exits_whatever_the_teardown_did() {
+        let cases = [
+            (
+                FakePlatform {
+                    quit_failed: vec!["Codex".into()],
+                    ..signed_in()
+                },
+                Some("notify Failed to remove Gate from the Codex config. Edit it by hand."),
+            ),
+            (
+                failing("disconnect_tools_for_quit"),
+                Some("notify Failed to remove Gate from tool configs. Edit them by hand."),
+            ),
+            (
+                FakePlatform {
+                    quit_panics: true,
+                    ..signed_in()
+                },
+                Some("notify Failed to remove Gate from tool configs. Edit them by hand."),
+            ),
+            (
+                FakePlatform {
+                    quit_managed: 2,
+                    prefs: gate_connect_core::preferences::Preferences {
+                        notifications: false,
+                        ..Default::default()
+                    },
+                    ..signed_in()
+                },
+                None,
+            ),
+        ];
+        for (platform, notice) in cases {
+            block_on(quit_app(&platform));
+            let mut expected = vec!["disconnect_tools_for_quit"];
+            expected.extend(notice);
+            expected.push("exit_app 0");
+            assert_eq!(platform.calls(), expected);
+        }
+    }
+
+    /// Linux exits outright: its engine is a detached helper daemon that
+    /// outlives the GUI, so a quit strands nothing.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn quit_app_on_linux_exits_without_a_teardown() {
+        let platform = signed_in();
+        block_on(quit_app(&platform));
+        assert_eq!(platform.calls(), ["exit_app 0"]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn fresh_tokens() -> gate_connect_core::oauth::OAuthTokens {
+        gate_connect_core::oauth::OAuthTokens {
+            access_token: "at-new".into(),
+            refresh_token: "r".into(),
+            id_token: None,
+            expires_at_unix: 1_900_000_000,
+            client_id: "c".into(),
+        }
+    }
+
+    /// A finished sign-in opens the page, records OAuth, takes the pasted key
+    /// out of the engine before handing it the token, and clears the tray's
+    /// sign-in signal with the engine's real state.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn oauth_begin_login_hands_the_engine_the_token_and_clears_the_tray_signal() {
+        let platform = FakePlatform {
+            oauth_configured: true,
+            login_tokens: Some(fresh_tokens()),
+            session_needs_signin: std::sync::Mutex::new(true),
+            proxy_running: std::sync::Mutex::new(true),
+            ..signed_in()
+        };
+        let status = oauth_begin_login(&platform).expect("signed in");
+        assert!(status.signed_in);
+        assert_eq!(status.expires_at_unix, 1_900_000_000);
+        assert_eq!(
+            platform.calls(),
+            [
+                "open_url https://auth.example.com/login",
+                "login",
+                "set_auth_mode OAuth",
+                "set_signed_out_deliberately false",
+                r#"refresh_engine_api_key """#,
+                r#"refresh_engine_token "at-new""#,
+                "proxy_status",
+                "update_tray_status true",
+            ]
+        );
+        assert_eq!(*platform.auth_mode.lock().unwrap(), AuthMode::OAuth);
+        assert_eq!(
+            *platform.signed_out_deliberately.lock().unwrap(),
+            Some(false)
+        );
+        assert!(!*platform.session_needs_signin.lock().unwrap());
+
+        // No sign-in signal up: the tray is left alone.
+        let platform = FakePlatform {
+            oauth_configured: true,
+            login_tokens: Some(fresh_tokens()),
+            ..signed_in()
+        };
+        oauth_begin_login(&platform).expect("signed in");
+        assert!(!platform
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("update_tray_status")));
+    }
+
+    /// Every way a sign-in stops short reports why, and moves nothing.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn oauth_begin_login_reports_why_it_stopped() {
+        let platform = signed_in();
+        assert_eq!(
+            oauth_begin_login(&platform).err(),
+            Some("OAuth is not configured in this build".to_string())
+        );
+        assert!(platform.calls().is_empty());
+
+        let platform = FakePlatform {
+            oauth_configured: true,
+            ..failing("open_url")
+        };
+        assert_eq!(
+            oauth_begin_login(&platform).err(),
+            Some("opening the sign-in page: open_url".to_string())
+        );
+
+        let platform = FakePlatform {
+            oauth_configured: true,
+            ..signed_in()
+        };
+        assert_eq!(
+            oauth_begin_login(&platform).err(),
+            Some("the login timed out".to_string())
+        );
+        assert_eq!(*platform.auth_mode.lock().unwrap(), AuthMode::default());
+    }
+
+    /// An open onboarding window is brought back rather than built twice, and
+    /// only the two known sources reach the URL.
+    #[test]
+    fn open_onboarding_window_refocuses_or_builds_with_a_known_source() {
+        let platform = FakePlatform::default();
+        assert_eq!(open_onboarding_window(&platform, "settings"), Ok(()));
+        assert_eq!(open_onboarding_window(&platform, "settings"), Ok(()));
+        assert_eq!(
+            platform.calls(),
+            [
+                "open_onboarding_window index.html#settings",
+                "refocus_window onboarding",
+            ]
+        );
+
+        let platform = FakePlatform::default();
+        assert_eq!(open_onboarding_window(&platform, "../../evil"), Ok(()));
+        assert_eq!(
+            platform.calls(),
+            ["open_onboarding_window index.html#firstrun"]
+        );
+
+        let platform = failing("open_onboarding_window");
+        assert_eq!(
+            open_onboarding_window(&platform, "firstrun"),
+            Err("open_onboarding_window".into())
+        );
+    }
+
+    #[test]
+    fn reveal_popover_reveals_the_main_window() {
+        let platform = FakePlatform::default();
+        reveal_popover(&platform);
+        assert_eq!(platform.calls(), ["reveal_main_window"]);
+    }
+
+    /// Reveal, then emit, then the popover gets out of the way.
+    #[test]
+    fn request_switch_org_hands_over_to_the_main_window() {
+        let platform = FakePlatform {
+            windows: std::sync::Mutex::new(["tray".to_string()].into_iter().collect()),
+            ..FakePlatform::default()
+        };
+        request_switch_org(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "reveal_main_window",
+                "emit_app switch-org-requested null",
+                "hide_window tray",
+                "set_popover_visible false",
+            ]
+        );
+
+        let platform = FakePlatform::default();
+        request_switch_org(&platform);
+        assert_eq!(
+            platform.calls(),
+            ["reveal_main_window", "emit_app switch-org-requested null"]
         );
     }
 
