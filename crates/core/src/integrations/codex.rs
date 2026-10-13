@@ -1577,6 +1577,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_routing_view_leaves_out_codex_s_own_tables() {
+        let routed = "model_provider = \"gate\"\n\n[model_providers.gate]\nbase_url = \"http://127.0.0.1:1/v1\"\n";
+        let trusted = format!(
+            "{routed}\n[projects.\"/w\"]\ntrust_level = \"trusted\"\n\n[notice]\nhide_full_access_warning = true\n"
+        );
+        assert_eq!(
+            routing_view(routed.as_bytes()),
+            routing_view(trusted.as_bytes())
+        );
+        let moved = routed.replace(":1/", ":2/");
+        assert_ne!(
+            routing_view(routed.as_bytes()),
+            routing_view(moved.as_bytes())
+        );
+        assert_eq!(routing_view(b"= not toml"), b"= not toml");
+    }
+
+    #[test]
     fn only_the_managed_daemon_is_the_daemon() {
         use std::ffi::OsString;
         let cmd = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();

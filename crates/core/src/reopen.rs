@@ -4,8 +4,8 @@
 //! A tool reads its configuration once, when it starts. Change that
 //! configuration under a running process and the process keeps whatever it
 //! loaded, so it needs to be opened again before the change takes effect. That
-//! is the whole of `reopen_pending`, and it turns on one comparison: did this
-//! tool's configuration change *after* the process started?
+//! is the whole of `reopen_pending`, and it turns on one comparison: is the
+//! configuration this process loaded at its start the one in place now?
 //!
 //! **The bound has to outlive Gate.** The first version of this compared a
 //! process's start time against the moment routing came up *in the current Gate
@@ -18,8 +18,8 @@
 //! against a machine whose Claude Code config had carried no Gate values for a
 //! week.
 //!
-//! So the bound is the tool's own configuration file: the moment Gate last
-//! changed it, from [`crate::config_changes`]. It is durable (it is on disk,
+//! So the bound is the tool's own configuration file: Gate's history of changes
+//! to it, from [`crate::config_changes`]. It is durable (it is on disk,
 //! across restarts of Gate, reboots and reinstalls) and it is per tool (a
 //! change to Codex does not make Claude Code stale).
 //!
@@ -27,8 +27,8 @@
 //! tool's own edits were found to move it: Claude Code rewrites
 //! `settings.json` when the user approves a permission, and each approval made
 //! every older `claude` stale with nothing Gate routes by changed. A hand edit
-//! to a routing value is the case this gives up, and the config status still
-//! reports that one.
+//! to a routing value is seen only when Gate next writes the file, which
+//! records what it found there; until then the config status reports it.
 //!
 //! **Changed and changed back is not a change.** Every quit takes Gate out of
 //! every tool's configuration and the next launch puts the same values back,
@@ -39,15 +39,15 @@
 //! whether the configuration a process loaded - the last change at or before
 //! its start - is the one in place now.
 //!
-//! **No bound means no claim.** When there is no configuration file to read a
+//! **No bound means no claim.** When there is no recorded change to read a
 //! time from, this answers "not pending" rather than degrading to "everything
 //! running is stale". Nothing on disk supports the claim that a running process
 //! missed a change, and the old conservative direction is exactly what produced
 //! a warning nobody could clear. Design principle 6 cuts the same way: a
 //! statement on screen is a measurement, or the surface does not make it.
 //!
-//! Everything here is pure. The process table walk, the `stat` and the registry
-//! lookup live in the Tauri shell; this module takes the numbers they produce.
+//! Everything here is pure. The process table walk, the history read and the
+//! registry lookup live in the Tauri shell; this module takes what they produce.
 
 use crate::config_changes::Change;
 use crate::routing_health::ConfigState;
@@ -198,21 +198,11 @@ mod tests {
     const BEFORE_CONFIG: u64 = 1_756_702_980; // Sep 1
     const AFTER_CONFIG: u64 = 1_757_433_720; // Sep 9
 
-    /// A single change with no view: what one stamp used to record.
+    /// A single change with no view: what one stamp used to record. Leaked so
+    /// the existing `evidence` helpers can keep returning evidence that borrows
+    /// only the starts; a test process frees it on exit.
     fn stamp(at: Option<u64>) -> &'static [Change] {
         Box::leak(at.map(|at| Change { at, view: None }).into_iter().collect())
-    }
-
-    /// Changes at the given times, each with its own view.
-    fn changes(list: &[(u64, &str)]) -> &'static [Change] {
-        Box::leak(
-            list.iter()
-                .map(|(at, view)| Change {
-                    at: *at,
-                    view: Some(view.to_string()),
-                })
-                .collect(),
-        )
     }
 
     /// The config-only case, which is what every test before AG-933 was about.
@@ -379,11 +369,20 @@ mod tests {
         assert!(!reopen_pending(&evidence(&[], Some(CONFIG_WRITE))));
     }
 
-    fn history(starts: &[u64], list: &[(u64, &str)]) -> bool {
+    /// Whether a process started at each of `starts` is pending, over changes
+    /// at the given times, each with its own view.
+    fn pending_over(starts: &[u64], list: &[(u64, &str)]) -> bool {
+        let changes: Vec<Change> = list
+            .iter()
+            .map(|(at, view)| Change {
+                at: *at,
+                view: Some(view.to_string()),
+            })
+            .collect();
         reopen_pending(&ReopenEvidence {
             process_names_known: true,
             process_starts: starts,
-            config_changes: changes(list),
+            config_changes: &changes,
             ca_cert_changed_at: None,
         })
     }
@@ -395,7 +394,7 @@ mod tests {
     #[test]
     fn a_quit_and_relaunch_does_not_strand_a_session_that_outlived_it() {
         let quit_and_relaunch = [(100, "gate"), (300, "own"), (400, "gate")];
-        assert!(!history(&[200], &quit_and_relaunch));
+        assert!(!pending_over(&[200], &quit_and_relaunch));
     }
 
     /// The other half: a session opened while Gate was closed loaded no Gate
@@ -403,21 +402,21 @@ mod tests {
     #[test]
     fn a_session_opened_while_gate_was_closed_is_pending() {
         let quit_and_relaunch = [(100, "gate"), (300, "own"), (400, "gate")];
-        assert!(history(&[350], &quit_and_relaunch));
+        assert!(pending_over(&[350], &quit_and_relaunch));
     }
 
     /// Values that really moved - a different port, a different `NO_PROXY` -
     /// still make an older session stale.
     #[test]
     fn a_view_that_really_changed_is_pending() {
-        assert!(history(&[200], &[(100, "gate-a"), (300, "gate-b")]));
+        assert!(pending_over(&[200], &[(100, "gate-a"), (300, "gate-b")]));
     }
 
     /// Older than every change kept: what it loaded is not known, so it is
     /// stale, as the single stamp said.
     #[test]
     fn a_process_older_than_every_kept_change_is_pending() {
-        assert!(history(
+        assert!(pending_over(
             &[50],
             &[(100, "gate"), (300, "own"), (400, "gate")]
         ));

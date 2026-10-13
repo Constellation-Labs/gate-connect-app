@@ -946,6 +946,12 @@ fn write_settings(settings: &Map<String, Value>) -> Result<()> {
 /// would read every round trip of Gate's values as news. Sorted, so a
 /// reordering is not a change; empty when there is no `env`, which is also how
 /// a removed file reads. A file that is not JSON is its own bytes.
+///
+/// **Gate's `modelPicker` is left out on purpose**: a running session reloads
+/// it. Measured 2026-10-13 on Claude Code 2.1.296 - a second picker entry
+/// written while a session was open appeared in that session's `/model` menu
+/// without a restart - so a change to Gate's model list is not one a running
+/// `claude` misses.
 fn routing_view(bytes: &[u8]) -> Vec<u8> {
     serde_json::from_slice::<Value>(bytes)
         .map(|settings| {
@@ -981,6 +987,20 @@ fn reject_non_object_env(settings: &Map<String, Value>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_routing_view_is_the_env_block_alone() {
+        let routed = br#"{"env":{"B":"2","A":"1"},"permissions":{"allow":[]}}"#;
+        let approved =
+            br#"{"permissions":{"allow":["Bash(ls)"]},"model":"x","env":{"A":"1","B":"2"}}"#;
+        assert_eq!(routing_view(routed), routing_view(approved));
+        assert_ne!(
+            routing_view(routed),
+            routing_view(br#"{"env":{"A":"1","B":"3"}}"#)
+        );
+        assert_eq!(routing_view(br#"{"model":"x"}"#), routing_view(b""));
+        assert_eq!(routing_view(b"not json"), b"not json");
+    }
 
     #[test]
     fn managed_keys_keep_the_anthropic_base_url_canonical() {

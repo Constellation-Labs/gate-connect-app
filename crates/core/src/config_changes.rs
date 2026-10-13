@@ -1,4 +1,4 @@
-//! When Gate last changed each tool's configuration file.
+//! Gate's changes to each tool's configuration file.
 //!
 //! [`crate::reopen`] asks whether a running tool started before the last change
 //! to its configuration, because a tool reads that file once, at startup. It
@@ -9,23 +9,23 @@
 //! as stale, although nothing Gate routes by had moved.
 //!
 //! So Gate records its own changes here instead. Every write or removal of a
-//! tool configuration goes through [`write`] or [`remove`], and a stamp is kept
-//! only when the file's bytes actually changed: an unattended reconnect that
-//! finds its values already in place records nothing. What is recorded is the
-//! moment Gate's values in that file last changed, which is the moment a
-//! process that predates it stopped being trustworthy.
+//! tool configuration goes through [`write`] or [`remove`] (or their `_with_view`
+//! forms), and a change is kept only when the file's bytes actually changed: an
+//! unattended reconnect that finds its values already in place records nothing.
 //!
-//! **A hand edit to a routing value is not recorded.** That is the price of
-//! ignoring the tool's own edits, and the status check still reports it: it
-//! compares the file with what Gate wrote, so a changed proxy reads as Not
-//! protected on the row.
+//! **A hand edit to a routing value is recorded late.** It is seen when Gate
+//! next writes the file (see below), not when it happens. That is the price of
+//! ignoring the tool's own edits, and until then the status check still reports
+//! it: it compares the file with what Gate wrote, so a changed proxy reads as
+//! Not protected on the row.
 //!
-//! **Two writers can lose a stamp.** The app and the CLI both write here, and a
-//! stamp is a read, an insert and a write with no lock between them, so two
-//! changes that land at once can keep only one. The one lost is a change a
-//! running process missed with no reopen notice for it: the same "no evidence,
-//! no claim" outcome as a missing record, accepted because overlapping writes
-//! need a CLI connect racing the app's own pass.
+//! **Two writers can lose a change.** The app and the CLI both write here, and
+//! recording is a read, an insert and a write with no lock between them, so two
+//! changes that land at once can keep only one. Until the next write to that
+//! file finds the view the lost one left behind, a running process that missed
+//! it gets no reopen notice: the same "no evidence, no claim" outcome as a
+//! missing record, accepted because overlapping writes need a CLI connect
+//! racing the app's own pass.
 //!
 //! **A change that is later undone is not news to a process that predates
 //! both.** Every quit takes Gate out of every tool's configuration and the
@@ -157,8 +157,8 @@ fn whole_file(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
 }
 
-/// Unix seconds at which Gate last changed the file at `path`, or `None` when
-/// it has no record of changing it.
+/// Unix seconds of the newest change recorded for the file at `path`, or `None`
+/// when there is none.
 pub fn changed_at(path: &Path) -> Option<u64> {
     history(path).last().map(|change| change.at)
 }
@@ -191,11 +191,7 @@ fn record(path: &Path, found: &[u8], written: Option<&[u8]>) {
         if !observed && !appended {
             return Ok(());
         }
-        stamps.retain(|_, changes| {
-            changes
-                .last()
-                .is_some_and(|c| c.at.saturating_add(MAX_AGE_SECS) >= now)
-        });
+        prune(&mut stamps, now);
         let body = serde_json::to_string_pretty(&stamps).context("serializing config changes")?;
         crate::primitives::write_file(&store_path()?, body.as_bytes(), 0o600)
     });
@@ -205,6 +201,15 @@ fn record(path: &Path, found: &[u8], written: Option<&[u8]>) {
             path.display()
         ));
     }
+}
+
+/// Forget every path whose newest change is older than [`MAX_AGE_SECS`].
+fn prune(stamps: &mut BTreeMap<String, Vec<Change>>, now: u64) {
+    stamps.retain(|_, changes| {
+        changes
+            .last()
+            .is_some_and(|c| c.at.saturating_add(MAX_AGE_SECS) >= now)
+    });
 }
 
 /// Add the view a write found on disk as a change of its own, when it is not
@@ -238,11 +243,7 @@ fn append(changes: &mut Vec<Change>, at: u64, view: String) -> bool {
 }
 
 fn fingerprint(view: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(view)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::manifest::sha256_hex(view)
 }
 
 fn load() -> Result<BTreeMap<String, Vec<Change>>> {
@@ -347,6 +348,23 @@ mod tests {
         append(&mut changes, 300, "gate".into());
         observe(&mut changes, 300, "own".into());
         assert_eq!(changes.last().map(|c| c.at), Some(300));
+    }
+
+    #[test]
+    fn a_path_is_forgotten_only_once_its_newest_change_is_too_old() {
+        let now = 10 * MAX_AGE_SECS;
+        let change = |at| Change {
+            at,
+            view: Some("v".into()),
+        };
+        let mut stamps = BTreeMap::from([
+            ("stale".to_string(), vec![change(now - MAX_AGE_SECS - 1)]),
+            ("edge".to_string(), vec![change(now - MAX_AGE_SECS)]),
+            ("old-then-new".to_string(), vec![change(1), change(now - 1)]),
+        ]);
+        prune(&mut stamps, now);
+        let kept: Vec<&str> = stamps.keys().map(String::as_str).collect();
+        assert_eq!(kept, ["edge", "old-then-new"]);
     }
 
     #[test]
