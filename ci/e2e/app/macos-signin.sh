@@ -21,7 +21,7 @@
 # "Connect and continue", and assert the signed-in state twice: the window moves
 # on to "Name this device", and account.json carries the key's prefix.
 #
-# Env: BUNDLE_DIR (holds the .dmg), OUT (screenshots, AX dumps, logs).
+# Env: BUNDLE_DIR (a .dmg somewhere under it), OUT (screenshots, AX dumps, logs).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -100,7 +100,9 @@ security verify-cert -c "$WORK/leaf.pem" -p ssl -s "$GATEWAY_HOST"
 endstep
 
 step "install"
-DMG="$(ls "$BUNDLE_DIR"/*.dmg | head -1)"
+DMG="$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)"
+[ -n "$DMG" ] || { echo "no .dmg under $BUNDLE_DIR" >&2; exit 1; }
+echo "installing from $DMG"
 MNT="$(mktemp -d)"
 hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG" >/dev/null
 sudo rm -rf "$APP"
