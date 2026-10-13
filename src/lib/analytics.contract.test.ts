@@ -16,12 +16,14 @@ import {
  * whose own unit tests pin that the sign-out paths call the emitter.
  */
 const lib = readFileSync(resolve(__dirname, "../../src-tauri/src/lib.rs"), "utf8").replace(/\r\n/g, "\n");
+/** The command bodies moved out of `lib.rs` behind its thin adapters (AG-903). */
+const commands = readFileSync(resolve(__dirname, "../../src-tauri/src/commands.rs"), "utf8").replace(/\r\n/g, "\n");
 
 /** The body of one Rust fn, up to the next `#[tauri::command]` or `fn`. */
-function body(signature: string): string {
-  const at = lib.indexOf(signature);
+function body(signature: string, src: string = lib): string {
+  const at = src.indexOf(signature);
   expect(at, signature).toBeGreaterThanOrEqual(0);
-  const rest = lib.slice(at + signature.length);
+  const rest = src.slice(at + signature.length);
   const end = rest.search(/\n(#\[tauri::command\]|fn |async fn |\/\/\/)/);
   return rest.slice(0, end === -1 ? rest.length : end);
 }
@@ -68,7 +70,7 @@ describe("the analytics broadcasts the backend emits", () => {
   });
 
   it("announces a consent answer with the payload the webview reads", () => {
-    const b = body("fn set_share_diagnostics(");
+    const b = body("fn set_share_diagnostics(", commands);
     expect(b).toContain("ANALYTICS_CONSENT_EVENT");
     expect(b).toContain('"share_diagnostics": enabled');
     expect(b).toContain('"recorded": true');
