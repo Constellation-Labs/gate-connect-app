@@ -19,10 +19,16 @@ on:
   # pull_request ones. Drop it when #151 merges and main is the only branch.
   push:
     branches: [main, feat/new-app-ui]
+    # A release tag always runs the suite; the guard below never skips it.
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       alert:
         description: Post to Slack if this run fails, as the nightly does (to test the alert)
+        type: boolean
+        default: false
+      force:
+        description: Run the suite even if this commit already passed (AG-902 guard)
         type: boolean
         default: false
   # Nightly at 06:00 UTC. GitHub fires `schedule` from the default branch only,
@@ -36,8 +42,46 @@ permissions:
   contents: read
 
 jobs:
+  # AG-902: a schedule fires whether or not the branch moved, so a quiet day
+  # would rebuild and re-test a commit that already passed. Only schedule and
+  # workflow_dispatch are guarded; pull_request (the real-tools checks are
+  # required there), push and v* tags always run. ci/run-guard.sh holds the
+  # rules: run on a new commit, after a failed suite, past the 7-day floor, or
+  # with `force`. e2e runs unless the guard says exactly "false", so a guard
+  # that errors fails open into a full run rather than a silent skip.
+  guard:
+    name: run guard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.guard.outputs.run || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        with:
+          sparse-checkout: ci/run-guard.sh
+          sparse-checkout-cone-mode: false
+      - name: Decide
+        id: guard
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_FILE: e2e-real-tools.yml
+          # Runs on this branch are the proof. feat/new-app-ui until #151
+          # merges (plan decision 1b), then main: flip this one value.
+          GUARD_BRANCH: feat/new-app-ui
+          HEAD_SHA: ${{ github.sha }}
+          SUITE_JOB_PREFIX: 'real-tools ('
+          FORCE: ${{ inputs.force == true }}
+        run: bash ci/run-guard.sh
+
   e2e:
     name: real-tools (${{ matrix.os }})
+    needs: guard
+    if: ${{ !cancelled() && needs.guard.outputs.run != 'false' }}
     strategy:
       fail-fast: false
       matrix:
