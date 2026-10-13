@@ -154,35 +154,7 @@ fn status_for(integ: &dyn gate_connect_core::Integration) -> StatusDto {
 
 #[tauri::command]
 fn list_tools() -> Vec<ToolDto> {
-    // The UI boundary is where hiding happens. The registry itself keeps every
-    // integration so the sweep, restore and sign-out paths still clean up a
-    // tool someone connected with an earlier build.
-    registry::registry()
-        .iter()
-        .filter(|integ| !integ.hidden_in_ui())
-        .map(|integ| ToolDto {
-            slug: integ.id().to_string(),
-            // The row label, not the product name: this feeds the ledger, whose
-            // rows sit under a heading that names the vendor. Every other reader
-            // of a tool's name - the CLI, the logs, the quit notice - wants
-            // `display_name`, which is why the two are separate.
-            name: integ.row_label().to_string(),
-            // And the product name beside it, for the readers that are a flat
-            // list rather than a grouped ledger: the reopen flow's dialogs and
-            // its banner. `registry` has a test asserting display
-            // names are distinct precisely because such a list cannot tell two
-            // "CLI"s apart.
-            product_name: integ.display_name().to_string(),
-            upstream_provider_name: integ.upstream_provider_name().to_string(),
-            default_upstream_url: integ.default_upstream_url().to_string(),
-            config_location: integ.config_location(),
-            status: status_for(integ.as_ref()),
-            coverage: integ.upstream_coverage(),
-            client: integ.client(),
-            scope: integ.scope(),
-            credential: integ.credential(),
-        })
-        .collect()
+    commands::list_tools(&TauriPlatform)
 }
 
 /// Every visible tool's version, keyed by slug.
@@ -198,33 +170,12 @@ fn list_tools() -> Vec<ToolDto> {
 /// support thread to different places.
 #[tauri::command]
 fn tool_versions() -> std::collections::HashMap<String, Option<String>> {
-    registry::registry()
-        .iter()
-        .filter(|integ| !integ.hidden_in_ui())
-        .filter_map(|integ| {
-            let (well_known, names) = integ.binary();
-            if names.is_empty() {
-                return None;
-            }
-            // Resolved here rather than inside the probe so "no binary found"
-            // can drop out of the map entirely, while "found, would not say"
-            // stays as an explicit null.
-            let path =
-                gate_connect_core::integrations::binaries::resolve_binary(well_known, names)?;
-            Some((
-                integ.id().to_string(),
-                gate_connect_core::integrations::binaries::version_at(&path),
-            ))
-        })
-        .collect()
+    commands::tool_versions(&TauriPlatform)
 }
 
 #[tauri::command]
 fn tool_status(slug: String) -> Result<StatusDto, String> {
-    let id = ToolId::from_slug(&slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;
-    let integ =
-        registry::find(id).ok_or_else(|| "integration missing from registry".to_string())?;
-    Ok(status_for(integ.as_ref()))
+    commands::tool_status(&TauriPlatform, &slug)
 }
 
 #[tauri::command]
@@ -1139,10 +1090,7 @@ async fn gate_credits() -> Result<String, String> {
 /// or request bodies; see that module's note on what may be written.
 #[tauri::command]
 fn log_message(level: String, message: String) {
-    gate_connect_core::logging::log(
-        gate_connect_core::logging::Level::from_wire(&level),
-        &message,
-    );
+    commands::log_message(&TauriPlatform, &level, &message);
 }
 
 /// Serialize an activity failure for the IPC boundary.
@@ -1241,7 +1189,7 @@ fn app_platform() -> &'static str {
 /// builds Apple ships under one marketing version.
 #[tauri::command]
 fn os_name() -> String {
-    gate_connect_core::diagnostics::os_name()
+    commands::os_name(&TauriPlatform)
 }
 
 /// Backend half of the diagnostics report: the facts about this install the
@@ -1260,7 +1208,7 @@ fn os_name() -> String {
 /// duration.
 #[tauri::command(async)]
 fn diagnostics() -> gate_connect_core::diagnostics::Diagnostics {
-    gate_connect_core::diagnostics::collect()
+    commands::diagnostics(&TauriPlatform)
 }
 
 // ---- Providers ----
@@ -1273,7 +1221,7 @@ fn diagnostics() -> gate_connect_core::diagnostics::Diagnostics {
 
 #[tauri::command]
 fn list_providers() -> Vec<gate_connect_core::provider::ProviderState> {
-    gate_connect_core::provider::list()
+    commands::list_providers(&TauriPlatform)
 }
 
 // No `provider_enable` / `provider_disable` commands: the popover drives
@@ -2974,7 +2922,7 @@ fn at_or_after(changed_at: Option<u64>, since: Option<u64>) -> Option<u64> {
 /// preferences file is a worse failure than showing "everything on".
 #[tauri::command]
 fn get_preferences() -> gate_connect_core::preferences::Preferences {
-    gate_connect_core::preferences::load()
+    commands::get_preferences(&TauriPlatform)
 }
 
 /// This install's stable id, for the Settings row and for support threads.
@@ -2986,7 +2934,7 @@ fn get_preferences() -> gate_connect_core::preferences::Preferences {
 /// its own name - they are two different facts.
 #[tauri::command]
 fn install_id() -> Result<String, String> {
-    gate_connect_core::primitives::install_id().map_err(|e| format!("{e:#}"))
+    commands::install_id(&TauriPlatform)
 }
 
 /// What to call this machine: the person's own name for it, or the hostname.
@@ -3003,13 +2951,13 @@ fn install_id() -> Result<String, String> {
 /// there is a name to agree on, and the Settings row says which case it is in.
 #[tauri::command]
 fn device_name() -> String {
-    gate_connect_core::preferences::device_name()
+    commands::device_name(&TauriPlatform)
 }
 
 /// Rename this device, or clear the name and follow the hostname again.
 #[tauri::command]
 fn set_device_name(name: String) -> Result<(), String> {
-    gate_connect_core::preferences::set_device_name(&name).map_err(|e| format!("{e:#}"))
+    commands::set_device_name(&TauriPlatform, &name)
 }
 
 /// Turn native notifications on or off. One switch, because Settings draws one
@@ -3029,8 +2977,7 @@ fn set_notifications(enabled: bool) -> Result<(), String> {
 /// Turn the sound on security notifications on or off (AG-578).
 #[tauri::command]
 fn set_security_notification_sound(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_security_notification_sound(enabled)
-        .map_err(|e| format!("{e:#}"))
+    commands::set_security_notification_sound(&TauriPlatform, enabled)
 }
 
 /// The live security-event feed (AG-578), one per process.
@@ -3165,8 +3112,7 @@ fn security_feed_retry() {
 /// `preferences::auto_enabled_domains`.
 #[tauri::command]
 fn record_auto_enabled_domains(tool: String, domains: Vec<String>) -> Result<(), String> {
-    gate_connect_core::preferences::record_auto_enabled_domains(&tool, domains)
-        .map_err(|e| format!("{e:#}"))
+    commands::record_auto_enabled_domains(&TauriPlatform, &tool, domains)
 }
 
 /// Read what Gate switched on for one tool, without clearing it.
@@ -3175,7 +3121,7 @@ fn record_auto_enabled_domains(tool: String, domains: Vec<String>) -> Result<(),
 /// undo - see `preferences::read_auto_enabled_domains`.
 #[tauri::command]
 fn read_auto_enabled_domains(tool: String) -> Vec<String> {
-    gate_connect_core::preferences::read_auto_enabled_domains(&tool)
+    commands::read_auto_enabled_domains(&TauriPlatform, &tool)
 }
 
 /// Claim a once-per-install analytics milestone (AG-960). True exactly once per
@@ -3186,7 +3132,7 @@ fn read_auto_enabled_domains(tool: String) -> Vec<String> {
 #[tauri::command]
 async fn analytics_milestone_claim(name: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::analytics::claim(&name).map_err(|e| format!("{e:#}"))
+        commands::analytics_milestone_claim(&TauriPlatform, &name)
     })
     .await
     .map_err(|e| format!("analytics claim join error: {e}"))?
@@ -3200,7 +3146,7 @@ async fn analytics_milestone_claim(name: String) -> Result<bool, String> {
 /// `gate_connect_core::analytics::cowork_setting_missing`.
 #[tauri::command]
 async fn cowork_setting_check() -> Option<&'static str> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::analytics::cowork_setting_missing)
+    tauri::async_runtime::spawn_blocking(|| commands::cowork_setting_check(&TauriPlatform))
         .await
         .ok()
         .flatten()
