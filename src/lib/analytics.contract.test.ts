@@ -12,8 +12,10 @@ import {
  * The webview follows two backend broadcasts, and `analytics.test.ts` drives
  * them with a fake `emit`. A fake is only honest if the backend really emits
  * that event, under that name, with that payload, from the commands the tests
- * say it does. This pins each of those against `src-tauri/src/lib.rs` itself,
- * whose own unit tests pin that the sign-out paths call the emitter.
+ * say it does. This pins each of those against the backend source itself:
+ * the event names in `src-tauri/src/lib.rs`, the command bodies in
+ * `src-tauri/src/commands.rs`, whose own unit tests pin the same order against
+ * a fake platform (AG-903).
  */
 const lib = readFileSync(resolve(__dirname, "../../src-tauri/src/lib.rs"), "utf8").replace(/\r\n/g, "\n");
 /** The command bodies moved out of `lib.rs` behind its thin adapters (AG-903). */
@@ -38,17 +40,19 @@ describe("the analytics broadcasts the backend emits", () => {
     // The core forgets (`oauth::clear`; pinned by `core::analytics`'s tests),
     // and the shell announces after it.
     for (const [cmd, change] of [
-      ["async fn oauth_sign_out()", "oauth::clear()"],
-      ["async fn clear_account()", "account::clear()"],
+      ["fn oauth_sign_out(", ".clear_oauth_session()"],
+      ["fn clear_account(", ".clear_account()"],
     ]) {
-      const b = body(cmd);
+      const b = body(cmd, commands);
       const changed = b.indexOf(change);
-      const announced = b.indexOf("announce_stored_analytics_identity();");
+      const announced = b.indexOf("announce_stored_analytics_identity(platform);");
       expect(changed, cmd).toBeGreaterThanOrEqual(0);
       expect(announced, cmd).toBeGreaterThan(changed);
     }
-    expect(body("fn announce_stored_analytics_identity(")).toContain(
-      "announce_analytics_identity(gate_connect_core::analytics::load_identity())",
+    // `analytics_identity()` is `analytics::load_identity()` on the real
+    // platform (`src-tauri/src/platform.rs`).
+    expect(body("fn announce_stored_analytics_identity(", commands)).toContain(
+      "announce_analytics_identity(platform, platform.analytics_identity())",
     );
   });
 
@@ -61,12 +65,18 @@ describe("the analytics broadcasts the backend emits", () => {
   });
 
   it("announces from inside the save, and rejects with the names the webview reads", () => {
-    const b = body("fn set_analytics_identity(");
+    const b = body("fn set_analytics_identity(", commands);
     // Announced through the core's `on_stored`, inside its lock.
-    expect(b).toMatch(/save_identity\(\s*identity,\s*\|stored\|\s*\{?\s*announce_analytics_identity\(stored\.clone\(\)\)/);
+    expect(b).toMatch(
+      /save_identity\(\s*identity,\s*&mut\s*\|stored\|\s*\{?\s*announce_analytics_identity\(\s*platform,\s*stored\.clone\(\)\s*\)/,
+    );
+    expect(b).toContain("crate::ANALYTICS_IDENTITY_NOT_LIVE");
+    expect(b).toContain("crate::ANALYTICS_IDENTITY_UNCONFIRMED");
     expect(lib).toContain(`const ANALYTICS_IDENTITY_NOT_LIVE: &str = "${IDENTITY_NOT_LIVE}";`);
     expect(lib).toContain(`const ANALYTICS_IDENTITY_UNCONFIRMED: &str = "${IDENTITY_UNCONFIRMED}";`);
-    expect(body("fn announce_analytics_identity(")).toContain("emit(ANALYTICS_IDENTITY_EVENT, identity)");
+    expect(body("fn announce_analytics_identity(", commands)).toMatch(
+      /emit\(\s*crate::ANALYTICS_IDENTITY_EVENT,\s*identity\s*\)/,
+    );
   });
 
   it("announces a consent answer with the payload the webview reads", () => {
