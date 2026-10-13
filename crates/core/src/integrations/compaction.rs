@@ -17,11 +17,18 @@
 //! | Goose | `GOOSE_AUTO_COMPACT_THRESHOLD` | a percent of the model window, not derivable from a token count alone; no Goose integration exists either |
 //! | Hermes, OpenClaw | - | already compact early / prune by cache TTL; no-op |
 //!
-//! Measured 2026-10-12 on Claude Code: the trigger fires about 33k tokens
-//! below the window, so the knob is written as `window + 33000` to make the
-//! trigger land at about the window the org asked for. Claude Code parses the
-//! variable with `parseInt`, so a suffixed value such as `500k` reads as 500
-//! and is clamped up to the 100k floor: the value is always a plain integer.
+//! Why `+ 33000`: Claude Code's auto-compact trigger sits about 33k tokens
+//! below the window it is given (a 13k buffer plus a 20k margin), per Claude
+//! Code's model-config documentation ("Default auto-compact thresholds",
+//! <https://code.claude.com/docs/en/model-config>) and the task-force lever
+//! table, `~/Documents/taskforce-2026-10-06/tokens/13-client-token-levers.md`
+//! row CC5, which reads the 1M-model default as a trigger of about 967k on
+//! Claude Code 2.1.247+. The knob is therefore written as `window + 33000` so
+//! the trigger lands at about the window the org asked for (400k asks for
+//! 433000, as doc 32 §"Claude Code's trigger" sets out). Claude Code parses
+//! the variable with `parseInt`, so a suffixed value such as `500k` reads as
+//! 500 and is clamped up to the 100k floor: the value is always a plain
+//! integer.
 
 /// Claude Code's floor for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; anything below
 /// it is clamped up by the tool.

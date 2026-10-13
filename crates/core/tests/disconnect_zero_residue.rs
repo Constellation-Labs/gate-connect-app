@@ -1287,3 +1287,94 @@ fn codex_connect_writes_nothing_for_a_window() {
          cache-cold: {config}"
     );
 }
+
+/// A settings.json written by a build that managed only the five routing
+/// keys, on a machine where the user had set their own compaction window in
+/// the meantime. The legacy marker never listed the key, so it is the user's
+/// by the ownership rule: a connect that now carries an org window must not
+/// take it over, status must not call it drift, and disconnect must leave it.
+#[test]
+fn claude_code_legacy_marker_leaves_a_user_window_alone_through_connect_status_disconnect() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_ca_cert();
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let ca = env::app_support_dir()
+        .unwrap()
+        .join("proxy")
+        .join("ca-cert.pem")
+        .display()
+        .to_string();
+    fs::write(
+        &settings,
+        format!(
+            r#"{{
+  "env": {{
+    "HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:9977",
+    "NO_PROXY": "localhost,127.0.0.1,::1",
+    "NODE_EXTRA_CA_CERTS": {ca:?},
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"
+  }},
+  "_gateConnect": {{
+    "previousEnv": {{}},
+    "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"]
+  }}
+}}
+"#
+        ),
+    )
+    .unwrap();
+    // Status needs a routing address to call the file Connected: the forwarder
+    // port the fixture names, answering as a relay that is routing, under an
+    // engine that reads as running (`engine_proxy_url` wants the port file and
+    // the system-proxy snapshot a started engine leaves behind).
+    seed_engine_port(9977);
+    seed_routing_intent();
+    #[cfg(target_os = "macos")]
+    let snapshot = "[]";
+    #[cfg(target_os = "linux")]
+    let snapshot = r#"{ "block_present": false }"#;
+    #[cfg(target_os = "windows")]
+    let snapshot = r#"{ "enable": 0, "server": "", "bypass": "", "auto_config_url": "" }"#;
+    fs::write(
+        env::app_support_dir()
+            .unwrap()
+            .join("proxy")
+            .join("system-proxy.snapshot.json"),
+        snapshot,
+    )
+    .unwrap();
+    let _port = bind_seeded_port(9977);
+    let claude = find(ToolId::ClaudeCode).unwrap();
+
+    claude
+        .connect(&connect_input_with_window(9977, Some(400_000)))
+        .unwrap();
+    let (env_block, managed) = claude_env_and_managed(&settings);
+    assert_eq!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        Some(&serde_json::json!("300000")),
+        "a window the legacy marker never listed is the user's: {env_block}"
+    );
+    assert!(
+        !managed
+            .iter()
+            .any(|k| k == "CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "the upgrade must not claim it: {managed:?}"
+    );
+    assert_eq!(
+        claude.status().unwrap(),
+        Status::Connected,
+        "a user-owned window is not drift, whatever the org asks for"
+    );
+
+    claude.disconnect().unwrap();
+    let (env_block, _) = claude_env_and_managed(&settings);
+    assert_eq!(
+        env_block.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        Some(&serde_json::json!("300000")),
+        "disconnect must leave the user's window: {env_block}"
+    );
+    assert!(env_block.get("HTTPS_PROXY").is_none(), "{env_block}");
+}

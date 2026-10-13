@@ -27,6 +27,7 @@ function makeOrg(overrides: Partial<Org> = {}): Org {
     name: "Constellation Labs",
     slug: "constellation-labs",
     role: "admin",
+    compactionWindow: null,
     ...overrides,
   };
 }
@@ -83,7 +84,20 @@ describe("OrgPicker loading and list", () => {
     fireEvent.click(await screen.findByText("Side Project"));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     // The UUID and the display name, not the slug.
-    expect(setOrg).toHaveBeenCalledWith("org-2", "Side Project");
+    expect(setOrg).toHaveBeenCalledWith("org-2", "Side Project", null);
+  });
+
+  it("forwards the picked org's compaction window to the backend", async () => {
+    // The org's clientConfig rides with the selection: the backend writes it
+    // into the managed tool configs (Claude Code's settings.json) from there.
+    (oauthListOrgs as Mock).mockImplementation(async () => [
+      makeOrg(),
+      makeOrg({ orgId: "org-2", name: "Side Project", slug: "side-project", role: "member", compactionWindow: 400000 }),
+    ]);
+    const { onDone } = renderPicker();
+    fireEvent.click(await screen.findByText("Side Project"));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(setOrg).toHaveBeenCalledWith("org-2", "Side Project", 400000);
   });
 
   it("disables every row while a choice is in flight", async () => {
@@ -102,7 +116,7 @@ describe("OrgPicker single-org auto-select", () => {
     (oauthListOrgs as Mock).mockImplementation(async () => [makeOrg()]);
     const { onDone } = renderPicker();
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    expect(setOrg).toHaveBeenCalledWith("org-1", "Constellation Labs");
+    expect(setOrg).toHaveBeenCalledWith("org-1", "Constellation Labs", null);
     // The one-tap-shorter promise: the list never flashed.
     expect(screen.queryByText("Constellation Labs")).toBeNull();
   });
