@@ -18,7 +18,6 @@ use gate_connect_core::{account, Status, ToolId};
 mod commands;
 mod platform;
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use platform::TauriApp;
 use platform::TauriPlatform;
 
@@ -366,54 +365,11 @@ impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
 async fn oauth_begin_login<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<OAuthStatusDto, String> {
-    use tauri_plugin_opener::OpenerExt;
-
-    let cfg = gate_connect_core::oauth::OAuthConfig::from_build_env()
-        .ok_or_else(|| "OAuth is not configured in this build".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let tokens = gate_connect_core::oauth::login(
-            &cfg,
-            gate_connect_core::oauth::REDIRECT_PORTS,
-            |url| {
-                app.opener()
-                    .open_url(url.to_string(), None::<String>)
-                    .map_err(|e| anyhow::anyhow!("opening the sign-in page: {e}"))
-            },
-        )
-        .map_err(|e| format!("{e:#}"))?;
-        // Record that this account authenticates via OAuth so load() stops
-        // requiring a pasted key, and push the fresh token into a running
-        // engine so routing switches to it without waiting for a restart.
-        // The engine's key goes with it: an account that pasted one before
-        // this sign-in would otherwise keep it there, and a later dead session
-        // would be served under it rather than refused (`lacks_gate_credential`).
-        gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
-            .map_err(|e| format!("{e:#}"))?;
-        // Whatever ended the last session, this one is live - so the flag stops
-        // describing anything. Best-effort: a preferences write that fails must
-        // not fail a sign-in that succeeded, and the cost of it going unwritten
-        // is one welcome pane that would have said the wrong word, on a screen
-        // the user is no longer looking at.
-        let _ = gate_connect_core::preferences::set_signed_out_deliberately(false);
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        {
-            gate_connect_core::proxy::manager().refresh_api_key("");
-            gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
-        }
-        // The session is live again, so the tray stops asking for a sign-in
-        // now rather than on the next refresh tick: until then the red dot
-        // would stay up and a tray click would keep opening this window.
-        if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
-            let running = gate_connect_core::proxy::manager()
-                .status()
-                .map(|s| s.running)
-                .unwrap_or(false);
-            update_tray_status(&app, running);
-        }
-        Ok(OAuthStatusDto::from(&tokens))
-    })
-    .await
-    .map_err(|e| format!("login join error: {e}"))?
+    // Off the main thread: the login waits on the browser. The build's
+    // OAuth check, the account write and the tray refresh run there too.
+    tauri::async_runtime::spawn_blocking(move || commands::oauth_begin_login(&TauriApp { app }))
+        .await
+        .map_err(|e| format!("login join error: {e}"))?
 }
 
 /// Stop an interactive login that is still waiting for the browser.
@@ -4029,38 +3985,7 @@ async fn open_onboarding_window<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     source: String,
 ) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("onboarding") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
-    }
-    // The frontend only ever sends the two known values; normalize anyway so
-    // nothing arbitrary is spliced into the webview URL.
-    let source = if source == "settings" {
-        "settings"
-    } else {
-        "firstrun"
-    };
-    // Pass `source` as a URL hash, not a query string: `WebviewUrl::App`
-    // with a query string can fail to resolve the page on Windows (blank
-    // window), whereas a hash is a client-side fragment the asset resolver
-    // ignores. The frontend reads `window.location.hash`.
-    let url = tauri::WebviewUrl::App(format!("index.html#{source}").into());
-    let builder = tauri::WebviewWindowBuilder::new(&app, "onboarding", url)
-        .title("Gate Connect")
-        .inner_size(1080.0, 720.0)
-        .min_inner_size(760.0, 560.0)
-        .center();
-    // Overlay title bar: the traffic lights float over the white surface so
-    // the window reads as one chrome-less card, per the onboarding design.
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true);
-    let window = builder.build().map_err(|e| e.to_string())?;
-    let _ = window.set_focus();
-    Ok(())
+    commands::open_onboarding_window(&TauriApp { app }, &source)
 }
 
 /// Label of the Cloudflare challenge-solve webview (see
@@ -4531,7 +4456,7 @@ fn reveal_popover_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[tauri::command]
 fn reveal_popover<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    reveal_popover_window(&app);
+    commands::reveal_popover(&TauriApp { app });
 }
 
 /// How long after a blur-dismiss a tray-icon click still counts as part of it.
@@ -4635,14 +4560,7 @@ fn reveal_tray_window(app: &tauri::AppHandle) {
 /// this collapses into it.
 #[tauri::command]
 fn request_switch_org<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    reveal_popover_window(&app);
-    let _ = app.emit("switch-org-requested", ());
-    if let Some(tray) = app.get_webview_window("tray") {
-        // Same hand-over as Expand app: the popover asked the window to take
-        // over, so it gets out of the way.
-        let _ = tray.hide();
-        POPOVER_VISIBLE.store(false, Ordering::Release);
-    }
+    commands::request_switch_org(&TauriApp { app });
 }
 
 /// Position the tray popover centered horizontally on the tray icon and just
@@ -4808,35 +4726,7 @@ fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// middle of the first one's writes.
 #[tauri::command]
 async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        use tauri_plugin_notification::NotificationExt;
-        if !claim_quit_teardown() {
-            return;
-        }
-        let outcome = tauri::async_runtime::spawn_blocking(disconnect_tools_for_quit)
-            .await
-            .unwrap_or_else(|e| Err(format!("join error: {e}")));
-        if let Err(e) = &outcome {
-            eprintln!("[gate] putting tools back for quit failed: {e}");
-        }
-        if let Some(body) = quit_notice_body(
-            &outcome,
-            || gate_connect_core::preferences::load().notifications,
-            || {
-                gate_connect_core::account::billing_mode_for_injection()
-                    == gate_connect_core::account::BillingMode::Payg
-            },
-        ) {
-            let _ = app
-                .notification()
-                .builder()
-                .title("Gate Connect")
-                .body(&body)
-                .show();
-        }
-    }
-    app.exit(0);
+    commands::quit_app(&TauriApp { app }).await;
 }
 
 /// Quit-time teardown: snapshot + disconnect every enabled provider AND the
