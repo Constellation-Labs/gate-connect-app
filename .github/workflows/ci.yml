@@ -277,6 +277,41 @@ jobs:
     with:
       release: false
 
+  # The shipped app, installed and driven through its own window (AG-905). The
+  # macOS half first, because it is the half with no WebDriver: WKWebView
+  # publishes the page to the accessibility tree, and the runner image already
+  # trusts osascript for accessibility and bash for screen capture, so the
+  # driver needs nothing from the app. See ci/e2e/app/macos-signin.sh for how
+  # the release-profile bundle, whose test seams are compiled out, ends up
+  # talking to the mock gateway. Screenshots and accessibility dumps of every
+  # failed step land in `app-e2e-macos`.
+  app-e2e-macos:
+    name: App e2e (macOS)
+    needs: bundle
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-macos-latest
+          path: bundle
+      - name: Sign in through the installed app
+        env:
+          BUNDLE_DIR: ${{ github.workspace }}/bundle
+          OUT: ${{ github.workspace }}/app-e2e-out
+        run: bash ci/e2e/app/macos-signin.sh
+      - name: Upload screenshots and accessibility dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-e2e-macos
+          path: app-e2e-out/
+          retention-days: 7
+
   # The seam neither other suite covers: a CLICK in the real frontend reaching
   # the real Rust command, and the real backend's state deciding what the UI
   # then shows. `web` drives the frontend against a fake backend; `rust` and

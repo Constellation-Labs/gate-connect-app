@@ -154,8 +154,16 @@ assert acct.get("api_key_prefix") == key[:12], acct
 assert host in acct.get("gateway_base_url", ""), acct
 assert key not in open(path).read(), "the key itself is on disk"
 PY
+# And the app used it: the mock (and only the mock, since the host resolves to
+# 127.0.0.1) received the dashboard's own reads carrying this key.
+python3 - "$WORK/capture.jsonl" "$KEY" <<'PY'
+import json, sys
+path, key = sys.argv[1:]
+reqs = [json.loads(l) for l in open(path) if l.strip()]
+keyed = [r["path"] for r in reqs if r["headers"].get("x-gate-api-key") == key]
+print(f"{len(reqs)} requests reached the mock gateway, {len(keyed)} with the key: {sorted(set(keyed))}")
+assert keyed, "no request reached the mock gateway with the key"
+PY
 endstep
 
-echo "requests the mock gateway saw:"
-cat "$WORK/capture.jsonl" || true
 echo "PASS: signed in with an API key through the installed app's own window"
