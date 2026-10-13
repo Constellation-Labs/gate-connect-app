@@ -7,7 +7,9 @@
 //! against [`crate::platform::fake::FakePlatform`] (AG-903).
 
 use crate::platform::Platform;
-use crate::{status_for, StatusDto, ToolDto};
+use crate::{status_for, BackendError, StatusDto, ToolDto};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use crate::{TeardownReportDto, TeardownToolDto};
 use gate_connect_core::ToolId;
 use std::collections::HashMap;
 
@@ -197,6 +199,112 @@ pub(crate) fn set_share_diagnostics(platform: &impl Platform, enabled: bool) -> 
         serde_json::json!({ "share_diagnostics": enabled, "recorded": true }),
     );
     Ok(())
+}
+
+// ---- Security feed ----
+
+/// What the feed is doing: `live`, `reconnecting` or `offline`.
+pub(crate) fn security_feed_state(
+    platform: &impl Platform,
+) -> gate_connect_core::security_feed::FeedState {
+    platform.security_feed().state()
+}
+
+/// Whether the events from before this connection could be fetched.
+pub(crate) fn security_feed_history_ok(platform: &impl Platform) -> bool {
+    platform.security_feed().history_ok()
+}
+
+/// The events the feed has buffered, oldest first.
+pub(crate) fn security_feed_recent(
+    platform: &impl Platform,
+) -> Vec<gate_connect_core::security_feed::SecurityEvent> {
+    platform.security_feed().recent()
+}
+
+/// The "Try again" behind an Unavailable feed: wake the connection loop.
+pub(crate) fn security_feed_retry(platform: &impl Platform) {
+    platform.security_feed().retry_now();
+}
+
+// ---- Routing ----
+
+/// Whether already-running routed clients may be pointing at a dead port.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn routed_clients_stale(platform: &impl Platform) -> bool {
+    platform.routed_clients_may_be_stale()
+}
+
+/// Whether the startup auto-enable is still in flight.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn routing_startup_pending(platform: &impl Platform) -> bool {
+    platform.startup_enable_pending()
+}
+
+/// Where the tools stand after a teardown, read back from each tool's own
+/// config rather than from what the teardown believed it wrote.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn teardown_report(platform: &impl Platform) -> TeardownReportDto {
+    let mut report = TeardownReportDto {
+        defaults: Vec::new(),
+        still_gate: Vec::new(),
+        awaiting_reopen: Vec::new(),
+        failed: Vec::new(),
+    };
+    for integ in platform.integrations() {
+        if integ.hidden_in_ui() {
+            continue;
+        }
+        let slug = integ.id().to_string();
+        let status = integ.status();
+        // Not on the machine: it has no configuration to put back, and listing it
+        // would pad a report the user reads as a to-do list.
+        if matches!(status, Ok(gate_connect_core::Status::NotInstalled)) {
+            continue;
+        }
+        let tool = |next_action: &'static str| TeardownToolDto {
+            slug: slug.clone(),
+            name: integ.display_name().to_string(),
+            next_action,
+        };
+        match status {
+            Ok(gate_connect_core::Status::Connected)
+            | Ok(gate_connect_core::Status::Drifted(_))
+            | Ok(gate_connect_core::Status::Overridden(_)) => {
+                report.still_gate.push(tool("retry_disconnect"))
+            }
+            Ok(_) if platform.reopen_pending(&slug) => {
+                report.awaiting_reopen.push(tool("reopen_tool"))
+            }
+            Ok(_) => report.defaults.push(tool("none")),
+            Err(_) => report.failed.push(tool("retry_check")),
+        }
+    }
+    report
+}
+
+// ---- Windows ----
+
+/// Stop pinning the popover open.
+pub(crate) fn unpin_popover(platform: &impl Platform) {
+    platform.set_popover_pinned(false);
+}
+
+/// Pin the popover open across a call that raises a system dialog.
+pub(crate) fn pin_popover(platform: &impl Platform) {
+    platform.set_popover_pinned(true);
+}
+
+/// Hand one window its buffered backend failures and clear its copy only.
+pub(crate) fn drain_backend_errors(platform: &impl Platform, label: &str) -> Vec<BackendError> {
+    platform.drain_backend_errors(label)
+}
+
+// ---- Updater ----
+
+/// Mark (or unmark) the next exit as an updater-driven relaunch.
+pub(crate) fn set_updater_relaunching(platform: &impl Platform, relaunching: bool) {
+    platform.set_updater_relaunching(relaunching);
 }
 
 #[cfg(test)]
@@ -492,5 +600,193 @@ mod tests {
             analytics_milestone_claim(&failing_writes(), "first_route"),
             Err("writing preferences: disk full".into())
         );
+    }
+
+    // ---- Batch 3 ----
+
+    fn event(id: &str) -> gate_connect_core::security_feed::SecurityEvent {
+        gate_connect_core::security_feed::SecurityEvent {
+            id: id.into(),
+            request_id: format!("req-{id}"),
+            at: "2026-10-13T12:00:00Z".into(),
+            action: gate_connect_core::security_feed::Action::Block,
+            category: Some("credential".into()),
+            tool: None,
+            model: None,
+            provider: None,
+        }
+    }
+
+    /// A window seeding itself on mount reads the feed it is handed, as is.
+    #[test]
+    fn security_feed_reads_report_the_live_feed() {
+        use gate_connect_core::security_feed::FeedState;
+        let platform = FakePlatform {
+            feed: crate::platform::fake::FakeFeed {
+                state: FeedState::Reconnecting,
+                history_ok: false,
+                recent: vec![event("01A"), event("01B")],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(security_feed_state(&platform), FeedState::Reconnecting);
+        assert!(!security_feed_history_ok(&platform));
+        let ids: Vec<_> = security_feed_recent(&platform)
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(ids, ["01A", "01B"], "oldest first, nothing dropped");
+    }
+
+    /// Retry wakes the loop once per click and emits nothing itself: the
+    /// state change it causes arrives on the feed's own events.
+    #[test]
+    fn security_feed_retry_wakes_the_feed_once_per_call() {
+        let platform = FakePlatform::default();
+        security_feed_retry(&platform);
+        security_feed_retry(&platform);
+        assert_eq!(*platform.feed.retries.lock().unwrap(), 2);
+        assert!(platform.emitted().is_empty());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn routing_flags_report_what_the_platform_holds() {
+        for flag in [true, false] {
+            let platform = FakePlatform {
+                routed_clients_stale: flag,
+                startup_pending: !flag,
+                ..Default::default()
+            };
+            assert_eq!(routed_clients_stale(&platform), flag);
+            assert_eq!(routing_startup_pending(&platform), !flag);
+        }
+    }
+
+    /// Each installed, visible tool lands in exactly one bucket, read from
+    /// its status; not installed and hidden tools are left out.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn teardown_report_buckets_each_tool_by_what_its_config_says() {
+        let platform = FakePlatform {
+            tools: vec![
+                FakeTool {
+                    status: Ok(Status::Connected),
+                    ..FakeTool::new(ToolId::ClaudeCode)
+                },
+                FakeTool {
+                    status: Ok(Status::Drifted("base URL changed".into())),
+                    ..FakeTool::new(ToolId::Codex)
+                },
+                FakeTool {
+                    status: Ok(Status::Detected),
+                    ..FakeTool::new(ToolId::OpenCode)
+                },
+                FakeTool {
+                    status: Ok(Status::Detected),
+                    ..FakeTool::new(ToolId::Hermes)
+                },
+                FakeTool {
+                    status: Err("permission denied".into()),
+                    ..FakeTool::new(ToolId::EnvProxy)
+                },
+                FakeTool {
+                    status: Ok(Status::NotInstalled),
+                    ..FakeTool::new(ToolId::OpenClaw)
+                },
+                FakeTool {
+                    status: Ok(Status::Detected),
+                    hidden: true,
+                    ..FakeTool::new(ToolId::ClaudeCode)
+                },
+            ],
+            reopen_pending: ["opencode"].into_iter().collect(),
+            ..Default::default()
+        };
+        let report = teardown_report(&platform);
+        let bucket = |tools: &[TeardownToolDto]| -> Vec<(String, &'static str)> {
+            tools
+                .iter()
+                .map(|t| (t.slug.clone(), t.next_action))
+                .collect()
+        };
+        assert_eq!(
+            bucket(&report.still_gate),
+            [
+                ("claude-code".to_string(), "retry_disconnect"),
+                ("codex".to_string(), "retry_disconnect"),
+            ]
+        );
+        assert_eq!(
+            bucket(&report.awaiting_reopen),
+            [("opencode".to_string(), "reopen_tool")]
+        );
+        assert_eq!(bucket(&report.defaults), [("hermes".to_string(), "none")]);
+        assert_eq!(
+            bucket(&report.failed),
+            [("env-proxy".to_string(), "retry_check")]
+        );
+        assert_eq!(report.defaults[0].name, "Fake Tool", "the product name");
+    }
+
+    /// A still-Gate tool is a disconnect to retry even when its process is
+    /// stale: reopening it would read the same Gate config again.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn teardown_report_asks_for_a_disconnect_before_a_reopen() {
+        let platform = FakePlatform {
+            tools: vec![FakeTool {
+                status: Ok(Status::Connected),
+                ..FakeTool::new(ToolId::Codex)
+            }],
+            reopen_pending: ["codex"].into_iter().collect(),
+            ..Default::default()
+        };
+        let report = teardown_report(&platform);
+        assert_eq!(report.still_gate.len(), 1);
+        assert!(report.awaiting_reopen.is_empty());
+    }
+
+    #[test]
+    fn pin_and_unpin_popover_set_the_pin() {
+        let platform = FakePlatform::default();
+        pin_popover(&platform);
+        assert_eq!(*platform.popover_pinned.lock().unwrap(), Some(true));
+        unpin_popover(&platform);
+        assert_eq!(*platform.popover_pinned.lock().unwrap(), Some(false));
+    }
+
+    #[test]
+    fn set_updater_relaunching_stores_the_flag_both_ways() {
+        let platform = FakePlatform::default();
+        set_updater_relaunching(&platform, true);
+        assert_eq!(*platform.updater_relaunching.lock().unwrap(), Some(true));
+        set_updater_relaunching(&platform, false);
+        assert_eq!(*platform.updater_relaunching.lock().unwrap(), Some(false));
+    }
+
+    /// A drain takes the calling window's failures and leaves the other
+    /// window's alone.
+    #[test]
+    fn drain_backend_errors_takes_only_the_named_window() {
+        let failure = |message: &str| BackendError {
+            context: "proxy_enable",
+            message: message.into(),
+            reason: None,
+        };
+        let platform = FakePlatform::default();
+        platform.backend_errors.lock().unwrap().extend([
+            ("main".to_string(), vec![failure("main one")]),
+            ("tray".to_string(), vec![failure("tray one")]),
+        ]);
+        let main: Vec<_> = drain_backend_errors(&platform, "main")
+            .into_iter()
+            .map(|e| e.message)
+            .collect();
+        assert_eq!(main, ["main one"]);
+        assert!(drain_backend_errors(&platform, "main").is_empty());
+        assert!(drain_backend_errors(&platform, "settings").is_empty());
+        assert_eq!(drain_backend_errors(&platform, "tray").len(), 1);
     }
 }
