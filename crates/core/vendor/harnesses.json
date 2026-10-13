@@ -406,16 +406,16 @@
       ],
       "checked": [
         "Pointing Hermes at Gate as a custom endpoint provider works in both billing modes: paying through Gate, and bringing your own provider keys.",
-        "Gate Connect can set Hermes up for you, and our test suite drives a real Hermes install on macOS and Linux."
+        "Gate Connect can set Hermes up for you, and our test suite drives a real Hermes install on macOS and Linux.",
+        "Gate recognizes Hermes by name in your dashboard: Gate Connect adds a header to Hermes's own config, and a real Hermes install routed through Gate Connect arrives named Hermes through the proxy engine, both on Gate models and with its own provider keys."
       ],
       "not_checked": [
         "Windows: our test suite does not cover Hermes there.",
-        "Attribution on a real install: Gate Connect names Hermes by writing a header into its config, and nothing in our suite has yet driven a real Hermes and seen that header arrive. Until it has, treat naming as designed rather than demonstrated.",
         "Attribution off the OpenAI wire: the header Hermes sends is documented as applying to OpenAI-compatible endpoints only, so a native-Anthropic or Bedrock setup routes through Gate exactly as before but is recorded without a name.",
         "Compression: Hermes's tool names come from its own documentation; we have never seen them on traffic we could attribute to Hermes."
       ],
       "last_verified": null,
-      "notes": "D2 — Works, not Certified, by Julian's decision: no detector, documentation-only compression names, and an e2e suite that skips Windows. AG-670 adds the detector; Hermes is promoted to Certified when it lands. The e2e-real-tools job drives a real install on macOS and Linux and skips Windows. Gate Connect's proxy-engine integration writes ~/.hermes/.env; the Custom endpoint provider the checked list refers to lives in ~/.hermes/config.yaml. Hermes also reaches Gate by hand through the base_url in config.yaml that its guide documents; routing records the mechanism Gate Connect ships."
+      "notes": "D2 — Works, not Certified, by Julian's decision. What keeps it there: the e2e suite does not cover Windows, and the compression names are documentation-only. AG-670 verified attribution and keeps the tier. The e2e-real-tools job drives a real install on macOS and Linux and skips Windows. Gate Connect's proxy-engine integration writes ~/.hermes/.env; the Custom endpoint provider the checked list refers to lives in ~/.hermes/config.yaml. Hermes also reaches Gate by hand through the base_url in config.yaml that its guide documents; routing records the mechanism Gate Connect ships. AG-670 attribution verified 2026-10-06 on staging with Gate Connect 1.0.0-alpha.13: real Hermes requests via the relay Gate models route and via the proxy engine with `x-gate-tool: hermes` were counted under hermes, and OpenAI-SDK-shaped requests through the same engine were not; the e2e-real-tools job asserts x-gate-client=hermes on Linux and macOS on gate-connect-app feat/new-app-ui since #422 (run 38011932242), and reaches its main with #151."
     },
     {
       "id": "claude-desktop",
