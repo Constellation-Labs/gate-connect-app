@@ -822,6 +822,164 @@ mod linux {
             std::thread::sleep(Duration::from_millis(25));
         }
     }
+
+    /// Which manager call [`fresh_process_call`] makes, passed to the child in
+    /// this variable.
+    const FRESH_CALL_ENV: &str = "GATE_HELPER_TEST_FRESH_CALL";
+
+    /// Run one `proxy::manager()` call in a fresh process, the way every CLI
+    /// invocation runs it: a manager that has never held a control connection.
+    ///
+    /// The manager is a process-global singleton, so calling it from this
+    /// process would carry a handle from one test into the next. The child is
+    /// this same test binary, running only [`fresh_process_call`], against the
+    /// sandbox this process points at. Returns the child's report line.
+    fn in_fresh_process(sandbox: &Sandbox, call: &str) -> String {
+        let out = Command::new(std::env::current_exe().expect("test binary path"))
+            .args([
+                "--exact",
+                "linux::fresh_process_call",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(FRESH_CALL_ENV, call)
+            .env("HOME", sandbox.path())
+            // The drop-in `disable` removes lives under the config dir, which
+            // the test home does not move. Never the developer's own.
+            .env("XDG_CONFIG_HOME", sandbox.path().join("config"))
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the fresh-process call");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "the fresh-process {call} failed ({})\nstdout: {stdout}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        stdout
+            .lines()
+            // libtest prints the test's name on the same line first.
+            .find_map(|l| l.split_once("FRESH: ").map(|(_, report)| report))
+            .unwrap_or_else(|| panic!("the fresh-process {call} reported nothing\n{stdout}"))
+            .to_string()
+    }
+
+    /// The child half of [`in_fresh_process`]. Ignored, so it runs only when
+    /// asked for by name, with [`FRESH_CALL_ENV`] set.
+    #[test]
+    #[ignore = "run in a child process by in_fresh_process"]
+    fn fresh_process_call() {
+        let Ok(call) = std::env::var(FRESH_CALL_ENV) else {
+            return;
+        };
+        let mgr = gate_connect_core::proxy::manager();
+        // What the CLI does before any proxy subcommand, so a toggle it pushes
+        // does not end with this process.
+        mgr.set_detached(true);
+        match call.as_str() {
+            "status" => {
+                let state = mgr.status().expect("status");
+                println!("FRESH: running={} port={:?}", state.running, state.port);
+            }
+            "disable" => {
+                mgr.disable().expect("disable");
+                println!("FRESH: disabled");
+            }
+            other => {
+                let slug = other
+                    .strip_prefix("domain-on:")
+                    .unwrap_or_else(|| panic!("unknown fresh-process call {other:?}"));
+                mgr.set_domain(slug, true).expect("set_domain");
+                println!("FRESH: enabled {slug}");
+            }
+        }
+    }
+
+    /// The state an enabled proxy leaves behind for the next process: an engine
+    /// armed in the helper by a client that has gone (`proxy enable` arms
+    /// detached and exits), and the routing snapshot on disk.
+    fn armed_and_left(domains: &[ProxyDomain]) -> Intercepting {
+        let mut cli = connect();
+        let bound = arm(&mut cli, domains, true, (None, None));
+        drop(cli);
+        // Built rather than taken: `system_proxy::snapshot` would look at this
+        // session's real config dir.
+        system_proxy::save_snapshot(&system_proxy::ProxySnapshot {
+            block_present: false,
+            gnome_proxy: None,
+        })
+        .expect("record the routing snapshot");
+        bound
+    }
+
+    /// Fix 53e6757, adoption half: a process with no handle of its own (every
+    /// CLI invocation) must ask the helper rather than report its own `None`.
+    /// Before it, `proxy status` printed "stopped" beside a live daemon.
+    #[test]
+    fn a_fresh_process_status_adopts_the_running_helper() {
+        let sandbox = Sandbox::new();
+        let _daemon = sandbox.spawn_daemon();
+        let bound = armed_and_left(&all_domains_on());
+
+        assert_eq!(
+            in_fresh_process(&sandbox, "status"),
+            format!("running=true port=Some({})", bound.port),
+            "a fresh process must see the engine the helper is running"
+        );
+    }
+
+    /// Fix 53e6757, adoption half: `proxy disable` from a fresh process must
+    /// reach the helper and disarm it. Before it, disable removed the drop-in
+    /// and the snapshot and left the engine intercepting.
+    #[test]
+    fn a_fresh_process_disable_disarms_the_running_helper() {
+        let sandbox = Sandbox::new();
+        let _daemon = sandbox.spawn_daemon();
+        let domains = all_domains_on();
+        let bound = armed_and_left(&domains);
+
+        in_fresh_process(&sandbox, "disable");
+
+        let (running, port, intercepting) = connect().status().expect("status after disable");
+        assert_eq!(
+            intercepting, 0,
+            "a fresh-process disable must disarm the helper's engine"
+        );
+        assert!(running, "disable parks the engine, it does not stop it");
+        assert_eq!(port, Some(bound.port));
+    }
+
+    /// Fix a390693: `proxy domain <slug> on` from a fresh process must reach the
+    /// running engine, not only the domains file. Before it, the toggle wrote
+    /// config and the engine kept its old rules until routing was cycled.
+    #[test]
+    fn a_fresh_process_domain_toggle_reaches_the_running_helper() {
+        let sandbox = Sandbox::new();
+        gate_connect_core::account::save(GATEWAY_URL, Some(API_KEY)).expect("save the account");
+        let _daemon = sandbox.spawn_daemon();
+        // The catalog's defaults, which is what the domains file says too.
+        let defaults = default_domains();
+        let armed = defaults.iter().filter(|d| d.enabled).count();
+        let off = defaults
+            .iter()
+            .find(|d| !d.enabled && d.supported)
+            .expect("a supported domain that is off by default")
+            .slug
+            .clone();
+        armed_and_left(&defaults);
+
+        in_fresh_process(&sandbox, &format!("domain-on:{off}"));
+
+        let (running, _, intercepting) = connect().status().expect("status after toggle");
+        assert!(running);
+        assert_eq!(
+            intercepting,
+            armed + 1,
+            "turning {off} on from a fresh process must arm it in the running engine"
+        );
+    }
 }
 
 /// macOS and Windows have no helper daemon: the engine lives in the process
