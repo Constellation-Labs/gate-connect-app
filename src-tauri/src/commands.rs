@@ -6,15 +6,19 @@
 //! runtime); what the command decides lives here, where a unit test can run it
 //! against [`crate::platform::fake::FakePlatform`] (AG-903).
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use crate::platform::App;
 use crate::platform::Platform;
 use crate::{
     status_for, AccountDto, BackendError, ConfiguredModelDto, OAuthStatusDto, StatusDto, ToolDto,
     ToolModelChoiceDto, ToolModelsDto,
 };
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-use crate::{TeardownReportDto, TeardownToolDto};
+use crate::{LaunchAtLoginStatus, TeardownReportDto, TeardownToolDto, VerdictDto};
 use gate_connect_core::account::{AuthMode, BillingMode};
 use gate_connect_core::analytics::{Identity, SaveOutcome};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use gate_connect_core::proxy::ProxyState;
 use gate_connect_core::{ConnectInput, Integration, ToolId};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -858,6 +862,401 @@ pub(crate) fn teardown_report(platform: &impl Platform) -> TeardownReportDto {
         }
     }
     report
+}
+
+// ---- Proxy ----
+//
+// The built-in MITM proxy, on the platforms where CA trust and system-proxy
+// wiring are implemented. Each adapter runs its body on the blocking pool
+// except `proxy_set_domain` and the two launch-at-login commands, which were
+// sync before they moved and stay sync.
+
+/// The proxy's state.
+///
+/// The adapter runs this on the blocking pool, never on the thread driving the
+/// event loop (bedf13a): on Windows the read shells out to `certutil` for the
+/// CA-trust reading, and a `certutil` that hangs froze the window and left the
+/// app unquittable. `ca_windows::certutil_bounded` caps that wait; the blocking
+/// pool keeps even the capped wait off the UI thread.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_status(platform: &impl Platform) -> Result<ProxyState, String> {
+    platform.proxy_status().map_err(|e| format!("{e:#}"))
+}
+
+/// Read the browser stores, once, for the note the window raises when trust
+/// is granted somewhere this process could not see it happen. The window asks
+/// on a transition and never on a poll - see `proxy::probe_browser_store`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_browser_store(
+    platform: &impl Platform,
+) -> Option<gate_connect_core::proxy::NssTrust> {
+    platform.probe_browser_store()
+}
+
+/// Turn routing on, then show it: tray first, then the crash safety net.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_enable(platform: &(impl Platform + App)) -> Result<ProxyState, String> {
+    // Master ON is one policy shared with the CLI and the startup
+    // auto-enable: persist the intent (so the startup auto-enable
+    // re-routes after a restart - whether the app relaunches at boot is
+    // governed separately by "Launch at login"), restore the provider
+    // selection around the engine start, and surface best-effort hiccups
+    // without blocking the proxy from coming up.
+    let (_, warnings) = platform.enable_routing().map_err(|e| format!("{e:#}"))?;
+    platform.refresh_codex_daemon_when_idle("routing on");
+    for w in warnings {
+        eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
+        platform.report_backend_failure(w.component, &w.error);
+    }
+    // Status re-read rather than enable's own state: the post-enable
+    // restore pass can flip domains, and the UI wants the settled set.
+    let state = platform.proxy_status().map_err(|e| format!("{e:#}"))?;
+    // Refresh the tray for the new routing state on every platform: retint the
+    // mark, recolor the status dot (green on / gray off), and update the
+    // tooltip where supported (macOS + Windows).
+    platform.update_tray_status(state.running);
+    // Crash safety net: routing is now on, but with no login item registered a
+    // crash would strand the system proxy at a dead port with nothing
+    // relaunching at boot to run the startup self-heal. (macOS/Windows only;
+    // see `arm_crash_safety_net` in lib.rs for why Linux is excluded.)
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    platform.arm_crash_safety_net();
+    Ok(state)
+}
+
+/// Turn routing off, then show it, then finish a deferred launch-at-login
+/// opt-out that was waiting for exactly this.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_disable(platform: &(impl Platform + App)) -> Result<ProxyState, String> {
+    // Master OFF is one policy shared with the CLI: sweep + disconnect
+    // everything managed before the proxy stops, then clear the routing
+    // intent so explicit "off" is sticky across restarts (whether the app
+    // relaunches at boot is governed separately by "Launch at login").
+    // Best-effort hiccups surface as warnings and never block the kill
+    // switch.
+    let (state, warnings) = platform.disable_routing().map_err(|e| format!("{e:#}"))?;
+    for w in warnings {
+        eprintln!(
+            "[gate] proxy disable: {} failed: {:#}",
+            w.component, w.error
+        );
+        platform.report_backend_failure(w.component, &w.error);
+    }
+    // Refresh the tray for the new routing state on every platform: retint the
+    // mark, recolor the status dot (green on / gray off), and update the
+    // tooltip where supported (macOS + Windows).
+    platform.update_tray_status(state.running);
+    // A deferred launch-at-login opt-out can complete now: with routing off,
+    // deregistering can no longer strand the system proxy across a restart.
+    platform.complete_pending_autostart_disable();
+    Ok(state)
+}
+
+/// What Gate would and would not see of this Hermes install right now. Enables
+/// no domain and writes no file; what the caller does with the answer is ask.
+/// See the adapter in lib.rs for why it is uncached.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn hermes_upstream_coverage(
+    platform: &impl Platform,
+) -> gate_connect_core::integrations::hermes::Coverage {
+    platform.hermes_upstream_coverage()
+}
+
+/// The operator toggling one interception domain by hand, audited.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_set_domain(
+    platform: &impl Platform,
+    slug: &str,
+    enabled: bool,
+) -> Result<ProxyState, String> {
+    let state = platform
+        .set_domain(slug, enabled)
+        .map_err(|e| format!("{e:#}"))?;
+
+    // Audited here rather than inside `ProxyManager::set_domain`, because
+    // `provider::enable` / `provider::disable` drive that method internally -
+    // instrumenting it there would turn one operator action into N+1 events.
+    // This command is the operator toggling one domain by hand.
+    if let Ok(Some(base_url)) = platform.account_base_url() {
+        platform.audit_domain_toggled(&base_url, slug, enabled);
+    }
+    Ok(state)
+}
+
+/// Opt in or out of exporting the proxy to the session environment, and read
+/// the state back.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_set_env_export(
+    platform: &impl Platform,
+    enabled: bool,
+) -> Result<ProxyState, String> {
+    platform
+        .set_env_export(enabled)
+        .map_err(|e| format!("{e:#}"))?;
+    platform.proxy_status().map_err(|e| format!("{e:#}"))
+}
+
+/// Trust the CA. Pops an interactive prompt.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_trust_ca(platform: &impl Platform) -> Result<ProxyState, String> {
+    platform.trust_ca().map_err(|e| format!("{e:#}"))
+}
+
+/// Untrust the CA. Can pop an interactive prompt.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn proxy_untrust_ca(platform: &impl Platform) -> Result<ProxyState, String> {
+    platform.untrust_ca().map_err(|e| format!("{e:#}"))
+}
+
+/// What every config-routed tool is actually doing. The adapter in lib.rs
+/// says why this is its own command and why it runs on the blocking pool.
+///
+/// The two probes run **once** for the whole sweep, not once per tool. They ask
+/// about shared infrastructure - the relay port and the account's session - so
+/// per-tool calls would be the same answer at N times the cost, and would let
+/// two rows in one refresh disagree about whether the session is alive.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn routing_verdicts(platform: &impl Platform) -> Vec<VerdictDto> {
+    use gate_connect_core::routing_health::{self, ConfigState, Evidence};
+
+    let route = platform.probe_relay_route();
+    let session = platform.probe_session_health();
+    // One read for the whole sweep, like the two probes: every row that needs to
+    // name the Gate route names the same one.
+    let gate_route = platform
+        .account_base_url()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "Constellation Gate".to_string());
+
+    let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
+    let integrations = platform.integrations();
+    let checked: Vec<_> = integrations
+        .iter()
+        .filter(|integ| !integ.hidden_in_ui())
+        .map(|integ| {
+            let status = integ.status();
+            let installed = !matches!(status, Ok(gate_connect_core::Status::NotInstalled));
+            let slug = integ.id().to_string();
+            let config = ConfigState::from_status(&status);
+            let verdict = routing_health::verdict_for(&Evidence {
+                installed,
+                config,
+                route,
+                session,
+                reopen_pending: platform.reopen_pending(&slug),
+            });
+            // The log keeps what the check found; only the row is held.
+            recorded.push((slug.clone(), verdict));
+            (integ, slug, config, verdict)
+        })
+        .collect();
+    // One hold for the process, so both shells draw the same answer. It holds
+    // by time rather than by count of checks, because both shells sweep, so
+    // how many checks arrive depends on how many are open. Taken only here,
+    // after every `status()` above: those read each tool's config off disk,
+    // and holding the lock across them queued one shell's sweep behind the
+    // other's I/O. A poisoned lock only loses the history, which reads as
+    // nothing held.
+    let mut hold = platform
+        .verdict_hold()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    let verdicts: Vec<VerdictDto> = checked
+        .into_iter()
+        .map(|(integ, slug, config, verdict)| {
+            let verdict = hold.apply(&slug, verdict, now);
+            let reason = verdict.reason();
+            // Only the half that was read off disk. The surfaces draw the pair
+            // when both are present and omit it otherwise, so a reopen notice
+            // now names the action rather than an endpoint nobody measured.
+            let routes = if matches!(reason, Some(routing_health::Reason::ReopenRequired)) {
+                gate_connect_core::reopen::reopen_routes(
+                    config,
+                    &gate_route,
+                    integ.default_upstream_url(),
+                )
+            } else {
+                gate_connect_core::reopen::ReopenRoutes {
+                    in_use: None,
+                    requested: None,
+                }
+            };
+            VerdictDto {
+                slug,
+                state: verdict.as_str(),
+                reason: reason.map(|r| r.as_str()),
+                next_action: reason.map(|r| r.next_action().as_str()),
+                route_in_use: routes.in_use,
+                requested_route: routes.requested,
+            }
+        })
+        .collect();
+    drop(hold);
+    // Persisted after the sweep, not during it: the log is what lets the recovery
+    // summary report a check it did not take, and a half-written sweep would be a
+    // worse record than the previous whole one.
+    platform.record_verdict_sweep(&recorded);
+    verdicts
+}
+
+// ---- Launch at login ----
+//
+// A standalone user setting (Settings screen) that owns the login item
+// directly - it is no longer armed/disarmed by the routing toggle. Disabling it
+// while routing is on is two-step: the opt-out marker and the
+// defer-vs-deregister decision live in `gate_connect_core::proxy::
+// autostart_optout` (see its module docs for the full rationale), and only the
+// OS login-item calls go through the platform.
+
+/// The user's launch-at-login choice, and whether its removal is deferred.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn launch_at_login_status(
+    platform: &(impl Platform + App),
+) -> Result<LaunchAtLoginStatus, String> {
+    let registered = platform
+        .login_item_registered()
+        .map_err(|e| format!("{e:#}"))?;
+    let pending = platform.autostart_opt_out_pending();
+    Ok(LaunchAtLoginStatus {
+        enabled: registered && !pending,
+        pending_disable: pending,
+    })
+}
+
+/// Turn launch at login on, or off now or at the next safe point.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn set_launch_at_login(
+    platform: &(impl Platform + App),
+    enabled: bool,
+) -> Result<(), String> {
+    // This marker/login-item read-then-write and `arm_crash_safety_net`
+    // share no lock; see the accepted-race note on that function.
+    if enabled {
+        platform
+            .set_autostart_opt_out_pending(false)
+            .map_err(|e| format!("{e:#}"))?;
+        platform
+            .register_login_item()
+            .map_err(|e| format!("{e:#}"))?;
+        // The plugin has just rewritten the LaunchAgent from its template,
+        // taking the crash-restart policy with it. Put it back.
+        #[cfg(target_os = "macos")]
+        platform.arm_crash_restart();
+        Ok(())
+    } else if platform
+        .record_autostart_opt_out()
+        .map_err(|e| format!("{e:#}"))?
+    {
+        platform
+            .deregister_login_item()
+            .map_err(|e| format!("{e:#}"))
+    } else {
+        // Routing is on: the opt-out is deferred and the login item stays
+        // registered until the next safe point.
+        Ok(())
+    }
+}
+
+// ---- Exit ----
+
+/// What `RunEvent::Exit` does, on macOS and Windows: put every tool back,
+/// revert the system proxy, and finish a deferred launch-at-login opt-out.
+///
+/// On app exit, revert the system proxy so traffic is never stranded at the
+/// now-dead engine port. The engine lives in a process-global static whose
+/// Drop is bypassed at normal exit, so without this the system proxy stays
+/// pointed at a dead listener and kills connectivity until the next launch's
+/// self-heal. `disable_quiet` is promptless and leaves the CA trusted.
+///
+/// **It never touches the routing intent** (7fc3d16). Exit reverts the
+/// *system proxy* only; the intent records what is true while the app runs,
+/// and the next launch enables routing however it happens - see "Routing
+/// follows the app" in CLAUDE.md.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn exit(platform: &(impl Platform + App)) {
+    // Put every tool back on its own settings on *every* exit, not
+    // only the one that goes through `quit_app`: the same teardown
+    // (`disconnect_tools_for_quit`), so a quit means one thing
+    // however it arrives.
+    //
+    // `quit_app` is reached by the tray's Quit, the window menu's
+    // and the crash screen's, and by nothing else: macOS Cmd+Q
+    // comes from Tauri's default app menu, and a logout or a
+    // shutdown comes from the OS, and both land here having touched
+    // none of our own code. This used to revert only the tools
+    // whose address dies with this process, leaving the forwarder's
+    // tools pointed at Gate and working with nothing reading their
+    // traffic. After `quit_app` it is skipped: the teardown runs
+    // once per process (`claim_quit_teardown`), because a second
+    // pass after a partial first one is not a no-op.
+    //
+    // Before `disable_quiet` below, deliberately: the provider half
+    // turns domains off in the engine, which has to still be up.
+    //
+    // Not on an updater relaunch: the app is coming straight back,
+    // so the sweep would rewrite every tool's config and the
+    // restore would undo it, costing each of them a restart for
+    // nothing.
+    //
+    // Deliberately does not *veto* the exit. `ExitRequested` can be
+    // prevented - `code` is `None` exactly when something outside
+    // our own code asked to quit, so Cmd+Q could be routed into a
+    // dialog. It is not, because that event also carries a logout
+    // and a shutdown, and an app that puts a dialog in front of
+    // those is an app that hangs the user's logout. For the same
+    // reason the sweep gives up rather than waiting on another
+    // routing operation.
+    //
+    // Unwound rather than trusted not to panic: everything below it
+    // has to run, `disable_quiet` above all, and the sweep is the
+    // largest block on this path.
+    //
+    // No notification either. `quit_app` can fire one because it
+    // runs before the exit; by the time this runs the process is
+    // going away and a notification would be a promise we cannot
+    // keep.
+    if !platform.updater_relaunching() && platform.claim_quit_teardown() {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            platform.disconnect_tools_for_quit()
+        })) {
+            Ok(Ok(teardown)) if teardown.failed.is_empty() => {}
+            Ok(Ok(teardown)) => eprintln!(
+                "[gate] {} could not be put back on their own settings on exit",
+                crate::join_names(&teardown.failed)
+            ),
+            Ok(Err(e)) => {
+                eprintln!("[gate] putting tools back on exit failed: {e}")
+            }
+            Err(_) => eprintln!("[gate] putting tools back on exit panicked"),
+        }
+    }
+    // Reaching this event at all is what
+    // makes the exit clean. Recording it clears the unclean streak,
+    // so a user who quits normally after a crash gets the restart
+    // policy back rather than carrying the streak forever.
+    if let Err(e) = platform.record_clean_exit() {
+        eprintln!("[gate] recording clean exit failed: {e:#}");
+    }
+    if let Err(e) = platform.disable_engine_quietly() {
+        eprintln!("[gate] reverting proxy on exit failed: {e}");
+    }
+    // The engine's relay goes with this process, parked or not, so
+    // the forwarder should stop asking its port whether it is up.
+    platform.forget_engine_relay_port();
+    // The login item is now a standalone "Launch at login" setting,
+    // decoupled from routing. A deferred opt-out (toggled off while
+    // routing was on) completes here: disable_quiet() above has
+    // reverted the system proxy, so deregistering can no longer
+    // strand it. An updater-driven relaunch is exempt - the app
+    // comes right back, so the pending opt-out stays armed and
+    // routing is restored exactly as the user left it.
+    if !platform.updater_relaunching() {
+        platform.complete_pending_autostart_disable();
+    }
+    // Exit reverts the *system proxy* only. The routing intent is
+    // not touched here, and must not be: see the doc above.
 }
 
 // ---- Windows ----
@@ -2247,5 +2646,509 @@ mod tests {
             disconnect_tool(&platform, "codex"),
             Err(e) if e == "integration missing from registry"
         ));
+    }
+
+    // ---- Batch 5 ----
+
+    /// A fake whose routing on and off each report one hiccup.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn hiccuping() -> FakePlatform {
+        FakePlatform {
+            routing_warnings: vec![("provider_restore", "anthropic stayed off".into())],
+            ..signed_in()
+        }
+    }
+
+    /// The text of one `#[tauri::command]` adapter in lib.rs, from its `fn`
+    /// line to the closing brace.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn lib_body(signature: &str) -> String {
+        let src = include_str!("lib.rs").replace("\r\n", "\n");
+        let at = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} not in lib.rs"));
+        let end = src[at..].find("\n}\n").expect("closing brace");
+        src[at..at + end].to_string()
+    }
+
+    /// bedf13a, the adapter half. `proxy_status` is polled, and on Windows the
+    /// read shells out to `certutil`; run on the thread driving the event loop,
+    /// a hung `certutil` froze the window and left the app unquittable. The
+    /// body is one read through the platform, and the adapter runs it on the
+    /// blocking pool rather than as a sync command.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn proxy_status_runs_the_status_read_through_the_blocking_seam() {
+        let platform = signed_in();
+        assert!(matches!(proxy_status(&platform), Ok(s) if !s.running));
+        assert_eq!(platform.calls(), ["proxy_status"]);
+
+        let platform = failing("proxy_status");
+        assert_eq!(
+            proxy_status(&platform).map(|s| s.running),
+            Err("proxy_status: refused".into())
+        );
+
+        let adapter = lib_body("fn proxy_status()");
+        assert!(
+            adapter.starts_with("fn proxy_status()") && {
+                let src = include_str!("lib.rs").replace("\r\n", "\n");
+                src.contains("async fn proxy_status()")
+            },
+            "proxy_status must be an async command, not a sync one on the event loop"
+        );
+        let blocking = adapter
+            .find("spawn_blocking(")
+            .expect("proxy_status must hand its read to the blocking pool");
+        let read = adapter
+            .find("commands::proxy_status(&TauriPlatform)")
+            .expect("proxy_status must read through commands::proxy_status");
+        assert!(
+            blocking < read,
+            "the read runs inside spawn_blocking:\n{adapter}"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn proxy_browser_store_probes_the_stores_once() {
+        let platform = FakePlatform {
+            browser_store: Some(gate_connect_core::proxy::NssTrust::ToolsMissing),
+            ..Default::default()
+        };
+        assert_eq!(
+            proxy_browser_store(&platform),
+            Some(gate_connect_core::proxy::NssTrust::ToolsMissing)
+        );
+        assert_eq!(platform.calls(), ["probe_browser_store"]);
+    }
+
+    /// 7fc3d16, superseded since: routing now comes on with every launch, so
+    /// both the startup enable and this command can be the first thing to
+    /// route on a machine with no login item. A crash would then strand the
+    /// system proxy at a dead port with nothing relaunching at boot, so routing
+    /// on arms the safety net, after the tray shows the settled state.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn proxy_enable_arms_the_crash_safety_net() {
+        let platform = hiccuping();
+        assert!(matches!(proxy_enable(&platform), Ok(s) if s.running));
+        assert_eq!(
+            platform.calls(),
+            [
+                "enable_routing",
+                "refresh_codex_daemon_when_idle routing on",
+                "report_backend_failure provider_restore: anthropic stayed off",
+                "proxy_status",
+                "update_tray_status true",
+                "arm_crash_safety_net",
+            ]
+        );
+    }
+
+    /// Linux has no safety net: its engine is a detached daemon that falls back
+    /// to pass-through when the GUI dies, and it has no exit-time safe point.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proxy_enable_on_linux_shows_the_state_and_arms_nothing() {
+        let platform = hiccuping();
+        assert!(matches!(proxy_enable(&platform), Ok(s) if s.running));
+        assert_eq!(
+            platform.calls(),
+            [
+                "enable_routing",
+                "refresh_codex_daemon_when_idle routing on",
+                "report_backend_failure provider_restore: anthropic stayed off",
+                "proxy_status",
+                "update_tray_status true",
+            ]
+        );
+    }
+
+    /// Routing that will not start, or a state that cannot be read back,
+    /// stops before the tray or the net is touched.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn proxy_enable_stops_before_the_tray_when_routing_will_not_start() {
+        let platform = failing("enable_routing");
+        assert_eq!(
+            proxy_enable(&platform).map(|s| s.running),
+            Err("enable_routing: refused".into())
+        );
+        assert_eq!(platform.calls(), ["enable_routing"]);
+
+        let platform = failing("proxy_status");
+        assert_eq!(
+            proxy_enable(&platform).map(|s| s.running),
+            Err("proxy_status: refused".into())
+        );
+        assert_eq!(
+            platform.calls(),
+            [
+                "enable_routing",
+                "refresh_codex_daemon_when_idle routing on",
+                "proxy_status"
+            ]
+        );
+    }
+
+    /// Off shows the state, then finishes a launch-at-login opt-out that was
+    /// waiting for routing to end. A failed off touches neither.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn proxy_disable_finishes_a_deferred_opt_out_after_the_tray() {
+        let platform = hiccuping();
+        *platform.proxy_running.lock().unwrap() = true;
+        assert!(matches!(proxy_disable(&platform), Ok(s) if !s.running));
+        assert_eq!(
+            platform.calls(),
+            [
+                "disable_routing",
+                "report_backend_failure provider_restore: anthropic stayed off",
+                "update_tray_status false",
+                "complete_pending_autostart_disable",
+            ]
+        );
+
+        let platform = failing("disable_routing");
+        assert_eq!(
+            proxy_disable(&platform).map(|s| s.running),
+            Err("disable_routing: refused".into())
+        );
+        assert_eq!(platform.calls(), ["disable_routing"]);
+    }
+
+    /// One audit entry per operator toggle, and only with a gateway to file it
+    /// under.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn proxy_set_domain_audits_the_toggle_under_the_stored_gateway() {
+        let platform = signed_in();
+        assert!(proxy_set_domain(&platform, "anthropic", true).is_ok());
+        assert_eq!(
+            platform.calls(),
+            [
+                "set_domain anthropic true".to_string(),
+                format!("audit_domain_toggled {GATEWAY} anthropic true"),
+            ]
+        );
+
+        let platform = FakePlatform::default();
+        assert!(proxy_set_domain(&platform, "anthropic", false).is_ok());
+        assert_eq!(platform.calls(), ["set_domain anthropic false"]);
+
+        let platform = failing("set_domain");
+        assert_eq!(
+            proxy_set_domain(&platform, "anthropic", true).map(|s| s.running),
+            Err("set_domain: refused".into())
+        );
+        assert_eq!(platform.calls(), ["set_domain anthropic true"]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn proxy_set_env_export_reads_the_state_back_after_the_change() {
+        let platform = signed_in();
+        assert!(proxy_set_env_export(&platform, true).is_ok());
+        assert_eq!(platform.calls(), ["set_env_export true", "proxy_status"]);
+
+        let platform = failing("set_env_export");
+        assert_eq!(
+            proxy_set_env_export(&platform, false).map(|s| s.running),
+            Err("set_env_export: refused".into())
+        );
+        assert_eq!(platform.calls(), ["set_env_export false"]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn ca_trust_changes_report_the_whole_error_chain() {
+        let platform = signed_in();
+        assert!(proxy_trust_ca(&platform).is_ok());
+        assert!(proxy_untrust_ca(&platform).is_ok());
+        assert_eq!(platform.calls(), ["trust_ca", "untrust_ca"]);
+
+        assert_eq!(
+            proxy_trust_ca(&failing("trust_ca")).map(|s| s.running),
+            Err("trust_ca: refused".into())
+        );
+        assert_eq!(
+            proxy_untrust_ca(&failing("untrust_ca")).map(|s| s.running),
+            Err("untrust_ca: refused".into())
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn hermes_upstream_coverage_is_the_platform_reading() {
+        let platform = FakePlatform::default();
+        let coverage = hermes_upstream_coverage(&platform);
+        assert!(coverage.defaulted);
+        assert_eq!(coverage.unknown, ["llm.example.com"]);
+        assert_eq!(platform.calls(), ["hermes_upstream_coverage"]);
+    }
+
+    /// Both probes once for the whole sweep, a row per visible tool, and the
+    /// sweep recorded once, after it.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn routing_verdicts_probe_once_and_record_the_whole_sweep() {
+        use gate_connect_core::routing_health::{RouteHealth, SessionHealth};
+        let platform = FakePlatform {
+            tools: vec![
+                FakeTool {
+                    status: Ok(Status::Connected),
+                    ..FakeTool::new(ToolId::Codex)
+                },
+                FakeTool {
+                    status: Ok(Status::NotInstalled),
+                    ..FakeTool::new(ToolId::OpenCode)
+                },
+                FakeTool {
+                    hidden: true,
+                    ..FakeTool::new(ToolId::OpenClaw)
+                },
+            ],
+            route: Some(RouteHealth::Reachable),
+            session_health: Some(SessionHealth::Valid),
+            ..signed_in()
+        };
+        let verdicts = routing_verdicts(&platform);
+        let rows: Vec<_> = verdicts
+            .iter()
+            .map(|v| (v.slug.as_str(), v.state, v.reason))
+            .collect();
+        assert_eq!(
+            rows,
+            [("codex", "on", None), ("opencode", "not_installed", None)]
+        );
+        assert_eq!(
+            platform.calls(),
+            [
+                "probe_relay_route",
+                "probe_session_health",
+                "record_verdict_sweep codex=on opencode=not_installed",
+            ]
+        );
+    }
+
+    /// A dead relay is a reason on the row, with its next action.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn routing_verdicts_name_why_a_connected_tool_is_not_routing() {
+        use gate_connect_core::routing_health::{RouteHealth, SessionHealth};
+        let platform = FakePlatform {
+            tools: vec![FakeTool {
+                status: Ok(Status::Connected),
+                ..FakeTool::new(ToolId::Codex)
+            }],
+            route: Some(RouteHealth::Unreachable),
+            session_health: Some(SessionHealth::Valid),
+            ..signed_in()
+        };
+        let verdicts = routing_verdicts(&platform);
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].state, "needs_attention");
+        assert!(verdicts[0].reason.is_some());
+        assert!(verdicts[0].next_action.is_some());
+    }
+
+    /// A pending opt-out reads as off while the login item is still there.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn launch_at_login_status_reads_a_deferred_opt_out_as_off() {
+        let platform = FakePlatform::default();
+        *platform.login_item.lock().unwrap() = true;
+        assert_eq!(
+            launch_at_login_status(&platform),
+            Ok(LaunchAtLoginStatus {
+                enabled: true,
+                pending_disable: false
+            })
+        );
+        *platform.opt_out_pending.lock().unwrap() = true;
+        assert_eq!(
+            launch_at_login_status(&platform),
+            Ok(LaunchAtLoginStatus {
+                enabled: false,
+                pending_disable: true
+            })
+        );
+        assert_eq!(
+            launch_at_login_status(&failing("login_item_registered")),
+            Err("login_item_registered: refused".into())
+        );
+    }
+
+    /// On clears a pending opt-out before registering, so the new choice is
+    /// never reported as pending, and puts the crash-restart policy back.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn set_launch_at_login_on_clears_the_marker_before_registering() {
+        let platform = FakePlatform::default();
+        *platform.opt_out_pending.lock().unwrap() = true;
+        assert_eq!(set_launch_at_login(&platform, true), Ok(()));
+        let mut expected = vec!["set_autostart_opt_out_pending false", "register_login_item"];
+        if cfg!(target_os = "macos") {
+            expected.push("arm_crash_restart");
+        }
+        assert_eq!(platform.calls(), expected);
+        assert!(*platform.login_item.lock().unwrap());
+
+        let platform = failing("set_autostart_opt_out_pending");
+        assert_eq!(
+            set_launch_at_login(&platform, true),
+            Err("set_autostart_opt_out_pending: refused".into())
+        );
+        assert_eq!(platform.calls(), ["set_autostart_opt_out_pending false"]);
+    }
+
+    /// Off removes the item now with routing off, and waits for a safe point
+    /// with routing on.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn set_launch_at_login_off_waits_while_routing_is_on() {
+        let platform = FakePlatform::default();
+        *platform.login_item.lock().unwrap() = true;
+        assert_eq!(set_launch_at_login(&platform, false), Ok(()));
+        assert_eq!(
+            platform.calls(),
+            ["record_autostart_opt_out", "deregister_login_item"]
+        );
+        assert!(!*platform.login_item.lock().unwrap());
+
+        let platform = FakePlatform::default();
+        *platform.login_item.lock().unwrap() = true;
+        *platform.proxy_running.lock().unwrap() = true;
+        assert_eq!(set_launch_at_login(&platform, false), Ok(()));
+        assert_eq!(platform.calls(), ["record_autostart_opt_out"]);
+        assert!(*platform.login_item.lock().unwrap());
+        assert!(*platform.opt_out_pending.lock().unwrap());
+
+        let platform = failing("deregister_login_item");
+        assert_eq!(
+            set_launch_at_login(&platform, false),
+            Err("deregister_login_item: refused".into())
+        );
+    }
+
+    /// 7fc3d16, the exit half. Exit used to clear the routing intent unless
+    /// Gate's own login item was on, so a user who relaunched any other way
+    /// came up unrouted. Exit reverts the system proxy and nothing else of
+    /// routing's: the journal holds no intent write, and neither the body nor
+    /// the `RunEvent::Exit` arm in lib.rs names one.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn exit_never_touches_the_routing_intent() {
+        let platform = signed_in();
+        *platform.proxy_running.lock().unwrap() = true;
+        exit(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "disconnect_tools_for_quit",
+                "record_clean_exit",
+                "disable_engine_quietly",
+                "forget_engine_relay_port",
+                "complete_pending_autostart_disable",
+            ]
+        );
+
+        let src = include_str!("commands.rs").replace("\r\n", "\n");
+        let at = src.find("pub(crate) fn exit(").expect("commands::exit");
+        let body = &src[at..at + src[at..].find("\n}\n").expect("end of exit")];
+        let lib = include_str!("lib.rs").replace("\r\n", "\n");
+        let arm_at = lib
+            .find("if let tauri::RunEvent::Exit = &event {")
+            .expect("the RunEvent::Exit arm");
+        let arm = &lib[arm_at..arm_at + lib[arm_at..].find("\n        });").expect("end of run")];
+        for (name, text) in [("commands::exit", body), ("RunEvent::Exit", arm)] {
+            for write in ["set_intent(", "set_routing_intent("] {
+                assert!(!text.contains(write), "{name} must not call {write}");
+            }
+        }
+        assert!(
+            arm.contains("commands::exit("),
+            "the Exit arm runs commands::exit"
+        );
+    }
+
+    /// The teardown runs once per process, and never for an updater relaunch,
+    /// which also keeps a pending launch-at-login opt-out armed.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn exit_tears_down_once_and_not_for_an_updater_relaunch() {
+        let platform = FakePlatform {
+            quit_claimed: std::sync::Mutex::new(true),
+            ..signed_in()
+        };
+        exit(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "record_clean_exit",
+                "disable_engine_quietly",
+                "forget_engine_relay_port",
+                "complete_pending_autostart_disable",
+            ]
+        );
+
+        let platform = FakePlatform {
+            updater_relaunching: std::sync::Mutex::new(Some(true)),
+            ..signed_in()
+        };
+        exit(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "record_clean_exit",
+                "disable_engine_quietly",
+                "forget_engine_relay_port",
+            ]
+        );
+        assert!(
+            !*platform.quit_claimed.lock().unwrap(),
+            "an updater relaunch leaves the teardown unclaimed"
+        );
+    }
+
+    /// Everything after the teardown runs whatever the teardown or the revert
+    /// did: the system proxy must not stay pointed at a dead port.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn exit_reverts_the_proxy_after_a_teardown_that_fails_or_panics() {
+        let rest = [
+            "record_clean_exit",
+            "disable_engine_quietly",
+            "forget_engine_relay_port",
+            "complete_pending_autostart_disable",
+        ];
+        for platform in [
+            FakePlatform {
+                quit_panics: true,
+                ..signed_in()
+            },
+            FakePlatform {
+                quit_failed: vec!["Codex".into()],
+                ..signed_in()
+            },
+            failing("disconnect_tools_for_quit"),
+        ] {
+            exit(&platform);
+            assert_eq!(platform.calls()[0], "disconnect_tools_for_quit");
+            assert_eq!(platform.calls()[1..], rest);
+        }
+
+        let platform = FakePlatform {
+            fail: [
+                ("record_clean_exit", "read-only".to_string()),
+                ("disable_engine_quietly", "busy".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..signed_in()
+        };
+        exit(&platform);
+        assert_eq!(platform.calls()[1..], rest);
     }
 }

@@ -10,6 +10,12 @@
 //! has no better home, and requires [`Prefs`], [`Proxy`], [`Windows`],
 //! [`Processes`], [`Account`], [`Session`] and [`Gateway`]. A command still
 //! takes `&impl Platform` and reaches all of them through it.
+//!
+//! [`App`] is the one sub-trait outside it: the tray and the login item, which
+//! need the app handle. The commands that reach them are generic over the
+//! Tauri runtime, so they take `&(impl Platform + App)` and get a
+//! [`TauriApp`], which carries their handle. Every other command keeps the unit
+//! [`TauriPlatform`]. Both are the same real platform, through [`Tauri`].
 
 use gate_connect_core::account::{AuthMode, BillingMode};
 use gate_connect_core::activity::Failure;
@@ -66,6 +72,22 @@ pub(crate) trait Platform:
     /// that would not let go, so the caller can abort.
     fn disconnect_all_managed(&self) -> anyhow::Result<()>;
 
+    /// What Gate would and would not see of the Hermes install right now.
+    /// Reads `config.yaml` and the domain catalog; writes nothing.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn hermes_upstream_coverage(&self) -> gate_connect_core::integrations::hermes::Coverage;
+
+    /// Claim the quit teardown: true exactly once per process.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn claim_quit_teardown(&self) -> bool;
+
+    /// Put every tool back on its own settings for an exit, and drain the
+    /// forwarder. `Err` means it could not run at all.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn disconnect_tools_for_quit(
+        &self,
+    ) -> Result<gate_connect_core::provider::QuitTeardown, String>;
+
     /// What each Gate-model tool's own config says, with drift folded back
     /// into the stored choice first.
     fn tool_model_states(&self) -> BTreeMap<&'static str, ToolModelView>;
@@ -87,6 +109,15 @@ pub(crate) trait Platform:
     /// drain it.
     fn report_backend_error(&self, context: &'static str, message: String);
 
+    /// [`Platform::report_backend_error`] for an error in hand, so analytics
+    /// files it under the reason its type names.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn report_backend_failure(&self, context: &'static str, err: &anyhow::Error);
+
+    /// Record one operator domain toggle in the audit log.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn audit_domain_toggled(&self, base_url: &str, slug: &str, enabled: bool);
+
     // ---- Security feed ----
 
     /// The process's one live security-event feed.
@@ -96,6 +127,15 @@ pub(crate) trait Platform:
 
     /// Mark (or unmark) the next exit as an updater-driven relaunch.
     fn set_updater_relaunching(&self, relaunching: bool);
+
+    /// Whether this exit is an updater-driven relaunch.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn updater_relaunching(&self) -> bool;
+
+    /// Record that this process reached a clean exit, which clears the
+    /// crash-restart streak.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn record_clean_exit(&self) -> anyhow::Result<()>;
 
     // ---- Analytics ----
 
@@ -188,6 +228,77 @@ pub(crate) trait Proxy {
     /// Hand a running engine the selected org.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn refresh_engine_org(&self, org_id: &str);
+
+    /// The proxy's state. Shells out to `certutil` on Windows for the CA
+    /// reading, which is why every caller runs it off the event loop.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn proxy_status(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState>;
+
+    /// Read the browser stores, once. Shells out to `certutil` per database.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_browser_store(&self) -> Option<gate_connect_core::proxy::NssTrust>;
+
+    /// Turn routing on, the one policy shared with the CLI and the startup
+    /// enable. Best-effort hiccups come back as warnings.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn enable_routing(
+        &self,
+    ) -> anyhow::Result<(
+        gate_connect_core::proxy::ProxyState,
+        Vec<gate_connect_core::routing::Warning>,
+    )>;
+
+    /// Turn routing off, the one policy shared with the CLI.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn disable_routing(
+        &self,
+    ) -> anyhow::Result<(
+        gate_connect_core::proxy::ProxyState,
+        Vec<gate_connect_core::routing::Warning>,
+    )>;
+
+    /// Turn one interception domain on or off.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn set_domain(
+        &self,
+        slug: &str,
+        enabled: bool,
+    ) -> anyhow::Result<gate_connect_core::proxy::ProxyState>;
+
+    /// Opt in or out of exporting the proxy to the session environment.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn set_env_export(&self, enabled: bool) -> anyhow::Result<()>;
+
+    /// Trust the CA. Raises the OS prompt.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn trust_ca(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState>;
+
+    /// Remove the CA's trust and its key material. Can raise the OS prompt.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn untrust_ca(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState>;
+
+    /// Whether the relay a config-routed tool points at answers.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_relay_route(&self) -> gate_connect_core::routing_health::RouteHealth;
+
+    /// What the verdict sweep remembers between sweeps, one per process.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn verdict_hold(&self) -> &std::sync::Mutex<gate_connect_core::routing_health::VerdictHold>;
+
+    /// Persist one whole verdict sweep.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn record_verdict_sweep(
+        &self,
+        results: &[(String, gate_connect_core::routing_health::RoutingVerdict)],
+    );
+
+    /// Revert the system proxy without a prompt, leaving the CA trusted.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn disable_engine_quietly(&self) -> anyhow::Result<()>;
+
+    /// Tell the forwarder the engine's relay is gone with this process.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn forget_engine_relay_port(&self);
 }
 
 /// The app's windows.
@@ -293,6 +404,52 @@ pub(crate) trait Session {
         identity: Identity,
         on_stored: &mut dyn FnMut(&Identity),
     ) -> anyhow::Result<SaveOutcome>;
+
+    /// Ask the gateway whether the stored session still works. Forces a
+    /// refresh on a refusal.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_session_health(&self) -> gate_connect_core::routing_health::SessionHealth;
+}
+
+/// What only a holder of the app handle reaches: the tray, and the login item
+/// the autostart plugin owns, with the opt-out marker that defers removing it.
+/// Not required by [`Platform`]; see the module docs.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) trait App {
+    /// Retint the tray mark and its status dot for the routing state.
+    fn update_tray_status(&self, routing_on: bool);
+
+    /// Register a login item for a routed session that has none, so a crash
+    /// cannot strand the system proxy with nothing to relaunch. Best-effort.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn arm_crash_safety_net(&self);
+
+    /// Finish a deferred launch-at-login opt-out, if one is pending.
+    fn complete_pending_autostart_disable(&self);
+
+    /// Whether a login item is registered.
+    fn login_item_registered(&self) -> anyhow::Result<bool>;
+
+    /// Register the login item.
+    fn register_login_item(&self) -> anyhow::Result<()>;
+
+    /// Remove the login item.
+    fn deregister_login_item(&self) -> anyhow::Result<()>;
+
+    /// Put the crash-restart policy back into the LaunchAgent the plugin just
+    /// rewrote. Best-effort.
+    #[cfg(target_os = "macos")]
+    fn arm_crash_restart(&self);
+
+    /// Whether a launch-at-login opt-out is waiting for a safe point.
+    fn autostart_opt_out_pending(&self) -> bool;
+
+    /// Set or clear the deferred opt-out marker.
+    fn set_autostart_opt_out_pending(&self, pending: bool) -> anyhow::Result<()>;
+
+    /// Record an opt-out. True when the login item can go now; false when
+    /// routing is on and the removal waits for a safe point.
+    fn record_autostart_opt_out(&self) -> anyhow::Result<bool>;
 }
 
 /// Reads from the gateway, and the cache that holds them.
@@ -381,7 +538,23 @@ impl SecurityFeed for gate_connect_core::security_feed::client::Feed {
 /// The running app: the process-wide handle from `setup`, and the core.
 pub(crate) struct TauriPlatform;
 
-impl Platform for TauriPlatform {
+/// The running app, for a command generic over the Tauri runtime: the same
+/// platform as [`TauriPlatform`], plus that command's own handle for [`App`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) struct TauriApp<R: tauri::Runtime> {
+    pub(crate) app: tauri::AppHandle<R>,
+}
+
+/// The real platform. Implemented by [`TauriPlatform`] and [`TauriApp`], so
+/// the sub-trait impls below are written once for both.
+pub(crate) trait Tauri {}
+
+impl Tauri for TauriPlatform {}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+impl<R: tauri::Runtime> Tauri for TauriApp<R> {}
+
+impl<T: Tauri> Platform for T {
     fn os(&self) -> &'static str {
         std::env::consts::OS
     }
@@ -430,6 +603,23 @@ impl Platform for TauriPlatform {
         gate_connect_core::registry::disconnect_all_managed()
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn hermes_upstream_coverage(&self) -> gate_connect_core::integrations::hermes::Coverage {
+        gate_connect_core::integrations::hermes::upstream_coverage()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn claim_quit_teardown(&self) -> bool {
+        crate::claim_quit_teardown()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn disconnect_tools_for_quit(
+        &self,
+    ) -> Result<gate_connect_core::provider::QuitTeardown, String> {
+        crate::disconnect_tools_for_quit()
+    }
+
     fn tool_model_states(&self) -> BTreeMap<&'static str, ToolModelView> {
         gate_connect_core::tool_models::states()
     }
@@ -449,12 +639,32 @@ impl Platform for TauriPlatform {
         crate::report_backend_error(context, message);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn report_backend_failure(&self, context: &'static str, err: &anyhow::Error) {
+        crate::report_backend_failure(context, err);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn audit_domain_toggled(&self, base_url: &str, slug: &str, enabled: bool) {
+        gate_connect_core::audit::domain_toggled(base_url, None, slug, enabled);
+    }
+
     fn security_feed(&self) -> &dyn SecurityFeed {
         crate::security_feed().as_ref()
     }
 
     fn set_updater_relaunching(&self, relaunching: bool) {
         crate::UPDATER_RELAUNCHING.store(relaunching, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn updater_relaunching(&self) -> bool {
+        crate::UPDATER_RELAUNCHING.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn record_clean_exit(&self) -> anyhow::Result<()> {
+        gate_connect_core::crash_restart::record_clean_exit()
     }
 
     fn claim_milestone(&self, name: &str) -> anyhow::Result<bool> {
@@ -466,7 +676,7 @@ impl Platform for TauriPlatform {
     }
 }
 
-impl Prefs for TauriPlatform {
+impl<T: Tauri> Prefs for T {
     fn preferences(&self) -> gate_connect_core::preferences::Preferences {
         gate_connect_core::preferences::load()
     }
@@ -504,7 +714,7 @@ impl Prefs for TauriPlatform {
     }
 }
 
-impl Proxy for TauriPlatform {
+impl<T: Tauri> Proxy for T {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn routed_clients_may_be_stale(&self) -> bool {
         crate::ROUTED_CLIENTS_MAY_BE_STALE.load(std::sync::atomic::Ordering::Acquire)
@@ -565,9 +775,91 @@ impl Proxy for TauriPlatform {
     fn refresh_engine_org(&self, org_id: &str) {
         gate_connect_core::proxy::manager().refresh_org(org_id);
     }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn proxy_status(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+        gate_connect_core::proxy::manager().status()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_browser_store(&self) -> Option<gate_connect_core::proxy::NssTrust> {
+        gate_connect_core::proxy::probe_browser_store()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn enable_routing(
+        &self,
+    ) -> anyhow::Result<(
+        gate_connect_core::proxy::ProxyState,
+        Vec<gate_connect_core::routing::Warning>,
+    )> {
+        gate_connect_core::routing::enable()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn disable_routing(
+        &self,
+    ) -> anyhow::Result<(
+        gate_connect_core::proxy::ProxyState,
+        Vec<gate_connect_core::routing::Warning>,
+    )> {
+        gate_connect_core::routing::disable()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn set_domain(
+        &self,
+        slug: &str,
+        enabled: bool,
+    ) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+        gate_connect_core::proxy::manager().set_domain(slug, enabled)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn set_env_export(&self, enabled: bool) -> anyhow::Result<()> {
+        gate_connect_core::proxy::set_env_export(enabled)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn trust_ca(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+        gate_connect_core::proxy::manager().trust_ca()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn untrust_ca(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+        gate_connect_core::proxy::manager().untrust_ca()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_relay_route(&self) -> gate_connect_core::routing_health::RouteHealth {
+        gate_connect_core::proxy::probe_relay_route()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn verdict_hold(&self) -> &std::sync::Mutex<gate_connect_core::routing_health::VerdictHold> {
+        &crate::VERDICT_HOLD
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn record_verdict_sweep(
+        &self,
+        results: &[(String, gate_connect_core::routing_health::RoutingVerdict)],
+    ) {
+        gate_connect_core::verdict_log::record_sweep(results);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn disable_engine_quietly(&self) -> anyhow::Result<()> {
+        gate_connect_core::proxy::manager().disable_quiet()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn forget_engine_relay_port(&self) {
+        gate_connect_core::proxy::forget_engine_relay_port();
+    }
 }
 
-impl Windows for TauriPlatform {
+impl<T: Tauri> Windows for T {
     fn set_popover_pinned(&self, pinned: bool) {
         crate::POPOVER_PINNED.store(pinned, std::sync::atomic::Ordering::Release);
     }
@@ -577,7 +869,7 @@ impl Windows for TauriPlatform {
     }
 }
 
-impl Processes for TauriPlatform {
+impl<T: Tauri> Processes for T {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn reopen_pending(&self, slug: &str) -> bool {
         crate::reopen_pending_for(slug)
@@ -589,7 +881,7 @@ impl Processes for TauriPlatform {
     }
 }
 
-impl Account for TauriPlatform {
+impl<T: Tauri> Account for T {
     fn reconcile_account(&self) -> anyhow::Result<()> {
         gate_connect_core::account::reconcile()
     }
@@ -651,7 +943,7 @@ impl Account for TauriPlatform {
     }
 }
 
-impl Session for TauriPlatform {
+impl<T: Tauri> Session for T {
     fn session_reading(&self) -> SessionReading {
         gate_connect_core::oauth::session_reading()
     }
@@ -690,9 +982,74 @@ impl Session for TauriPlatform {
     ) -> anyhow::Result<SaveOutcome> {
         gate_connect_core::analytics::save_identity(identity, on_stored)
     }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_session_health(&self) -> gate_connect_core::routing_health::SessionHealth {
+        crate::probe_session_health()
+    }
 }
 
-impl Gateway for TauriPlatform {
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+impl<R: tauri::Runtime> App for TauriApp<R> {
+    fn update_tray_status(&self, routing_on: bool) {
+        crate::update_tray_status(&self.app, routing_on);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn arm_crash_safety_net(&self) {
+        crate::arm_crash_safety_net(&self.app);
+    }
+
+    fn complete_pending_autostart_disable(&self) {
+        crate::complete_pending_autostart_disable(&self.app);
+    }
+
+    // The plugin's error is flattened to its `{:#}` text here, so a caller
+    // formatting the `anyhow::Error` with `{:#}` gets the very same string.
+
+    fn login_item_registered(&self) -> anyhow::Result<bool> {
+        use tauri_plugin_autostart::ManagerExt;
+        self.app
+            .autolaunch()
+            .is_enabled()
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
+    }
+
+    fn register_login_item(&self) -> anyhow::Result<()> {
+        use tauri_plugin_autostart::ManagerExt;
+        self.app
+            .autolaunch()
+            .enable()
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
+    }
+
+    fn deregister_login_item(&self) -> anyhow::Result<()> {
+        use tauri_plugin_autostart::ManagerExt;
+        self.app
+            .autolaunch()
+            .disable()
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn arm_crash_restart(&self) {
+        crate::arm_crash_restart(&self.app);
+    }
+
+    fn autostart_opt_out_pending(&self) -> bool {
+        gate_connect_core::proxy::autostart_optout::pending()
+    }
+
+    fn set_autostart_opt_out_pending(&self, pending: bool) -> anyhow::Result<()> {
+        gate_connect_core::proxy::autostart_optout::set_pending(pending)
+    }
+
+    fn record_autostart_opt_out(&self) -> anyhow::Result<bool> {
+        gate_connect_core::proxy::autostart_optout::record_disable()
+    }
+}
+
+impl<T: Tauri> Gateway for T {
     fn list_orgs(&self) -> anyhow::Result<Vec<Org>> {
         gate_connect_core::org::list_current()
     }
@@ -744,6 +1101,8 @@ impl Gateway for TauriPlatform {
 
 #[cfg(test)]
 pub(crate) mod fake {
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    use super::App;
     use super::{
         Account, Gateway, Platform, Prefs, Processes, Proxy, SecurityFeed, Session, Windows,
     };
@@ -848,6 +1207,54 @@ pub(crate) mod fake {
         pub model_states: BTreeMap<&'static str, ToolModelView>,
         /// What a model choice answers: whether the tool's config changed.
         pub model_applied: bool,
+
+        // ---- Proxy ----
+        /// Whether the engine runs. Routing on and off move it.
+        pub proxy_running: Mutex<bool>,
+        /// Best-effort hiccups routing on or off reports, as (component, reason).
+        pub routing_warnings: Vec<(&'static str, String)>,
+        /// What the one-off browser store probe answers.
+        pub browser_store: Option<gate_connect_core::proxy::NssTrust>,
+        /// What the relay probe answers. Unknown while `None`.
+        pub route: Option<gate_connect_core::routing_health::RouteHealth>,
+        /// What the session probe answers. Unknown while `None`.
+        pub session_health: Option<gate_connect_core::routing_health::SessionHealth>,
+        pub verdict_hold: Mutex<gate_connect_core::routing_health::VerdictHold>,
+
+        // ---- Exit ----
+        /// Whether the quit teardown was claimed already.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        pub quit_claimed: Mutex<bool>,
+        /// Tools the quit teardown could not put back.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        pub quit_failed: Vec<String>,
+        /// The quit teardown panics.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        pub quit_panics: bool,
+
+        // ---- Login item ----
+        pub login_item: Mutex<bool>,
+        /// The deferred opt-out marker.
+        pub opt_out_pending: Mutex<bool>,
+    }
+
+    /// The proxy state a fake engine reports.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn proxy_state(running: bool) -> gate_connect_core::proxy::ProxyState {
+        gate_connect_core::proxy::ProxyState {
+            running,
+            port: running.then_some(47002),
+            pac_port: None,
+            ca_trusted: true,
+            ca_nss_trust: None,
+            ca_nss_written_at: 0,
+            browser_proxy_channel: true,
+            env_export_opted_in: false,
+            env_export_separable: false,
+            relay_base_url: None,
+            forwarder_answering: None,
+            domains: Vec::new(),
+        }
     }
 
     impl FakePlatform {
@@ -894,6 +1301,40 @@ pub(crate) mod fake {
                 Some(f) => Err(f.clone()),
                 None => Ok(answer),
             }
+        }
+
+        /// Move the engine for routing on or off, and hand back the warnings.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn route(
+            &self,
+            name: &'static str,
+            running: bool,
+        ) -> anyhow::Result<(
+            gate_connect_core::proxy::ProxyState,
+            Vec<gate_connect_core::routing::Warning>,
+        )> {
+            self.attempt(name, name)?;
+            *self.proxy_running.lock().unwrap() = running;
+            let warnings = self
+                .routing_warnings
+                .iter()
+                .map(|(component, reason)| gate_connect_core::routing::Warning {
+                    component,
+                    error: anyhow::anyhow!("{reason}"),
+                })
+                .collect();
+            Ok((proxy_state(running), warnings))
+        }
+
+        /// The engine's state now, after `entry` was recorded.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn proxy_reading(
+            &self,
+            name: &'static str,
+            entry: impl Into<String>,
+        ) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+            self.attempt(name, entry)?;
+            Ok(proxy_state(*self.proxy_running.lock().unwrap()))
         }
     }
 
@@ -961,6 +1402,37 @@ pub(crate) mod fake {
             self.attempt("disconnect_all_managed", "disconnect_all_managed")
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn hermes_upstream_coverage(&self) -> gate_connect_core::integrations::hermes::Coverage {
+            self.record("hermes_upstream_coverage");
+            gate_connect_core::integrations::hermes::Coverage {
+                defaulted: true,
+                unknown: vec!["llm.example.com".into()],
+                ..Default::default()
+            }
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn claim_quit_teardown(&self) -> bool {
+            !std::mem::replace(&mut *self.quit_claimed.lock().unwrap(), true)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn disconnect_tools_for_quit(
+            &self,
+        ) -> Result<gate_connect_core::provider::QuitTeardown, String> {
+            self.attempt("disconnect_tools_for_quit", "disconnect_tools_for_quit")
+                .map_err(|e| format!("{e:#}"))?;
+            if self.quit_panics {
+                panic!("the teardown fell over");
+            }
+            Ok(gate_connect_core::provider::QuitTeardown {
+                managed: self.quit_failed.len(),
+                failed: self.quit_failed.clone(),
+                removed: Vec::new(),
+            })
+        }
+
         fn tool_model_states(&self) -> BTreeMap<&'static str, ToolModelView> {
             self.record("tool_model_states");
             self.model_states.clone()
@@ -988,12 +1460,32 @@ pub(crate) mod fake {
             self.record(format!("report_backend_error {context}: {message}"));
         }
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn report_backend_failure(&self, context: &'static str, err: &anyhow::Error) {
+            self.record(format!("report_backend_failure {context}: {err:#}"));
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn audit_domain_toggled(&self, base_url: &str, slug: &str, enabled: bool) {
+            self.record(format!("audit_domain_toggled {base_url} {slug} {enabled}"));
+        }
+
         fn security_feed(&self) -> &dyn SecurityFeed {
             &self.feed
         }
 
         fn set_updater_relaunching(&self, relaunching: bool) {
             *self.updater_relaunching.lock().unwrap() = Some(relaunching);
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn updater_relaunching(&self) -> bool {
+            self.updater_relaunching.lock().unwrap().unwrap_or(false)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn record_clean_exit(&self) -> anyhow::Result<()> {
+            self.attempt("record_clean_exit", "record_clean_exit")
         }
 
         fn claim_milestone(&self, name: &str) -> anyhow::Result<bool> {
@@ -1122,6 +1614,97 @@ pub(crate) mod fake {
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn refresh_engine_org(&self, org_id: &str) {
             self.record(format!("refresh_engine_org {org_id}"));
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn proxy_status(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+            self.proxy_reading("proxy_status", "proxy_status")
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn probe_browser_store(&self) -> Option<gate_connect_core::proxy::NssTrust> {
+            self.record("probe_browser_store");
+            self.browser_store
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn enable_routing(
+            &self,
+        ) -> anyhow::Result<(
+            gate_connect_core::proxy::ProxyState,
+            Vec<gate_connect_core::routing::Warning>,
+        )> {
+            self.route("enable_routing", true)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn disable_routing(
+            &self,
+        ) -> anyhow::Result<(
+            gate_connect_core::proxy::ProxyState,
+            Vec<gate_connect_core::routing::Warning>,
+        )> {
+            self.route("disable_routing", false)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn set_domain(
+            &self,
+            slug: &str,
+            enabled: bool,
+        ) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+            self.proxy_reading("set_domain", format!("set_domain {slug} {enabled}"))
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn set_env_export(&self, enabled: bool) -> anyhow::Result<()> {
+            self.attempt("set_env_export", format!("set_env_export {enabled}"))
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn trust_ca(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+            self.proxy_reading("trust_ca", "trust_ca")
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn untrust_ca(&self) -> anyhow::Result<gate_connect_core::proxy::ProxyState> {
+            self.proxy_reading("untrust_ca", "untrust_ca")
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn probe_relay_route(&self) -> gate_connect_core::routing_health::RouteHealth {
+            self.record("probe_relay_route");
+            self.route
+                .unwrap_or(gate_connect_core::routing_health::RouteHealth::Unknown)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn verdict_hold(
+            &self,
+        ) -> &std::sync::Mutex<gate_connect_core::routing_health::VerdictHold> {
+            &self.verdict_hold
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn record_verdict_sweep(
+            &self,
+            results: &[(String, gate_connect_core::routing_health::RoutingVerdict)],
+        ) {
+            let results: Vec<_> = results
+                .iter()
+                .map(|(slug, verdict)| format!("{slug}={}", verdict.as_str()))
+                .collect();
+            self.record(format!("record_verdict_sweep {}", results.join(" ")));
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn disable_engine_quietly(&self) -> anyhow::Result<()> {
+            self.attempt("disable_engine_quietly", "disable_engine_quietly")
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn forget_engine_relay_port(&self) {
+            self.record("forget_engine_relay_port");
         }
     }
 
@@ -1304,6 +1887,73 @@ pub(crate) mod fake {
                 _ => {}
             }
             Ok(outcome)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn probe_session_health(&self) -> gate_connect_core::routing_health::SessionHealth {
+            self.record("probe_session_health");
+            self.session_health
+                .unwrap_or(gate_connect_core::routing_health::SessionHealth::Unknown)
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    impl App for FakePlatform {
+        fn update_tray_status(&self, routing_on: bool) {
+            self.record(format!("update_tray_status {routing_on}"));
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn arm_crash_safety_net(&self) {
+            self.record("arm_crash_safety_net");
+        }
+
+        fn complete_pending_autostart_disable(&self) {
+            self.record("complete_pending_autostart_disable");
+        }
+
+        fn login_item_registered(&self) -> anyhow::Result<bool> {
+            self.check("login_item_registered")?;
+            Ok(*self.login_item.lock().unwrap())
+        }
+
+        fn register_login_item(&self) -> anyhow::Result<()> {
+            self.attempt("register_login_item", "register_login_item")?;
+            *self.login_item.lock().unwrap() = true;
+            Ok(())
+        }
+
+        fn deregister_login_item(&self) -> anyhow::Result<()> {
+            self.attempt("deregister_login_item", "deregister_login_item")?;
+            *self.login_item.lock().unwrap() = false;
+            Ok(())
+        }
+
+        #[cfg(target_os = "macos")]
+        fn arm_crash_restart(&self) {
+            self.record("arm_crash_restart");
+        }
+
+        fn autostart_opt_out_pending(&self) -> bool {
+            *self.opt_out_pending.lock().unwrap()
+        }
+
+        fn set_autostart_opt_out_pending(&self, pending: bool) -> anyhow::Result<()> {
+            self.attempt(
+                "set_autostart_opt_out_pending",
+                format!("set_autostart_opt_out_pending {pending}"),
+            )?;
+            *self.opt_out_pending.lock().unwrap() = pending;
+            Ok(())
+        }
+
+        /// Deferred while the engine runs, as the real marker is while routing
+        /// is on.
+        fn record_autostart_opt_out(&self) -> anyhow::Result<bool> {
+            self.attempt("record_autostart_opt_out", "record_autostart_opt_out")?;
+            let routing_on = *self.proxy_running.lock().unwrap();
+            *self.opt_out_pending.lock().unwrap() = routing_on;
+            Ok(!routing_on)
         }
     }
 
