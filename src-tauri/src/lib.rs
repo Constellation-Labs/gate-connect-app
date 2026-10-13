@@ -2156,7 +2156,7 @@ static ROUTED_CLIENTS_MAY_BE_STALE: AtomicBool = AtomicBool::new(false);
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn routed_clients_stale() -> bool {
-    ROUTED_CLIENTS_MAY_BE_STALE.load(Ordering::Acquire)
+    commands::routed_clients_stale(&TauriPlatform)
 }
 
 /// Whether the startup thread's auto-enable has yet to settle, one way or the
@@ -2176,7 +2176,7 @@ static STARTUP_ENABLE_PENDING: AtomicBool = AtomicBool::new(true);
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn routing_startup_pending() -> bool {
-    STARTUP_ENABLE_PENDING.load(Ordering::Acquire)
+    commands::routing_startup_pending(&TauriPlatform)
 }
 
 /// Settles [`STARTUP_ENABLE_PENDING`] when the startup thread ends, whichever
@@ -2342,7 +2342,7 @@ fn drain_for_label(label: &str) -> Vec<BackendError> {
 /// from the payload, so one webview cannot name another's.
 #[tauri::command]
 fn drain_backend_errors<R: tauri::Runtime>(window: tauri::Window<R>) -> Vec<BackendError> {
-    drain_for_label(window.label())
+    commands::drain_backend_errors(&TauriPlatform, window.label())
 }
 
 /// Process names of the AI tools we're willing to close, each paired with the
@@ -3069,7 +3069,7 @@ fn fire_notification(
 /// somewhere to start.
 #[tauri::command]
 fn security_feed_state() -> gate_connect_core::security_feed::FeedState {
-    security_feed().state()
+    commands::security_feed_state(&TauriPlatform)
 }
 
 /// Whether the events from before this connection could be fetched.
@@ -3081,7 +3081,7 @@ fn security_feed_state() -> gate_connect_core::security_feed::FeedState {
 /// an empty feed.
 #[tauri::command]
 fn security_feed_history_ok() -> bool {
-    security_feed().history_ok()
+    commands::security_feed_history_ok(&TauriPlatform)
 }
 
 /// The events the feed has buffered, oldest first.
@@ -3092,7 +3092,7 @@ fn security_feed_history_ok() -> bool {
 /// events", which is a different claim entirely.
 #[tauri::command]
 fn security_feed_recent() -> Vec<gate_connect_core::security_feed::SecurityEvent> {
-    security_feed().recent()
+    commands::security_feed_recent(&TauriPlatform)
 }
 
 /// AC6's recovery action: the "Try again" behind an Unavailable feed.
@@ -3101,7 +3101,7 @@ fn security_feed_recent() -> Vec<gate_connect_core::security_feed::SecurityEvent
 /// who clicks Retry sees something happen instead of waiting out a 60s sleep.
 #[tauri::command]
 fn security_feed_retry() {
-    security_feed().retry_now();
+    commands::security_feed_retry(&TauriPlatform);
 }
 
 /// Record the provider domains Gate switched on for one tool.
@@ -3632,40 +3632,7 @@ struct TeardownReportDto {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn teardown_report() -> TeardownReportDto {
-    let mut report = TeardownReportDto {
-        defaults: Vec::new(),
-        still_gate: Vec::new(),
-        awaiting_reopen: Vec::new(),
-        failed: Vec::new(),
-    };
-    for integ in registry::registry() {
-        if integ.hidden_in_ui() {
-            continue;
-        }
-        let slug = integ.id().to_string();
-        let status = integ.status();
-        // Not on the machine: it has no configuration to put back, and listing it
-        // would pad a report the user reads as a to-do list.
-        if matches!(status, Ok(gate_connect_core::Status::NotInstalled)) {
-            continue;
-        }
-        let tool = |next_action: &'static str| TeardownToolDto {
-            slug: slug.clone(),
-            name: integ.display_name().to_string(),
-            next_action,
-        };
-        match status {
-            Ok(gate_connect_core::Status::Connected)
-            | Ok(gate_connect_core::Status::Drifted(_))
-            | Ok(gate_connect_core::Status::Overridden(_)) => {
-                report.still_gate.push(tool("retry_disconnect"))
-            }
-            Ok(_) if reopen_pending_for(&slug) => report.awaiting_reopen.push(tool("reopen_tool")),
-            Ok(_) => report.defaults.push(tool("none")),
-            Err(_) => report.failed.push(tool("retry_check")),
-        }
-    }
-    report
+    commands::teardown_report(&TauriPlatform)
 }
 
 /// One running AI tool, as the diagnostics report lists it.
@@ -4503,7 +4470,7 @@ fn reopen_running_agents(only: Option<Vec<String>>) -> u32 {
 /// genuine user exit.
 #[tauri::command]
 fn set_updater_relaunching(relaunching: bool) {
-    UPDATER_RELAUNCHING.store(relaunching, Ordering::Release);
+    commands::set_updater_relaunching(&TauriPlatform, relaunching);
 }
 /// Whether the OAuth session has died and the user must sign in again.
 ///
@@ -4699,7 +4666,7 @@ fn notify_session_expired(app: &tauri::AppHandle) {
 /// back to normal click-outside-to-dismiss behavior.
 #[tauri::command]
 fn unpin_popover() {
-    POPOVER_PINNED.store(false, Ordering::Release);
+    commands::unpin_popover(&TauriPlatform);
 }
 
 /// Pin the popover open for the duration of a call that raises a system trust
@@ -4718,7 +4685,7 @@ fn unpin_popover() {
 /// there was a dismissal to guard against.
 #[tauri::command]
 fn pin_popover() {
-    POPOVER_PINNED.store(true, Ordering::Release);
+    commands::pin_popover(&TauriPlatform);
 }
 
 /// Open (or refocus) the full-size onboarding window. `source` rides along as
