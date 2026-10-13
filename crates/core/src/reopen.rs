@@ -30,6 +30,15 @@
 //! to a routing value is the case this gives up, and the config status still
 //! reports that one.
 //!
+//! **Changed and changed back is not a change.** Every quit takes Gate out of
+//! every tool's configuration and the next launch puts the same values back,
+//! and a single "last changed" time moved on both: every session that outlived
+//! a relaunch of Gate read as stale while it held exactly what the file says
+//! again, and its row read Not protected over a tool that was routing. So the
+//! record is a short history of fingerprinted changes, and the question is
+//! whether the configuration a process loaded - the last change at or before
+//! its start - is the one in place now.
+//!
 //! **No bound means no claim.** When there is no configuration file to read a
 //! time from, this answers "not pending" rather than degrading to "everything
 //! running is stale". Nothing on disk supports the claim that a running process
@@ -40,6 +49,7 @@
 //! Everything here is pure. The process table walk, the `stat` and the registry
 //! lookup live in the Tauri shell; this module takes the numbers they produce.
 
+use crate::config_changes::Change;
 use crate::routing_health::ConfigState;
 
 /// Everything the reopen decision is made from, for one tool.
@@ -57,10 +67,10 @@ pub struct ReopenEvidence<'a> {
     /// when nothing is running, which is the ordinary case and the one where
     /// there is nothing to reopen.
     pub process_starts: &'a [u64],
-    /// Unix seconds at which Gate last changed this tool's configuration file,
-    /// from [`crate::config_changes`]. `None` when the tool has no
-    /// configuration file, or Gate has no recorded change to it.
-    pub config_changed_at: Option<u64>,
+    /// Gate's changes to this tool's configuration file, oldest first, from
+    /// [`crate::config_changes`]. Empty when the tool has no configuration
+    /// file, or Gate has no recorded change to it.
+    pub config_changes: &'a [Change],
     /// Unix seconds at which Gate's CA certificate was last written.
     ///
     /// **The second thing a tool reads once at startup**, and the one this
@@ -88,33 +98,46 @@ pub struct ReopenEvidence<'a> {
     pub ca_cert_changed_at: Option<u64>,
 }
 
-/// Is a process for this tool running that predates the last change to the
-/// tool's configuration, and is therefore still using whatever it loaded then?
+/// Is a process for this tool running that loaded a configuration other than
+/// the one in place now, or predates Gate's CA certificate, and is therefore
+/// still using whatever it loaded then?
 ///
-/// Strictly *before*: a process that started in the same second as the write is
-/// not called stale. Second granularity is all a process start time carries on
-/// the platforms this runs on, and the tie is far more likely to be a tool that
-/// was reopened promptly than one that missed the change.
+/// Strictly *before*: a process that started in the same second as a change is
+/// taken to have loaded it. Second granularity is all a process start time
+/// carries on the platforms this runs on, and the tie is far more likely to be
+/// a tool that was reopened promptly than one that missed the change.
 pub fn reopen_pending(ev: &ReopenEvidence) -> bool {
     if !ev.process_names_known {
         return false;
     }
-    // The later of the two, because either one going stale is enough: a
-    // process that predates the newest thing it reads at startup is holding
-    // something out of date, and which of the two it is makes no difference to
-    // the remedy. Taking the max rather than testing them separately also
-    // keeps one bound and one comparison.
-    let changed_at = [ev.config_changed_at, ev.ca_cert_changed_at]
-        .into_iter()
-        .flatten()
-        .max();
-    let Some(changed_at) = changed_at else {
+    ev.process_starts.iter().any(|&start| {
+        missed_config_change(ev.config_changes, start)
+            || ev.ca_cert_changed_at.is_some_and(|ca| start < ca)
+    })
+}
+
+/// Did a process started at `start` load a configuration other than the one in
+/// place now?
+///
+/// What it loaded is the last change at or before its start. A process older
+/// than every change kept is stale, which is what a single stamp said about it
+/// too; with no change recorded at all there is nothing to support the claim.
+/// A view recorded before fingerprints existed matches nothing, so a record
+/// carried over from an older build decides exactly as it used to.
+fn missed_config_change(changes: &[Change], start: u64) -> bool {
+    let Some(current) = changes.last() else {
         // Nothing on disk records a change, so nothing supports the claim that
         // a running process missed one. See the module docs: the old fallback
         // here was Gate's own process start, which is the defect this replaces.
         return false;
     };
-    ev.process_starts.iter().any(|start| *start < changed_at)
+    changes
+        .iter()
+        .rposition(|change| change.at <= start)
+        .is_none_or(|loaded| {
+            loaded + 1 != changes.len()
+                && (changes[loaded].view.is_none() || changes[loaded].view != current.view)
+        })
 }
 
 /// The two endpoints a reopen notice can name: where the tool's traffic is
@@ -175,12 +198,29 @@ mod tests {
     const BEFORE_CONFIG: u64 = 1_756_702_980; // Sep 1
     const AFTER_CONFIG: u64 = 1_757_433_720; // Sep 9
 
+    /// A single change with no view: what one stamp used to record.
+    fn stamp(at: Option<u64>) -> &'static [Change] {
+        Box::leak(at.map(|at| Change { at, view: None }).into_iter().collect())
+    }
+
+    /// Changes at the given times, each with its own view.
+    fn changes(list: &[(u64, &str)]) -> &'static [Change] {
+        Box::leak(
+            list.iter()
+                .map(|(at, view)| Change {
+                    at: *at,
+                    view: Some(view.to_string()),
+                })
+                .collect(),
+        )
+    }
+
     /// The config-only case, which is what every test before AG-933 was about.
     fn evidence(starts: &[u64], config_changed_at: Option<u64>) -> ReopenEvidence<'_> {
         ReopenEvidence {
             process_names_known: true,
             process_starts: starts,
-            config_changed_at,
+            config_changes: stamp(config_changed_at),
             ca_cert_changed_at: None,
         }
     }
@@ -194,7 +234,7 @@ mod tests {
         ReopenEvidence {
             process_names_known: true,
             process_starts: starts,
-            config_changed_at,
+            config_changes: stamp(config_changed_at),
             ca_cert_changed_at,
         }
     }
@@ -294,7 +334,7 @@ mod tests {
         let ev = ReopenEvidence {
             process_names_known: false,
             process_starts: &[BEFORE_CONFIG],
-            config_changed_at: Some(CONFIG_WRITE),
+            config_changes: stamp(Some(CONFIG_WRITE)),
             ca_cert_changed_at: Some(CONFIG_WRITE),
         };
         assert!(!reopen_pending(&ev));
@@ -337,6 +377,76 @@ mod tests {
             Some(CONFIG_WRITE)
         )));
         assert!(!reopen_pending(&evidence(&[], Some(CONFIG_WRITE))));
+    }
+
+    fn history(starts: &[u64], list: &[(u64, &str)]) -> bool {
+        reopen_pending(&ReopenEvidence {
+            process_names_known: true,
+            process_starts: starts,
+            config_changes: changes(list),
+            ca_cert_changed_at: None,
+        })
+    }
+
+    /// The report this history exists for: a session connected before Gate was
+    /// quit, still running when it is opened again. The quit took Gate's values
+    /// out and the launch put the same ones back, so what the session loaded is
+    /// what the file says, and it is routing.
+    #[test]
+    fn a_quit_and_relaunch_does_not_strand_a_session_that_outlived_it() {
+        let quit_and_relaunch = [(100, "gate"), (300, "own"), (400, "gate")];
+        assert!(!history(&[200], &quit_and_relaunch));
+    }
+
+    /// The other half: a session opened while Gate was closed loaded no Gate
+    /// values, and the launch that put them back is news to it.
+    #[test]
+    fn a_session_opened_while_gate_was_closed_is_pending() {
+        let quit_and_relaunch = [(100, "gate"), (300, "own"), (400, "gate")];
+        assert!(history(&[350], &quit_and_relaunch));
+    }
+
+    /// Values that really moved - a different port, a different `NO_PROXY` -
+    /// still make an older session stale.
+    #[test]
+    fn a_view_that_really_changed_is_pending() {
+        assert!(history(&[200], &[(100, "gate-a"), (300, "gate-b")]));
+    }
+
+    /// Older than every change kept: what it loaded is not known, so it is
+    /// stale, as the single stamp said.
+    #[test]
+    fn a_process_older_than_every_kept_change_is_pending() {
+        assert!(history(
+            &[50],
+            &[(100, "gate"), (300, "own"), (400, "gate")]
+        ));
+    }
+
+    /// A record from before fingerprints matches nothing, so it decides as the
+    /// stamp did rather than reading as unchanged.
+    #[test]
+    fn a_legacy_record_decides_as_the_stamp_did() {
+        let mixed = [
+            Change {
+                at: 100,
+                view: None,
+            },
+            Change {
+                at: 300,
+                view: Some("gate".into()),
+            },
+        ];
+        let pending = |start| {
+            reopen_pending(&ReopenEvidence {
+                process_names_known: true,
+                process_starts: &[start],
+                config_changes: &mixed,
+                ca_cert_changed_at: None,
+            })
+        };
+        assert!(pending(200));
+        assert!(!pending(300));
     }
 
     #[test]

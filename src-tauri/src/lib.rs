@@ -2871,7 +2871,7 @@ fn agent_row_for(
 /// Code: it reads the `~/.claude/settings.json` the claude-code integration
 /// rewrites, so a scan asking which `claude-code` processes are stale must find
 /// it, and it goes stale on that file's changes rather than on the desktop
-/// app's (`config_changed_at_unix` is keyed by this slug). Filing it under
+/// app's (`config_changes_of` is keyed by this slug). Filing it under
 /// `anthropic` dropped it from every one of those scans, and Gate reported no
 /// restart needed over a session still running without the route.
 ///
@@ -2946,7 +2946,7 @@ fn agent_needs_reopen(process: &sysinfo::Process, since: Option<u64>) -> bool {
             gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
                 process_names_known: true,
                 process_starts: &[process.start_time()],
-                config_changed_at: at_or_after(config_changed_at_unix(slug), since),
+                config_changes: &changes_since(config_changes_of(slug), since),
                 ca_cert_changed_at: at_or_after(ca_cert_changed_at_unix(), since),
             })
         })
@@ -2962,6 +2962,23 @@ fn agent_needs_reopen(process: &sysinfo::Process, since: Option<u64>) -> bool {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn at_or_after(changed_at: Option<u64>, since: Option<u64>) -> Option<u64> {
     changed_at.filter(|&changed_at| since.is_none_or(|since| changed_at >= since))
+}
+
+/// [`at_or_after`] for a configuration's history: kept whole when its newest
+/// change is at or after `since`, and empty otherwise. Whole, because what an
+/// older process loaded is read off the earlier changes; it is the newest one
+/// the toggle has to have made.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn changes_since(
+    changes: Vec<gate_connect_core::config_changes::Change>,
+    since: Option<u64>,
+) -> Vec<gate_connect_core::config_changes::Change> {
+    let newest = changes.last().map(|change| change.at);
+    if at_or_after(newest, since).is_some() {
+        changes
+    } else {
+        Vec::new()
+    }
 }
 
 /// The user's Settings choices. Never fails: a missing or mangled file loads as
@@ -3325,7 +3342,7 @@ fn agent_process_names(slug: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// When Gate last changed this tool's configuration file, in Unix seconds.
+/// Gate's changes to this tool's configuration file, oldest first.
 ///
 /// The durable half of the reopen decision: the file is what the tool reads at
 /// startup, and the record survives restarts of Gate, reboots and reinstalls -
@@ -3339,15 +3356,16 @@ fn agent_process_names(slug: &str) -> Vec<&'static str> {
 /// nothing Gate routes by changed. [`gate_connect_core::config_changes`] is
 /// stamped only when Gate's write actually changed the file.
 ///
-/// `None` for a tool with no configuration file of its own (the environment
+/// Empty for a tool with no configuration file of its own (the environment
 /// channel) and for one Gate has no recorded change to. Both mean the same
 /// thing to the caller: no recorded change, so no claim.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn config_changed_at_unix(slug: &str) -> Option<u64> {
-    let integration = gate_connect_core::registry::ToolId::from_slug(slug)
-        .and_then(gate_connect_core::registry::find)?;
-    let path = integration.config_location()?;
-    gate_connect_core::config_changes::changed_at(std::path::Path::new(&path))
+fn config_changes_of(slug: &str) -> Vec<gate_connect_core::config_changes::Change> {
+    gate_connect_core::registry::ToolId::from_slug(slug)
+        .and_then(gate_connect_core::registry::find)
+        .and_then(|integration| integration.config_location())
+        .map(|path| gate_connect_core::config_changes::history(std::path::Path::new(&path)))
+        .unwrap_or_default()
 }
 
 /// When Gate's CA certificate was last written, as Unix seconds.
@@ -3415,7 +3433,7 @@ fn reopen_pending_for(slug: &str) -> bool {
     gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
         process_names_known: true,
         process_starts: &starts,
-        config_changed_at: config_changed_at_unix(slug),
+        config_changes: &config_changes_of(slug),
         ca_cert_changed_at: ca_cert_changed_at_unix(),
     })
 }
@@ -7758,10 +7776,14 @@ mod tests {
     #[test]
     fn reopen_counts_only_changes_since_the_bound() {
         let missed = |started: u64, config: Option<u64>, ca: Option<u64>, since: Option<u64>| {
+            let config = config
+                .map(|at| gate_connect_core::config_changes::Change { at, view: None })
+                .into_iter()
+                .collect();
             gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
                 process_names_known: true,
                 process_starts: &[started],
-                config_changed_at: at_or_after(config, since),
+                config_changes: &changes_since(config, since),
                 ca_cert_changed_at: at_or_after(ca, since),
             })
         };

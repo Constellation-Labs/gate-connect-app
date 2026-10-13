@@ -43,6 +43,17 @@ pub(crate) fn load_object_json5(path: &Path) -> Result<Option<Map<String, Value>
 /// carry other user config; the atomic write keeps a crash mid-write from
 /// corrupting the tool's own file.
 pub(crate) fn write_object(path: &Path, settings: &Map<String, Value>) -> Result<()> {
+    write_object_with_view(path, settings, None)
+}
+
+/// [`write_object`], recording `view` as the part of the file a running
+/// process acts on ([`crate::config_changes::write_with_view`]). `None` takes
+/// the whole file.
+pub(crate) fn write_object_with_view(
+    path: &Path,
+    settings: &Map<String, Value>,
+    view: Option<&[u8]>,
+) -> Result<()> {
     // Equal values are not a change, however the file is laid out. `serde_json`
     // sorts keys on the way out, so a file the tool itself wrote in another
     // order would otherwise be rewritten just to reorder it, and that rewrite
@@ -62,7 +73,8 @@ pub(crate) fn write_object(path: &Path, settings: &Map<String, Value>) -> Result
     let mut body = serde_json::to_string_pretty(settings)
         .with_context(|| format!("serializing {}", path.display()))?;
     body.push('\n');
-    crate::config_changes::write(path, body.as_bytes(), 0o600)
+    let bytes = body.as_bytes();
+    crate::config_changes::write_with_view(path, bytes, 0o600, view.unwrap_or(bytes))
         .with_context(|| format!("writing {}", path.display()))
 }
 

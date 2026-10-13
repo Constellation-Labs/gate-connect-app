@@ -926,8 +926,24 @@ fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
     // 0o600 defensively (the file no longer carries the Gate key - the relay
     // injects it - but may hold other user config). Atomic-write protects
     // against partial writes tearing the TOML on crash.
-    crate::config_changes::write(path, doc.to_string().as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))
+    crate::config_changes::write_with_view(
+        path,
+        doc.to_string().as_bytes(),
+        0o600,
+        routing_view(doc).as_bytes(),
+    )
+    .with_context(|| format!("writing {}", path.display()))
+}
+
+/// What a running Codex acted on: the document without the tables Codex
+/// writes for itself - a project's trust level, a dismissed notice - which it
+/// adds whenever the user answers a prompt, and which would otherwise make
+/// every round trip of Gate's values read as news.
+fn routing_view(doc: &DocumentMut) -> String {
+    let mut view = doc.clone();
+    view.remove("projects");
+    view.remove("notice");
+    view.to_string()
 }
 
 fn new_table() -> Table {
