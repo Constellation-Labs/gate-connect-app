@@ -2173,6 +2173,20 @@ pub mod testing {
     /// Same, for the device-name label.
     pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
 
+    /// This install's CA as (certificate, private key) PEM, loaded or created
+    /// exactly as the engine's manager does it.
+    ///
+    /// For `tests/catalog_routing.rs` in its OS-trust mode, which runs only in
+    /// the `catalog-routing` CI job: the job trusts this CA machine-wide with
+    /// `proxy trust-ca --system-trust`, and the test boots the engine on the
+    /// same pair so a client validating through the OS store accepts its
+    /// leaves. The key stays `pub(crate)` on `Ca`; this is the one door.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub fn engine_ca_for_tests() -> anyhow::Result<(String, String)> {
+        let ca = super::ca::load_or_create()?;
+        Ok((ca.cert_pem().to_string(), ca.key_pem().to_string()))
+    }
+
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
         super::inject_attribution(headers, None, None);
     }
