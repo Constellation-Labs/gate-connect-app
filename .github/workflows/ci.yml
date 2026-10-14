@@ -10,6 +10,9 @@ on:
     # feat/new-app-ui too, so the Rust caches below are saved on its ref: a
     # PR can restore only from its own ref and its base's, and most PRs are
     # based on it. Drop it when #151 merges and main is the only base.
+    # The cost: every push to it runs CI twice, once here and once as #151's
+    # synchronize. And a burst of merges cancels the earlier push runs, which
+    # rust-cache does not save from, so only the last one refreshes the cache.
     branches: [main, feat/new-app-ui]
   pull_request:
   workflow_dispatch:

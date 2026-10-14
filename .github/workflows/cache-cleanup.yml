@@ -18,6 +18,10 @@ permissions:
 jobs:
   cleanup:
     name: Delete the PR's caches
+    # A fork's PR gets a read-only token whatever `permissions:` asks for, so
+    # the delete would 403 and leave a red check on a closed PR. Its caches age
+    # out on their own a week later.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Delete
