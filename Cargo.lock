@@ -1579,8 +1579,11 @@ dependencies = [
  "anyhow",
  "clap",
  "gate-connect-core",
+ "libc",
+ "rcgen",
  "reqwest",
  "rpassword",
+ "serde_json",
  "tempfile",
 ]
 
