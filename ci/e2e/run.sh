@@ -87,6 +87,13 @@ if [ "$OS" = "Windows" ]; then
   export XDG_CONFIG_HOME="$(winpath "$HOME/.config")"
   export XDG_DATA_HOME="$(winpath "$HOME/.local/share")"
   export XDG_CACHE_HOME="$(winpath "$HOME/.cache")"
+  # Hermes on Windows defaults to %LOCALAPPDATA%\hermes, which this script does
+  # not redirect, while Gate under GATE_CONNECT_TEST_HOME writes Hermes' config
+  # to <test home>\.hermes and ignores HERMES_HOME. Point Hermes at that same
+  # directory so it reads what Gate wrote. Its runtime stays where the workflow
+  # installed it: a launch under another HERMES_HOME borrows the installing
+  # root's dependency state rather than bootstrapping its own (upstream #123238).
+  export HERMES_HOME="$(winpath "$HOME/.hermes")"
 else
   # opencode resolves its config via XDG; CI runners often pre-set
   # XDG_CONFIG_HOME elsewhere, so pin the XDG roots under our scratch home or
@@ -503,9 +510,8 @@ start_engine() {
   # regression test, and the half that runs on Windows. `serve_pac` rebuilds the
   # body per request from the engine's LIVE rule set, so the served script is a
   # direct read of what the running engine believes - no tool, no MITM, no CA,
-  # no TLS. hermes covers this on Linux and macOS by routing real traffic, but
-  # the workflow does not install hermes on Windows, so without this the
-  # platform that lacked the watcher longest would still assert nothing about it.
+  # no TLS. hermes covers this by routing real traffic, but only when it runs;
+  # this keeps the platform that lacked the watcher longest asserting on its own.
   #
   # Phase A only, like the per-OS channel checks and for a sharper reason: the
   # domains file outlives the phase, so by phase B openrouter is already on and
@@ -1154,12 +1160,20 @@ fi
 # Same idea for OpenClaw: its catalog id drifts, so pick a current anthropic one
 # from `openclaw infer model list` (JSON lines) rather than pinning. The request
 # reaches the relay regardless of whether the id is "real" (the mock 200s), but a
-# catalog id keeps openclaw from bailing before it sends.
+# catalog id keeps openclaw from bailing before it sends. Since 2026.9.x the
+# list has no `anthropic` rows until a hosted catalog is loaded. It still lists
+# the same ids under `claude-cli`, and `anthropic/<id>` is their canonical ref,
+# so fall back to those. Deprecated rows are skipped. Rows now nest
+# `contextWindows` with ids of their own, so take the first "id" only.
 OPENCLAW_MODEL=""
 if command -v openclaw >/dev/null 2>&1; then
-  OPENCLAW_MODEL=$(openclaw infer model list 2>/dev/null \
-    | grep '"provider":"anthropic"' | grep -v -- '-latest"' \
-    | head -n1 | sed -E 's/.*"id":"([^"]+)".*/\1/')
+  OPENCLAW_ROWS=$(openclaw infer model list 2>/dev/null \
+    | grep -v '"status":"deprecated"' | grep -v -- '-latest"')
+  for p in anthropic claude-cli; do
+    OPENCLAW_MODEL=$(printf '%s\n' "$OPENCLAW_ROWS" | grep "\"provider\":\"$p\"" \
+      | head -n1 | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    [ -n "$OPENCLAW_MODEL" ] && break
+  done
 fi
 
 # Run every installed tool against the relay and assert the given auth mode's
@@ -1245,12 +1259,12 @@ run_engine_tools() {
   #     Nothing dials Anthropic: /v1/messages is a rewrite prefix, so the engine
   #     never opens the upstream leg.
   #
-  #     Needle is /v1/chat/completions: the anthropic catalog entry's upstream
-  #     is the bare host, so the forwarded path is the app's own, and since
-  #     2026.8.1 openclaw's anthropic transport is the OpenAI-compatible
-  #     endpoint (`api=openai-completions`) rather than /v1/messages. The
-  #     catalog names that path, so a capture here also proves the intercept
-  #     still covers it; a pass on /v1/messages would mean openclaw reverted.
+  #     Needle is /v1/messages: the anthropic catalog entry's upstream is the
+  #     bare host, so the forwarded path is the app's own. In 2026.8.x
+  #     openclaw's anthropic transport was the OpenAI-compatible
+  #     endpoint (`api=openai-completions`). Since 2026.9.x it is the native
+  #     Messages API again (`api=anthropic-messages`), so the request lands on
+  #     /v1/messages. A pass on /v1/chat/completions would mean it moved back.
   #
   #     We seed a minimal anthropic provider block (with a dummy apiKey so
   #     openclaw actually fires the call): gate-connect detects OpenClaw off the
@@ -1276,7 +1290,7 @@ run_engine_tools() {
     # spell `openclaw`. Asserting it on that premise would turn this row red
     # with no product bug behind it. Capture the real User-Agent, add it to the
     # table in `proxy/mod.rs`, then drop this override.
-    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" client= -- \
+    run_tool "openclaw" "openclaw" "/v1/messages" "$mode" client= -- \
       openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 
@@ -1309,7 +1323,10 @@ run_engine_tools() {
     echo "::notice::skipping hermes - proxy-routed, and the engine is not up"
   else
     # HERMES_HOME when set (see where HOME is redirected), as Hermes and Gate read.
+    # On Windows HERMES_HOME is the native form of $HOME/.hermes; write through
+    # the msys form so the shell-side file ops stay in one path style.
     hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+    [ "$OS" = "Windows" ] && hermes_home="$HOME/.hermes"
     mkdir -p "$hermes_home"
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
       > "$hermes_home/config.yaml"
@@ -1408,13 +1425,10 @@ fi
 # starting would skip claude-code, openclaw and hermes and stay green. Here a
 # skip becomes a FAIL naming the tool.
 #
-# The one declared absence is Hermes on Windows, which the workflow does not
-# install (install.ps1 has no browser-skip switch); the gateway manifest
-# publishes the same gap as an exception. A new absence goes here, with its
+# Every OS expects the same set. A new absence goes here, per OS, with its
 # reason, or it fails.
 # ---------------------------------------------------------------------------
 EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw hermes"
-[ "$OS" = "Windows" ] && EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw"
 # A harness that started and failed, or a mode whose login failed, has already
 # counted its FAIL above; only one that never reached `run_tool` is counted here.
 for mode in api-key oauth; do
