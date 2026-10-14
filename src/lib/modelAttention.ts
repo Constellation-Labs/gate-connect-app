@@ -152,9 +152,7 @@ export function modelAttention({
             ? `${gone[0]} is no longer available`
             : "Your Gate models are no longer available",
         message:
-          gone.length === 1
-            ? `${gone[0]} left Gate, so requests will fail. Choose another model or return to App default. Gate will not pick a replacement.`
-            : `All ${gone.length} chosen models left Gate, so requests will fail. Choose another or return to App default. Gate will not pick a replacement.`,
+          "Requests will fail until you choose another model or go back to App default. Gate will not pick a replacement.",
       };
     }
   }

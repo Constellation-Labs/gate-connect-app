@@ -679,8 +679,9 @@ async fn proxy(
         return Ok(served_refusal(
             StatusCode::SERVICE_UNAVAILABLE,
             "gate_not_routing",
-            "Gate Connect is not routing right now, so Gate models are unavailable. \
-             Turn routing on in Gate Connect, or switch this app back to its own model.",
+            "Gate Connect is not running. This tool is set to use Gate models, which \
+             work only while Gate Connect is open. Open Gate Connect and try again, \
+             or switch this tool back to its own model.",
         ));
     } else {
         Route::Passthrough

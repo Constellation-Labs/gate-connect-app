@@ -130,7 +130,7 @@ test.describe("new UI routing verdict", () => {
     await app.openSection("ChatGPT / Codex");
 
     await expect(
-      app.page.getByText(/It was already running when its configuration changed/),
+      app.page.getByText(/It was open when its settings changed/),
     ).toBeVisible();
     await expect(app.page.getByText(/In use:/)).toHaveCount(0);
     await expect(app.page.getByText("https://gw.example/codex")).toHaveCount(0);

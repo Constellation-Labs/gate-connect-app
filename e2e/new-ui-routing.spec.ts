@@ -687,6 +687,56 @@ test.describe("new UI: buffered backend failures", () => {
  * transparency the product trades on - the user can go and read it, which beats
  * any sentence about what Gate does and does not touch.
  */
+/**
+ * OpenCode routes the providers it already has through its own config and the
+ * ones added later through the proxy variables, which reach every command-line
+ * tool that reads them. So its switch asks first, once: the answer is about
+ * more than OpenCode.
+ */
+test.describe("new UI: OpenCode's proxy variables", () => {
+  const opencode = {
+    proxy: { running: true, ca_trusted: true },
+    tools: [
+      {
+        slug: "opencode",
+        name: "OpenCode",
+        upstream_provider_name: "your existing providers",
+        default_upstream_url: "https://openrouter.ai/api/v1",
+        status: { kind: "detected" as const },
+      },
+    ],
+  };
+
+  test("turning OpenCode on asks first, and Turn on sets the variables", async ({ boot }) => {
+    const app = await boot(opencode);
+
+    await app.routeApp("OpenCode");
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(
+      dialog.getByRole("heading", { name: "Route OpenCode and your terminal through Gate?" }),
+    ).toBeVisible();
+    await expect(dialog).toContainText("like git, curl and npm");
+    expect(await callsFor(app.page, "connect_tool")).toEqual([]);
+
+    await dialog.getByRole("button", { name: "Turn on" }).click();
+
+    await expect.poll(() => app.lastCall("proxy_set_env_export")).toEqual({ enabled: true });
+    expect(await callsFor(app.page, "connect_tool")).toHaveLength(1);
+  });
+
+  test("cancelling writes nothing", async ({ boot }) => {
+    const app = await boot(opencode);
+
+    await app.routeApp("OpenCode");
+    await app.page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    expect(await callsFor(app.page, "connect_tool")).toEqual([]);
+    expect(await app.lastCall("proxy_set_env_export")).toBeNull();
+  });
+});
+
 test.describe("new UI: the review names the file it will change", () => {
   const driftedWithPath = {
     proxy: { running: true, ca_trusted: true },
