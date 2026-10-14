@@ -832,6 +832,7 @@ fn refresh_stored(
     // failure, rather than an attempt of its own. Retrying in turn would put
     // each caller behind every earlier one's timeout, on exactly the wake from
     // sleep where the network is likeliest to be down.
+    REFRESH_CALLERS.fetch_add(1, Ordering::SeqCst);
     let mut last = REFRESH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut basis = seen;
     if session_generation() != seen {
@@ -923,6 +924,23 @@ static REFRESH_LOCK: Mutex<Option<SharedFailure>> = Mutex::new(None);
 /// Bumped as each refresh ends, so a caller that waited for one can tell it
 /// ran. Outside the lock, because the caller reads it before taking the lock.
 static REFRESH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+
+/// Bumped by each caller of [`refresh_stored`] that has read the session and
+/// is about to take [`REFRESH_LOCK`]. Only read by tests, through
+/// [`refresh_callers_for_tests`].
+static REFRESH_CALLERS: AtomicU64 = AtomicU64::new(0);
+
+/// How many callers have reached [`REFRESH_LOCK`] so far in this process.
+///
+/// A caller counted here has already read the generation and the attempt count
+/// it will be judged by. So while a refresh is held in flight, a test can wait
+/// for this to reach its number of callers and know each one will share that
+/// refresh, with no sleep standing in for "they have all arrived". Test-only
+/// seam; never read in production.
+#[doc(hidden)]
+pub fn refresh_callers_for_tests() -> u64 {
+    REFRESH_CALLERS.load(Ordering::SeqCst)
+}
 
 /// A refresh failure, kept for the callers that waited on it. `RefreshError`
 /// holds an `anyhow::Error`, which cannot be cloned, so it keeps the
