@@ -44,6 +44,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function wd(method, path, body) {
   const res = await fetch(WD_URL + path, {
     method,
+    // A command that never answers (a window still loading, say) must fail
+    // the step rather than hold it until the job's timeout.
+    signal: AbortSignal.timeout(Number(process.env.WD_COMMAND_TIMEOUT_MS || 30000)),
     headers: { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -100,6 +103,30 @@ async function inEachWindow(fn) {
     }
     const hit = await fn(h);
     if (hit) return hit;
+  }
+  return null;
+}
+
+// An XPath string literal for text that may hold either kind of quote.
+function lit(text) {
+  if (!text.includes('"')) return `"${text}"`;
+  if (!text.includes("'")) return `'${text}'`;
+  return `concat(${text.split('"').map((p) => `"${p}"`).join(`, '"', `)})`;
+}
+
+// The first displayed, enabled element in the current window matching the
+// XPath, as a WebDriver element id. Found by the driver itself (Find
+// Elements), not returned from a script, so no driver has to serialize a
+// node out of the page.
+async function findShown(xpath) {
+  const els = await wd('POST', s('/elements'), { using: 'xpath', value: xpath });
+  for (const el of els) {
+    const id = el[W3C_ELEMENT] || el.ELEMENT;
+    try {
+      if ((await wd('GET', s(`/element/${id}/displayed`))) && (await wd('GET', s(`/element/${id}/enabled`)))) return id;
+    } catch {
+      // Stale between the find and the check: the page moved on.
+    }
   }
   return null;
 }
@@ -170,7 +197,8 @@ async function main(argv) {
             url: location.href,
             text: (document.body && document.body.innerText) || '',
             buttons: controls('button, a, [role=button]').map((b) => [b.textContent.trim(), ...labelOf(b)].join(' | ')),
-            fields: controls('input, textarea').map((i) => labelOf(i).join(' | ') + ' = ' + JSON.stringify(i.type === 'password' ? '(hidden)' : i.value)),
+            // Lengths, not values: a field may hold the key.
+            fields: controls('input, textarea').map((i) => labelOf(i).join(' | ') + ' = (' + i.value.length + ' characters)'),
           };`).catch((e) => ({ error: e.message }));
         console.log(`=== window ${h}`);
         console.log(JSON.stringify(page, null, 2));
@@ -195,42 +223,35 @@ async function main(argv) {
     }
     case 'click': {
       const [secs, text] = args;
+      const t = lit(text);
+      const xpath = `//*[self::button or self::a or @role="button"][normalize-space(.)=${t} or @aria-label=${t}]`;
       const hit = await poll(Number(secs), async (h) => {
-        const el = await exec(
-          `${SCAN}
-          const want = arguments[0];
-          return controls('button, a, [role=button]').find((b) =>
-            [(b.textContent || '').trim(), ...labelOf(b)].some((t) => t === want) && !b.disabled) || null;`,
-          [text],
-        );
-        return el ? { handle: h, el } : null;
+        const id = await findShown(xpath);
+        return id ? { handle: h, id } : null;
       });
       if (!hit || hit.miss !== undefined) fail(`no button "${text}" within ${secs}s ${hit && hit.miss ? '(' + hit.miss + ')' : ''}`);
       // Element Click: the driver scrolls it into view and clicks its centre
       // with a pointer, rather than a synthetic click() from the page.
-      await wd('POST', s(`/element/${hit.el[W3C_ELEMENT]}/click`), {});
+      await wd('POST', s(`/element/${hit.id}/click`), {});
       console.log(`clicked "${text}" in window ${hit.handle}`);
       return;
     }
     case 'type': {
       const [secs, label, text] = args;
+      const t = lit(label);
+      const match = `[contains(@aria-label, ${t}) or contains(@placeholder, ${t}) or @id = //label[contains(normalize-space(.), ${t})]/@for]`;
+      const xpath = `//input${match} | //textarea${match}`;
       const hit = await poll(Number(secs), async (h) => {
-        const el = await exec(
-          `${SCAN}
-          const want = arguments[0];
-          return controls('input, textarea').find((i) => labelOf(i).some((t) => t.includes(want))) || null;`,
-          [label],
-        );
-        return el ? { handle: h, el } : null;
+        const id = await findShown(xpath);
+        return id ? { handle: h, id } : null;
       });
       if (!hit || hit.miss !== undefined) fail(`no field labelled "${label}" within ${secs}s ${hit && hit.miss ? '(' + hit.miss + ')' : ''}`);
-      const id = hit.el[W3C_ELEMENT];
-      await wd('POST', s(`/element/${id}/click`), {});
+      await wd('POST', s(`/element/${hit.id}/click`), {});
       // Element Send Keys: key events through the driver, so React sees the
       // input events it sees from a person. Setting .value would skip them.
-      await wd('POST', s(`/element/${id}/value`), { text });
-      const value = await wd('GET', s(`/element/${id}/property/value`));
-      if (value !== text) fail(`field "${label}" reads ${value.length} characters after typing ${text.length}`);
+      await wd('POST', s(`/element/${hit.id}/value`), { text });
+      const value = await wd('GET', s(`/element/${hit.id}/property/value`));
+      if (value !== text) fail(`field "${label}" reads ${String(value).length} characters after typing ${text.length}`);
       console.log(`typed ${text.length} characters into "${label}" in window ${hit.handle}`);
       return;
     }

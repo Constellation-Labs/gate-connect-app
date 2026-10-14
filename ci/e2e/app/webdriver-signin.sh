@@ -153,12 +153,14 @@ fi
   MOCK_CERT="$(native "$WORK/leaf.pem")" MOCK_KEY="$(native "$WORK/leaf.key")" \
   "$(command -v node)" "$(native "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
+# native(): on Windows the curl on PATH may be the system one, which cannot
+# read a /tmp path.
 for _ in $(seq 1 50); do
-  if curl -fsS --cacert "$WORK/ca.pem" "https://$GATEWAY_HOST/health" >/dev/null 2>&1; then break; fi
+  if curl -fsS --cacert "$(native "$WORK/ca.pem")" "https://$GATEWAY_HOST/health" >/dev/null 2>&1; then break; fi
   sleep 0.2
 done
 # The name resolves to the mock and the leaf verifies against the throwaway CA.
-curl -fsS --cacert "$WORK/ca.pem" "https://$GATEWAY_HOST/health"
+curl -fsS --cacert "$(native "$WORK/ca.pem")" "https://$GATEWAY_HOST/health"
 echo
 # And the OS trust store accepts it, which is what the app's TLS stack asks.
 if [ "$OS" = windows ]; then
@@ -220,7 +222,7 @@ endstep
 
 step "launch"
 "${WD[@]}" start "$(native "$APP")" 120
-"${WD[@]}" windows
+"${WD[@]}" windows || true
 "${WD[@]}" dump >"$OUT/01-launched.page.txt" 2>&1 || true
 "${WD[@]}" screenshot "$OUT/01-launched.png" || true
 endstep
