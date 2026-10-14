@@ -187,9 +187,9 @@ jobs:
       # since the failure happens before WebKit picks a renderer).
       #
       # Fix: strip the bundled copies so the dynamic loader falls back to
-      # the system libwayland, repack, then re-sign - the tauri-action step
-      # above already signed the pre-strip file, and its signature won't
-      # match the patched bytes.
+      # the system libwayland, repack, then re-sign (release only) - on a
+      # release the tauri-action step above already signed the pre-strip
+      # file, and its signature won't match the patched bytes.
       #
       # libdbus-1 is stripped for the same reason and rides along here.
       # Un-vendoring libdbus-sys (see the `keyring` entry in the root
