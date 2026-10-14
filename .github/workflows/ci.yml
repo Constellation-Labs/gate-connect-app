@@ -2,8 +2,9 @@ name: CI
 
 # Continuous checks for the Gate Connect Tauri app. The Rust job runs on
 # all three desktop platforms so the platform-gated modules (proxy
-# managers, CA modules, system-proxy backends) actually compile in CI;
-# platform bundles are built by release.yml on version tags.
+# managers, CA modules, system-proxy backends) actually compile in CI.
+# `bundle` builds the platform installers through bundle.yml, the same workflow
+# release.yml builds a tag with, minus the signing (AG-905).
 
 on:
   push:
@@ -333,6 +334,25 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  # The installers a tag would ship, built unsigned on every pull request so a
+  # bundling failure shows up here instead of on the release tag, and so later
+  # jobs have the real app to install and launch (`bundle-<platform>`).
+  #
+  # No `secrets:` and so no secret in reach, which is the point on a public repo
+  # where a fork can open a pull request: bundle.yml's release-only steps are
+  # skipped with `release: false`, and would find every secret empty anyway.
+  bundle:
+    name: Bundle
+    uses: ./.github/workflows/bundle.yml
+    with:
+      release: false
+      # Apple Silicon only on a pull request: the universal build compiles
+      # Rust twice and took about 21 minutes cold. A push (to main or
+      # feat/new-app-ui) and a manual run keep the universal build, and a
+      # release always builds it, so an Intel-only break is caught on the
+      # merge, not only on the tag.
+      macos_universal: ${{ github.event_name != 'pull_request' }}
 
   # The seam neither other suite covers: a CLICK in the real frontend reaching
   # the real Rust command, and the real backend's state deciding what the UI
