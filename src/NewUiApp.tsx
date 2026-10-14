@@ -2579,9 +2579,30 @@ export function NewUiApp() {
   const [browserRestart, setBrowserRestart] = useState<{
     title: string;
     body: string;
+    /** Label of the button that re-runs the browser write; failures only. */
+    retry?: string;
     /** Raised by a removal, which the `ca_trusted` edge must not clear. */
     removed?: boolean;
   } | null>(null);
+  const [browserRetryBusy, setBrowserRetryBusy] = useState(false);
+  /**
+   * The failure notes' button. `proxy_trust_ca` re-runs the browser write
+   * without a prompt, since the anchor is already trusted while one is up, and
+   * the effects below swap the note on the reading it records - so there is
+   * nothing to set here but the error.
+   */
+  const retryBrowserTrust = useCallback(async () => {
+    if (browserRetryBusy) return;
+    setBrowserRetryBusy(true);
+    try {
+      await proxyTrustCa();
+    } catch (e) {
+      setActionError(classifyError(e, "trust_ca"));
+    } finally {
+      await refreshRouting();
+      setBrowserRetryBusy(false);
+    }
+  }, [browserRetryBusy, refreshRouting]);
   const caTrustedSeen = useRef<boolean | null>(null);
   const nssSeen = useRef<ProxyState["ca_nss_trust"]>(null);
   useEffect(() => {
@@ -2645,8 +2666,8 @@ export function NewUiApp() {
   /**
    * ...and what retires it when the user does what it asked.
    *
-   * The failure notes prescribe an action - install a package, unlock the
-   * store, then turn routing off and on - and doing it re-runs the write and
+   * The failure notes prescribe an action - install a package or unlock the
+   * store, then press the note's retry - and doing it re-runs the write and
    * changes `ca_nss_trust`. What it does not change is `ca_trusted`, which was
    * true throughout, so the effect above never fires again and the note stood
    * over a machine that had just been fixed.
@@ -2678,8 +2699,8 @@ export function NewUiApp() {
    * where the trust effect owns the note.
    *
    * **Declared after the retire effect on purpose.** React runs effects in
-   * declaration order, and the repair flow - install certutil, turn routing
-   * off and on - lands one snapshot where the reading leaves a failure *and*
+   * declaration order, and the repair flow - install certutil, press the
+   * retry - lands one snapshot where the reading leaves a failure *and*
    * a store was written. The retire effect clears the failure note; this then
    * raises the reopen note the write calls for. The other way round, the
    * reopen note was raised and wiped in the same commit.
@@ -3149,6 +3170,15 @@ export function NewUiApp() {
       <NoteBanner
         title={browserRestart.title}
         body={browserRestart.body}
+        action={
+          browserRestart.retry
+            ? {
+                label: browserRestart.retry,
+                busy: browserRetryBusy,
+                onClick: () => void retryBrowserTrust(),
+              }
+            : undefined
+        }
         onDismiss={() => setBrowserRestart(null)}
       />
     ) : undefined;

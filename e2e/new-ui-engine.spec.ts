@@ -263,6 +263,20 @@ test.describe("new UI certificate and diagnostics", () => {
     await expect(app.page.getByText("Your browsers can’t see the certificate")).toHaveCount(0);
   });
 
+  test("on Linux, a failed browser write offers a retry that re-runs it", async ({ boot }) => {
+    // The note's button, rather than the routing toggle the copy used to ask
+    // for: `proxy_trust_ca` reaches the browser write directly.
+    const app = await boot({ platform: "linux", proxy: { running: true, ca_trusted: false } });
+    await app.patch({ proxy: { ca_trusted: true, ca_nss_trust: "not_written" } });
+    await app.emit("proxy-state-changed");
+    await expect(app.page.getByText("Your browsers don’t have the certificate yet")).toBeVisible();
+    expect(await app.lastCall("proxy_trust_ca")).toBeNull();
+
+    await app.page.getByRole("button", { name: "Add to browsers" }).click();
+
+    await expect.poll(() => app.lastCall("proxy_trust_ca")).not.toBeNull();
+  });
+
   test("an untrusted certificate is not offered for removal", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: false } });
 

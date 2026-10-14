@@ -288,10 +288,13 @@ export function ReopenAlert({
 export function NoteBanner({
   title,
   body,
+  action,
   onDismiss,
 }: {
   title: string;
   body: string;
+  /** A fix the window can run, drawn before the dismiss. */
+  action?: { label: string; busy?: boolean; onClick: () => void };
   onDismiss: () => void;
 }) {
   return (
@@ -307,6 +310,18 @@ export function NoteBanner({
           </p>
           <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
         </div>
+        {action && (
+          // The outline `xs` button `banner/update` draws (`744:37756`): a
+          // secondary fix on a shell notice, not the card's one filled action.
+          <button
+            type="button"
+            onClick={action.onClick}
+            disabled={action.busy}
+            className="flex h-6 shrink-0 items-center rounded-control border border-base-input bg-base-card px-2.5 py-1 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-xs transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            {action.label}
+          </button>
+        )}
         <button
           type="button"
           onClick={onDismiss}
