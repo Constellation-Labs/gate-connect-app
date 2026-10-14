@@ -239,7 +239,16 @@ async function main(argv) {
       if (!hit || hit.miss !== undefined) fail(`no button "${text}" within ${secs}s ${hit && hit.miss ? '(' + hit.miss + ')' : ''}`);
       // Element Click: the driver scrolls it into view and clicks its centre
       // with a pointer, rather than a synthetic click() from the page.
-      await wd('POST', s(`/element/${hit.id}/click`), {});
+      try {
+        await wd('POST', s(`/element/${hit.id}/click`), {});
+      } catch (e) {
+        // "Get started" closes the intro window, and WebKitWebDriver can
+        // answer the click from the window it just lost. The click landed;
+        // the next step finds out whether it did what it should.
+        if (!/no such window/.test(String(e.message))) throw e;
+        console.log(`clicked "${text}" in window ${hit.handle}, which closed`);
+        return;
+      }
       console.log(`clicked "${text}" in window ${hit.handle}`);
       return;
     }
