@@ -448,7 +448,7 @@ fn cmd_billing_mode(mode: Option<String>) -> Result<()> {
     {
         if proxy::engine_likely_running() {
             println!(
-                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the previous mode until it is toggled off and on."
+                "note: the Gate proxy appears to be running in another process (likely the Gate Connect app). It keeps the previous mode until you quit and reopen Gate Connect, or restart `gate-connect proxy enable`."
             );
         }
     }

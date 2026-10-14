@@ -200,13 +200,14 @@ export function sectionHint(group: Group): string | undefined {
  * user whose other stores took the CA and only needed exactly that - a loop
  * with no exit, prescribed at the moment they were reading closely.
  *
- * **What it asks for has to be reachable.** Not "switch routing on again":
- * `manager_linux::enable` returns early when the client is already connected,
- * *before* `ca::ensure_trusted`, and this note is raised from inside the enable
- * that just succeeded - so routing is already on while the user reads it, and
- * re-enabling runs nothing. Off and on again does reach the write, because
- * `ensure_trusted` deliberately calls `ensure_trusted_nss` outside its
- * `is_trusted` short-circuit.
+ * **What it asks for has to be reachable.** Each failure carries `retry`, the
+ * label of a button on the note that runs `proxy_trust_ca`. That reaches the
+ * write directly: `ensure_trusted` calls `ensure_trusted_nss` outside its
+ * `is_trusted` short-circuit, and the anchor is already trusted whenever this
+ * note is up, so the retry raises no admin prompt. The copy used to say "turn
+ * routing off and on again", which re-ran the same write through
+ * `manager_linux::enable` - until the routing switch went, and with it the only
+ * way to turn routing off short of a reset.
  *
  * The failure cases are still raised on the transition rather than standing,
  * even though they describe conditions that persist. That is a deliberate
@@ -217,13 +218,13 @@ export function sectionHint(group: Group): string | undefined {
  *
  * What *does* retire one of these is the reading changing: the shell clears the
  * note when `ca_nss_trust` leaves the variant that raised it, so a user who
- * installs the package and cycles routing sees the sentence go rather than
+ * installs the package and presses the retry sees the sentence go rather than
  * being left reading a claim they have just falsified.
  */
 export function browserTrustRestartAdvice(
   platform: Platform,
   nss: ProxyState["ca_nss_trust"],
-): { title: string; body: string } | undefined {
+): { title: string; body: string; retry?: string } | undefined {
   if (platform !== "linux") return undefined;
   const store = trustStoreName(platform);
   // Named rather than "Chromium-based", which is a fact about engines and not
@@ -235,7 +236,8 @@ export function browserTrustRestartAdvice(
   if (nss === "tools_missing") {
     return {
       title: "Your browsers can’t see the certificate",
-      body: `${family} need certutil to get the certificate. Install libnss3-tools (Debian/Ubuntu) or nss-tools (Fedora/RHEL), then turn routing off and on again. Command-line tools are unaffected.`,
+      body: `${family} need certutil to get the certificate. Install libnss3-tools (Debian/Ubuntu) or nss-tools (Fedora/RHEL), then add it. Command-line tools are unaffected.`,
+      retry: "Add to browsers",
     };
   }
   if (nss === "write_failed") {
@@ -244,7 +246,8 @@ export function browserTrustRestartAdvice(
       // prints a line per entry, so the title must not undercount what the
       // body and the report both say.
       title: "A browser certificate store refused the certificate",
-      body: `The certificate was refused by at least one browser store; the diagnostics report says which. Fix it, then turn routing off and on again. Firefox with a Primary Password needs it imported by hand. ${BROWSER_RESTART}`,
+      body: `At least one browser didn’t accept the certificate. The diagnostics report says which. Fix it, then try again. Firefox with a Primary Password needs it imported by hand. ${BROWSER_RESTART}`,
+      retry: "Try again",
     };
   }
   if (nss === "not_written") {
@@ -254,7 +257,8 @@ export function browserTrustRestartAdvice(
     // about in the report, and no package to install.
     return {
       title: "Your browsers don’t have the certificate yet",
-      body: `${family} don’t have the certificate yet, so turn routing off and on again to add it. Command-line tools are unaffected.`,
+      body: `${family} don’t have the certificate yet. Command-line tools are unaffected.`,
+      retry: "Add to browsers",
     };
   }
   // `trusted` is a write that landed in the browser stores; no reading at all
