@@ -1922,14 +1922,24 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn serve_refuses_while_an_enabled_proxy_hosts_the_relay() {
+        // Restores the prior env on drop, like `TestHome` in `manager_core`
+        // (that helper is private to its own test module).
         struct Home {
             dir: std::path::PathBuf,
+            prev_home: Option<std::ffi::OsString>,
+            prev_secrets: Option<std::ffi::OsString>,
             _guard: std::sync::MutexGuard<'static, ()>,
         }
         impl Drop for Home {
             fn drop(&mut self) {
-                std::env::remove_var("GATE_CONNECT_TEST_HOME");
-                std::env::remove_var("GATE_CONNECT_TEST_SECRETS");
+                fn restore(key: &str, prev: &Option<std::ffi::OsString>) {
+                    match prev {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+                restore("GATE_CONNECT_TEST_HOME", &self.prev_home);
+                restore("GATE_CONNECT_TEST_SECRETS", &self.prev_secrets);
                 let _ = std::fs::remove_dir_all(&self.dir);
             }
         }
@@ -1937,9 +1947,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gate-connect-relay-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
         std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
         std::env::set_var("GATE_CONNECT_TEST_SECRETS", dir.join("secrets"));
-        let _home = Home { dir, _guard: guard };
+        let _home = Home {
+            dir,
+            prev_home,
+            prev_secrets,
+            _guard: guard,
+        };
 
         // Nothing in the home but the snapshot: no account, so a `serve` that
         // got past the check fails on the account load instead of serving.

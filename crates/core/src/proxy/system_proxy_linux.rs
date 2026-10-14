@@ -176,6 +176,13 @@ fn session_effects_suppressed() -> bool {
 /// down on that thread instead of run. That is what lets a unit test check what
 /// "off" says to the session without the session being the developer's own.
 /// Compiled out of every non-test build.
+///
+/// Only writes are recorded. The `gsettings get` reads in
+/// [`gsettings_answer`] (used by [`snapshot`] through `gsettings_capture`,
+/// and by [`browser_proxy_channel`]) are not routed through the recorder, and
+/// a running recording also lifts [`session_effects_suppressed`]. So a test
+/// that calls those while recording runs the real `gsettings get` against the
+/// developer's session.
 #[cfg(test)]
 mod session_recorder {
     use std::cell::RefCell;
