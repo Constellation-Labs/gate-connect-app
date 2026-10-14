@@ -14,18 +14,79 @@ name: E2E (real tools)
 # truth.
 on:
   pull_request:
+  # feat/new-app-ui too: its merges are what ships next, and gate's weekly
+  # last_verified refresh counts only push/schedule/dispatch runs, never
+  # pull_request ones. Drop it when #151 merges and main is the only branch.
   push:
-    branches: [main]
+    branches: [main, feat/new-app-ui]
+    # A release tag always runs the suite; the guard below never skips it.
+    tags: ['v*']
   workflow_dispatch:
-  # schedule:
-  #   - cron: '0 6 * * *'
+    inputs:
+      alert:
+        description: Post to Slack if this run fails, as the nightly does (to test the alert)
+        type: boolean
+        default: false
+      force:
+        description: Run the suite even if this commit already passed (AG-902 guard)
+        type: boolean
+        default: false
+  # Nightly at 06:00 UTC. GitHub fires `schedule` from the default branch only,
+  # so this starts running when it reaches main; a failure posts to Slack (the
+  # `alert` job below). Third-party CLIs are pinned, so a red night means our
+  # code or a model/vendor change, not a silent CLI upgrade.
+  schedule:
+    - cron: '0 6 * * *'
 
 permissions:
   contents: read
 
+# Must match ci.yml's, or the shared Rust cache below misses: rust-cache hashes
+# `CARGO_*` into the key.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
+  # AG-902: a schedule fires whether or not the branch moved, so a quiet day
+  # would rebuild and re-test a commit that already passed. Only schedule and
+  # workflow_dispatch are guarded; pull_request (the real-tools checks are
+  # required there), push and v* tags always run. ci/run-guard.sh holds the
+  # rules: run on a new commit, after a failed suite, past the 7-day floor, or
+  # with `force`. e2e runs unless the guard says exactly "false", so a guard
+  # that errors fails open into a full run rather than a silent skip.
+  guard:
+    name: run guard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.guard.outputs.run || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        with:
+          sparse-checkout: ci/run-guard.sh
+          sparse-checkout-cone-mode: false
+      - name: Decide
+        id: guard
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_FILE: e2e-real-tools.yml
+          # Runs on this branch are the proof. feat/new-app-ui until #151
+          # merges (plan decision 1b), then main: flip this one value.
+          GUARD_BRANCH: feat/new-app-ui
+          HEAD_SHA: ${{ github.sha }}
+          SUITE_JOB_PREFIX: 'real-tools ('
+          FORCE: ${{ inputs.force == true }}
+        run: bash ci/run-guard.sh
+
   e2e:
     name: real-tools (${{ matrix.os }})
+    needs: guard
+    if: ${{ !cancelled() && needs.guard.outputs.run != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,16 +102,20 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@1.88.0
+      # The CLI is a subset of what ci.yml's `rust` job builds, so restore its
+      # cache rather than keep a second one.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-e2e
+          shared-key: ${{ matrix.os }}
+          save-if: false
 
       - uses: actions/setup-node@v4
         with:
-          # openclaw requires node >=22.19; on Node 20 npm silently skips its
-          # install, so it was inert on every runner. 22 keeps the other CLIs
-          # happy too.
-          node-version: 22
+          # openclaw 2026.9.x requires node `>=24.16.0 <25 || >=26.1.0`. On an
+          # older Node npm silently falls back to an older release, or skips
+          # the install. An exact version keeps all three runners on the same
+          # Node. The other CLIs accept 24 too.
+          node-version: 24.21.0
 
       - name: Build gate-connect CLI
         run: cargo build --locked -p gate-connect-cli
@@ -66,11 +131,9 @@ jobs:
       # upstream's doing and says so. Models stay unpinned on purpose: run.sh
       # resolves them at runtime because pinned model ids get retired.
       #
-      # OpenClaw is the exception to "newest release": every 2026.9.x requires
-      # Node >=24.16, and this job runs Node 22. Unpinned, npm quietly fell
-      # back to the newest release whose `engines` accept Node 22 - the
-      # extended-stable line - so that is what every green run tested, and it
-      # is what is pinned. Moving to 2026.9.x means moving the job to Node 24.
+      # OpenClaw is the exception to the 2026-10-01 date. It is pinned to the
+      # newest 2026.9.x, which needs Node >=24.16. That is why setup-node above
+      # is on 24. A move to 2026.10.x belongs in its own PR, like any bump.
       - name: Install AI CLIs
         shell: bash
         run: >-
@@ -78,15 +141,11 @@ jobs:
           @anthropic-ai/claude-code@2.1.286
           @openai/codex@0.159.3
           opencode-ai@1.18.34
-          openclaw@2026.8.35
+          openclaw@2026.9.9
 
       # Hermes is a Python agent installed via the bash install.sh, which
       # symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops the
       # Playwright/chromium download we don't need for a `-z ping` run.
-      # Windows is intentionally skipped: install.ps1 has no browser-skip switch,
-      # so it always runs an unbounded Playwright/Chromium install that stalls
-      # the runner. Hermes is cross-platform and fully exercised on Linux+macOS;
-      # run.sh's `command -v hermes` guard skips it cleanly on Windows.
       #
       # Pinned twice, like the npm CLIs above: the installer script is fetched
       # from the repo at one commit rather than from the vendor's site, and
@@ -95,15 +154,47 @@ jobs:
       # upstream break turns this job red on PRs that touch nothing here
       # (96c64b45 did on 2026-10-06). Bump the SHA deliberately, after a newer
       # commit is seen to install cleanly.
+      #
+      # raw.githubusercontent.com rate-limits unauthenticated reads per runner
+      # IP, and shared macOS runners hit it: a 429 failed #450 on 2026-10-13.
+      # --retry treats 429 as transient and honours Retry-After. The script is
+      # saved first so a failed fetch stops the step before bash runs anything.
       - name: Install Hermes (Linux/macOS)
         if: matrix.os != 'windows-latest'
         shell: bash
         env:
           HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_COMMIT/scripts/install.sh" \
-            | bash -s -- --skip-browser --commit "$HERMES_COMMIT"
+          curl -fsSL --retry 5 --retry-delay 10 --retry-max-time 120 \
+            -o "$RUNNER_TEMP/hermes-install.sh" \
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_COMMIT/scripts/install.sh"
+          bash "$RUNNER_TEMP/hermes-install.sh" --skip-browser --commit "$HERMES_COMMIT"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Windows gets install.ps1 at the same pinned commit. It does take a
+      # browser opt-out: -SkipBrowser is install.sh's --skip-browser (both pass
+      # `--without agent-browser` to Hermes' package manager), so no
+      # Playwright/Chromium download happens. -SkipComputerUse drops the
+      # cua-driver the same way, and -NonInteractive skips the setup and gateway
+      # stages that would prompt. The launcher lands in
+      # %LOCALAPPDATA%\hermes\bin, which the installer adds to the user PATH
+      # only, so it is added to GITHUB_PATH here. timeout-minutes bounds the
+      # step, so a stalled download fails it rather than the whole job.
+      - name: Install Hermes (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'hermes-install.ps1'
+          curl.exe -fsSL --retry 5 --retry-delay 10 --retry-max-time 120 -o $installer "https://raw.githubusercontent.com/NousResearch/hermes-agent/$env:HERMES_COMMIT/scripts/install.ps1"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File $installer -Commit $env:HERMES_COMMIT -SkipBrowser -SkipComputerUse -NonInteractive
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $bin = Join-Path $env:LOCALAPPDATA 'hermes\bin'
+          Get-ChildItem $bin
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
       # timeout-minutes bounds the step so a hung tool can't run for hours; on
@@ -142,3 +233,38 @@ jobs:
             [ -f "$f" ] || continue
             echo "=== $(basename "$f") ==="; cat "$f" 2>/dev/null
           done
+
+  # AG-673 AC3: a failed nightly reaches named people. Runs only for the
+  # schedule, or a manual run with `alert` ticked, so PR failures stay on the PR.
+  # Posts to #gate-alerts-staging through SLACK_ALERTS_WEBHOOK_URL (AG-1038),
+  # not SLACK_WEBHOOK_URL, which is release notes. A missing secret fails this
+  # job by name: a skipped alert would look exactly like a quiet night.
+  alert:
+    name: nightly alert
+    needs: e2e
+    if: >-
+      always() && needs.e2e.result == 'failure' &&
+      (github.event_name == 'schedule' || inputs.alert == true)
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+    env:
+      WEBHOOK: ${{ secrets.SLACK_ALERTS_WEBHOOK_URL }}
+      GH_TOKEN: ${{ github.token }}
+      # Slack member ids: matheus.reis, Gabriel Claramunt.
+      MENTIONS: <@U0AEQU9KJ80> <@U07P0BLK1M3>
+    steps:
+      - name: Post failure to Slack
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then
+            echo "::error::SLACK_ALERTS_WEBHOOK_URL is not set; the failure alert was not sent (AG-1038)."
+            exit 1
+          fi
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          failed="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" \
+            -q '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')"
+          text="$MENTIONS Real-tools e2e failed on \`$GITHUB_REF_NAME\` (${GITHUB_SHA:0:7}): ${failed:-see run}. <$run_url|Open the run>"
+          jq -n --arg text "$text" '{text: $text}' \
+            | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$WEBHOOK"

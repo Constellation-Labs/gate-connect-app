@@ -1914,4 +1914,75 @@ mod tests {
         .await;
         assert_eq!(got.as_deref(), Some("fresh"));
     }
+
+    /// Fix 53e6757, relay half: a standalone `proxy relay` started while an
+    /// enabled proxy is routing must refuse, naming the engine, rather than
+    /// start a second host that shadows it. The routing snapshot on disk is
+    /// what "enabled" means across processes, so the test writes one into a
+    /// hermetic home and asks `serve` to start.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn serve_refuses_while_an_enabled_proxy_hosts_the_relay() {
+        // Restores the prior env on drop, like `TestHome` in `manager_core`
+        // (that helper is private to its own test module).
+        struct Home {
+            dir: std::path::PathBuf,
+            prev_home: Option<std::ffi::OsString>,
+            prev_secrets: Option<std::ffi::OsString>,
+            _guard: std::sync::MutexGuard<'static, ()>,
+        }
+        impl Drop for Home {
+            fn drop(&mut self) {
+                fn restore(key: &str, prev: &Option<std::ffi::OsString>) {
+                    match prev {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+                restore("GATE_CONNECT_TEST_HOME", &self.prev_home);
+                restore("GATE_CONNECT_TEST_SECRETS", &self.prev_secrets);
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let guard = crate::env::path_env_lock();
+        let dir = std::env::temp_dir().join(format!("gate-connect-relay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", dir.join("secrets"));
+        let _home = Home {
+            dir,
+            prev_home,
+            prev_secrets,
+            _guard: guard,
+        };
+
+        // Nothing in the home but the snapshot: no account, so a `serve` that
+        // got past the check fails on the account load instead of serving.
+        #[cfg(target_os = "macos")]
+        super::super::system_proxy::save_snapshot(&[]).expect("seed the snapshot");
+        #[cfg(target_os = "windows")]
+        super::super::system_proxy::save_snapshot(&super::super::system_proxy::ProxySnapshot {
+            enable: 0,
+            server: String::new(),
+            bypass: String::new(),
+            auto_config_url: String::new(),
+        })
+        .expect("seed the snapshot");
+        #[cfg(target_os = "linux")]
+        super::super::system_proxy::save_snapshot(&super::super::system_proxy::ProxySnapshot {
+            block_present: false,
+            gnome_proxy: None,
+        })
+        .expect("seed the snapshot");
+        assert!(super::super::engine_likely_running());
+
+        let err = serve().expect_err("serve must refuse beside an enabled proxy");
+        assert!(
+            err.to_string().contains("already hosts this relay"),
+            "serve must refuse because the proxy is enabled, not for another reason: {err:#}"
+        );
+    }
 }
