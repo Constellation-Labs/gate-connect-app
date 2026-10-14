@@ -169,20 +169,72 @@ test.describe("new UI running apps", () => {
   });
 
   test("offers only the app that was reconfigured", async ({ boot }) => {
+    // Claude is the one switched: a routing change offers Codex no close
+    // (`routesNewConversations`), so switching Codex would raise the note
+    // below rather than an offer, and prove nothing about the narrowing.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [CLAUDE_CODE, CODEX],
       runningAgentNames: ["claude", "codex"],
     });
 
-    await app.routeApp("ChatGPT / Codex");
+    await app.routeApp("Claude");
 
     // The product name, not the section's name: the dialog lists tools, and
-    // "ChatGPT / Codex" is the row they sit under rather than a program anyone
-    // can close.
+    // "Claude" is the row they sit under rather than a program anyone can
+    // close.
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog).toContainText("Codex");
-    await expect(dialog).not.toContainText("Claude Code");
+    await expect(
+      dialog.getByRole("heading", { name: "Apply changes to running apps" }),
+    ).toBeVisible();
+    await expect(dialog).toContainText("Claude Code");
+    await expect(dialog).not.toContainText("Codex");
+  });
+
+  /**
+   * Codex reads its route per conversation, so a routing change reaches every
+   * conversation started after it and a restart fixes none already open.
+   * Turning routing on says that instead of offering a close.
+   */
+  test("routing a running Codex on says new conversations are protected", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      runningAgentNames: ["codex"],
+    });
+
+    await app.routeApp("ChatGPT / Codex");
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(
+      dialog.getByRole("heading", { name: "New conversations are protected" }),
+    ).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Yes, close affected apps" })).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Got it" }).click();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    expect(await app.lastCall("close_running_agents")).toBeNull();
+  });
+
+  /**
+   * And turning it off says nothing: "protected" would be false over
+   * conversations that now go straight to the provider, and closing Codex
+   * would fix nothing either.
+   */
+  test("routing a running Codex off draws nothing", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...CODEX, status: { kind: "connected" as const } }],
+      runningAgentNames: ["codex"],
+    });
+
+    await (await app.appSwitch("ChatGPT / Codex")).click();
+
+    await expect.poll(() => app.lastCall("disconnect_tool")).not.toBeNull();
+    // The probe ran, so the silence is a decision rather than a scan that
+    // never happened.
+    await expect.poll(() => app.lastCall("running_agents")).not.toBeNull();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
   test("names the running tool and who reopens it", async ({ boot }) => {
