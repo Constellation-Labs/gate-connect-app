@@ -728,15 +728,17 @@ mod tests {
         }
 
         /// Make the probe look like certutil last failed `ago`, with `last` the
-        /// reading before that.
-        fn failed(&self, ago: Duration, last: Option<(String, bool)>) {
+        /// reading before that. False when the clock cannot reach back that far:
+        /// Windows `Instant` counts from boot, so a runner up for less than `ago`
+        /// cannot represent the moment.
+        fn failed(&self, ago: Duration, last: Option<(String, bool)>) -> bool {
+            let Some(at) = Instant::now().checked_sub(ago) else {
+                return false;
+            };
             let mut probe = TRUST_PROBE.lock().unwrap();
             probe.last = last;
-            probe.failed_at = Some(
-                Instant::now()
-                    .checked_sub(ago)
-                    .expect("the clock reaches back that far"),
-            );
+            probe.failed_at = Some(at);
+            true
         }
     }
 
@@ -757,7 +759,7 @@ mod tests {
     #[test]
     fn is_trusted_serves_the_last_reading_during_the_cooldown() {
         let ca = ScratchCa::new();
-        ca.failed(Duration::from_secs(1), Some((ca.thumb(), true)));
+        assert!(ca.failed(Duration::from_secs(1), Some((ca.thumb(), true))));
         assert!(
             is_trusted().expect("a cached reading is served"),
             "inside the cooldown the last reading for this CA stands"
@@ -770,10 +772,10 @@ mod tests {
     #[test]
     fn is_trusted_reports_the_cooldown_when_it_has_no_reading_for_this_ca() {
         let ca = ScratchCa::new();
-        ca.failed(
+        assert!(ca.failed(
             Duration::from_secs(1),
             Some(("A READING FOR ANOTHER CA".into(), true)),
-        );
+        ));
         let err = is_trusted().expect_err("no reading to serve");
         assert!(
             err.to_string().contains("is not being re-run"),
@@ -785,12 +787,17 @@ mod tests {
     #[test]
     fn the_cooldown_lapses_after_its_length() {
         let ca = ScratchCa::new();
-        ca.failed(CERTUTIL_COOLDOWN, Some((ca.thumb(), true)));
+        // A machine up for less than the cooldown cannot place a failure that
+        // far back, so the check is skipped there rather than panicking.
+        if !ca.failed(CERTUTIL_COOLDOWN, Some((ca.thumb(), true))) {
+            eprintln!("skipped: this machine has been up for less than the cooldown");
+            return;
+        }
         assert_eq!(trust_reading_during_cooldown(&ca.thumb()).unwrap(), None);
-        ca.failed(
+        assert!(ca.failed(
             CERTUTIL_COOLDOWN - Duration::from_secs(1),
             Some((ca.thumb(), false)),
-        );
+        ));
         assert_eq!(
             trust_reading_during_cooldown(&ca.thumb()).unwrap(),
             Some(false)

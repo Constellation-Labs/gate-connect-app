@@ -2907,10 +2907,9 @@ mod tests {
 
         let adapter = lib_body("fn proxy_status()");
         assert!(
-            adapter.starts_with("fn proxy_status()") && {
-                let src = include_str!("lib.rs").replace("\r\n", "\n");
-                src.contains("async fn proxy_status()")
-            },
+            include_str!("lib.rs")
+                .replace("\r\n", "\n")
+                .contains("async fn proxy_status()"),
             "proxy_status must be an async command, not a sync one on the event loop"
         );
         let blocking = adapter
