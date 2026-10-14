@@ -27,6 +27,10 @@ on:
         description: 'Sign, notarize and upload to the draft release for this tag. release.yml only.'
         type: boolean
         default: false
+      macos_universal:
+        description: 'Build the macOS universal binary (Apple Silicon and Intel). false builds Apple Silicon only, about half the compile. Ignored on a release, which is always universal.'
+        type: boolean
+        default: true
 
 jobs:
   bundle:
@@ -69,7 +73,10 @@ jobs:
       # must be added to the same toolchain cargo actually builds with.
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          # Apple Silicon only when a CI caller asks for it: the runner is
+          # Apple Silicon, so that build is native and the Intel half (a
+          # cross-compile, then lipo) is skipped. A release is always universal.
+          targets: ${{ matrix.platform == 'macos-latest' && ((inputs.release || inputs.macos_universal) && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'aarch64-apple-darwin') || '' }}
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: '. -> target'
@@ -169,7 +176,7 @@ jobs:
         if: ${{ !inputs.release }}
         uses: tauri-apps/tauri-action@v0
         with:
-          args: --config ${{ github.workspace }}/src-tauri/tauri.unsigned.conf.json ${{ matrix.args }}
+          args: --config ${{ github.workspace }}/src-tauri/tauri.unsigned.conf.json ${{ (matrix.platform == 'macos-latest' && !inputs.macos_universal) && '--target aarch64-apple-darwin -- --locked' || matrix.args }}
       # Tauri's AppImage bundler pulls libwayland-client/cursor/egl/server
       # into the AppDir via the GTK/WebKit dependency chain, even though
       # libGL/libEGL themselves are correctly excluded (tauri-apps/tauri
@@ -385,6 +392,7 @@ jobs:
           name: bundle-${{ matrix.platform }}
           path: |
             target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/deb/*.deb
             target/release/bundle/nsis/*-setup.exe
