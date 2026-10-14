@@ -2595,6 +2595,51 @@ mod tests {
         mgr.stop_dormant(); // release the park for the next test
     }
 
+    /// Fix 414efd7 (Windows) and 0252085 (macOS): a domain toggled by another
+    /// process (a second `gate-connect` run) reaches the engine this process
+    /// hosts. The only channel is the domains file, so the test writes it the
+    /// way that other process would and waits for the engine to follow.
+    #[test]
+    fn the_engine_follows_a_domains_file_written_by_another_process() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+        let intercepting = || {
+            mgr.engine
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|e| e.intercepting())
+                .expect("engine running")
+        };
+        let before = intercepting();
+        let slug = config::load_domains()
+            .expect("domains")
+            .into_iter()
+            .find(|d| d.enabled)
+            .expect("an enabled catalog entry")
+            .slug;
+
+        // What the other process does: write the file, nothing else. Written
+        // again each half tick, because the watcher takes its baseline mtime
+        // on its own thread: a single write that lands before that read would
+        // be the baseline, and the test would be timing the thread start.
+        let deadline = std::time::Instant::now() + WATCH_INTERVAL * 6;
+        while intercepting() == before && std::time::Instant::now() < deadline {
+            config::set_enabled(&slug, false).expect("write the domains file");
+            std::thread::sleep(WATCH_INTERVAL / 2);
+        }
+        let after = intercepting();
+
+        mgr.disable_quiet().expect("release for the next test");
+        assert!(
+            after < before,
+            "turning {slug:?} off in the domains file must reach the running engine \
+             (intercepting {before} before, {after} after)"
+        );
+    }
+
     #[test]
     fn status_reports_an_engine_hosted_by_another_process() {
         let _home = TestHome::set();
