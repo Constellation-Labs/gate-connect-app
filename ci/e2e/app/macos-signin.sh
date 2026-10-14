@@ -18,11 +18,14 @@
 #   3. ci/e2e/mock-gateway.mjs on 443 with that leaf, logging every request.
 #
 # Then: install from the dmg, launch, walk the intro, "Use an API key", type a made-up key,
-# "Connect and continue", and assert the signed-in state twice: the window moves
-# on to "Name this device", and account.json carries the key's prefix.
+# "Connect and continue", and assert the signed-in state three times: the window
+# moves on to "Name this device", account.json carries the key's prefix, and the
+# mock gateway captured the app's requests carrying the key.
 #
 # Env: BUNDLE_DIR (a .dmg somewhere under it), OUT (screenshots, AX dumps, logs).
 set -euo pipefail
+
+[ "${CI:-}" = "true" ] || { echo "macos-signin.sh changes /etc/hosts, the System keychain and port 443: CI runners only" >&2; exit 2; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -48,8 +51,6 @@ on_exit() {
   cp "$WORK/capture.jsonl" "$OUT/" 2>/dev/null || true
   cp "$WORK/mock.out" "$OUT/" 2>/dev/null || true
   cp -R "$DATA" "$OUT/app-data" 2>/dev/null || true
-  # The app's own log, wherever this build writes it.
-  cp -R "$HOME/Library/Logs/ai.constellation.gate-connect" "$OUT/app-logs" 2>/dev/null || true
   [ -n "${MOCK_PID:-}" ] && sudo kill "$MOCK_PID" 2>/dev/null || true
   exit "$rc"
 }
@@ -100,7 +101,7 @@ security verify-cert -c "$WORK/leaf.pem" -p ssl -s "$GATEWAY_HOST"
 endstep
 
 step "install"
-DMG="$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)"
+DMG="$(find "$BUNDLE_DIR" -name '*.dmg' -print -quit)"
 [ -n "$DMG" ] || { echo "no .dmg under $BUNDLE_DIR" >&2; exit 1; }
 echo "installing from $DMG"
 MNT="$(mktemp -d)"
@@ -118,13 +119,19 @@ open "$APP"
 screencapture -x "$OUT/01-launched.png" || true
 endstep
 
-# A first launch opens the intro window: a welcome frame and three steps, each
-# with Next, the last with "Get started", which closes it.
+# A first launch opens the intro window: a welcome frame and a few steps, each
+# with Next, the last with "Get started", which closes it. Click Next until
+# "Get started" shows, so a step added to or dropped from the intro does not
+# break this; ten clicks is far more than the intro has.
 step "intro"
 "${AX[@]}" wait-text 60 "Welcome to Gate Connect"
-for n in 2 3 4; do
+for clicks in $(seq 0 10); do
+  if "${AX[@]}" wait-text 2 "Get started" >/dev/null 2>&1; then break; fi
+  if [ "$clicks" -eq 10 ]; then
+    echo "no \"Get started\" after $clicks clicks on Next" >&2
+    exit 1
+  fi
   "${AX[@]}" click 30 "Next"
-  "${AX[@]}" wait-text 30 "Step $n of 4"
 done
 "${AX[@]}" click 30 "Get started"
 endstep
