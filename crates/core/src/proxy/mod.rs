@@ -2418,7 +2418,8 @@ const CODEX_APP_ORIGINATORS: [&str; 3] = ["Codex Desktop", "Codex Browser", "cod
 /// The value of `originator` is deliberately not read. It names the front-end
 /// ("Codex Desktop" and others), and mapping strings nobody has captured to
 /// slugs would be the guessing this module refuses everywhere else. Presence,
-/// on a chatgpt.com entry, is the claim.
+/// on a chatgpt.com entry, is the claim. [`codex_mode`] does read the value,
+/// for the app's Codex mode, against the enumerated [`CODEX_APP_ORIGINATORS`].
 fn chatgpt_app(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str> {
     if !domain.is_some_and(|slug| CHATGPT_HOST_DOMAINS.contains(&slug)) {
         return None;
