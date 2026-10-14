@@ -216,10 +216,9 @@ describe("the topbar, the rail and the tray agree on the routed count", () => {
     expect(window.headline).toBe(headline);
     expect(tray.headline).toBe(headline);
 
-    // The noun. The two shells name one population differently: the topbar
-    // says "Apps" and the tray card says "tools". Pinned as it renders
-    // today; whether they should match is for design to decide.
+    // The noun. Both shells name the population "Apps" (decided
+    // 2026-10-13), so the topbar and the tray card read the same.
     expect(window.noun).toBe("Apps");
-    expect(tray.noun).toBe("tools");
+    expect(tray.noun).toBe("Apps");
   });
 });

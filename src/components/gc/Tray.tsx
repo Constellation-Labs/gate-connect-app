@@ -286,14 +286,14 @@ function RoutingCard({
   // eyebrows below add up to. The numerator was switched-on with an "on"
   // suffix until 2026-09-30; `routingState` carries the history.
   const fraction = showsFraction(all.length)
-    ? `${routed} of ${all.length} tools`
+    ? `${routed} of ${all.length} Apps`
     : "";
   // This line used to lead with "On" / "Off", from the engine's running flag
   // standing in for a master switch. There is no such switch - routing is on
   // for exactly as long as Gate Connect is open - so "On" was unfalsifiable
   // furniture, and with nothing switched on it printed "On" directly under
   // "No apps are routed". (That state draws a fraction of its own now,
-  // "0 of 8 tools", where it used to draw nothing at all.)
+  // "0 of 8 Apps", where it used to draw nothing at all.)
   //
   // The engine failing to come up is still worth printing, so it keeps its
   // half in the words already decided for it elsewhere: a launch enable that
