@@ -57,6 +57,7 @@ import { Modal } from "./components/gc/Modal";
 import {
   reopenSubjects,
   ApplyChangesDialog,
+  NewConversationsDialog,
   OpenCodeEnvDialog,
   ReviewConfigDialog,
 } from "./components/gc/dialogs";
@@ -566,7 +567,7 @@ export function TrayApp() {
     async (slug: string, next: boolean) => {
       setActionError(null);
       if (await routing.setAppRouted(slug, next)) {
-        await runningApps.offerAfterChange([slug]);
+        await runningApps.offerAfterChange([slug], next ? "on" : "off");
       }
     },
     [routing, runningApps],
@@ -1039,9 +1040,15 @@ export function TrayApp() {
           ) : runningApps.stage?.kind === "offer" ? (
             <ApplyChangesDialog
               tools={reopenSubjects(runningApps.stage.tools)}
+              conversations={runningApps.stage.conversations}
               closing={runningApps.stage.closing}
               onCloseApps={() => void runningApps.closeApps()}
               onReopenLater={runningApps.dismiss}
+            />
+          ) : runningApps.stage?.kind === "conversations" ? (
+            <NewConversationsDialog
+              names={runningApps.stage.names}
+              onDone={runningApps.dismiss}
             />
           ) : null}
         </>

@@ -8,13 +8,26 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # feat/new-app-ui too, so the Rust caches below are saved on its ref: a
+    # PR can restore only from its own ref and its base's, and most PRs are
+    # based on it. Drop it when #151 merges and main is the only base.
+    # The cost: every push to it runs CI twice, once here and once as #151's
+    # synchronize. And a burst of merges cancels the earlier push runs, which
+    # rust-cache does not save from, so only the last one refreshes the cache.
+    branches: [main, feat/new-app-ui]
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# Full debuginfo is most of a `target/` dir, and the Rust caches are what fill
+# the repo's 10 GB cache budget. Line tables keep file:line in a failing test's
+# backtrace. Every workflow that restores the `rust` job's cache sets the same
+# value, because rust-cache hashes `CARGO_*` into the key and a mismatch misses.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   rust:
@@ -44,7 +57,12 @@ jobs:
           # Key by the exact image: the cache would otherwise be shared with
           # jobs on other ubuntu versions (same runner OS), and objects
           # compiled against a newer glibc fail to link on 22.04.
-          key: ${{ matrix.os }}
+          # Shared so the jobs that build a subset of the workspace (below, and
+          # in e2e-real-tools.yml and launchd-restart.yml) can restore it.
+          shared-key: ${{ matrix.os }}
+          # Only base branches save. A PR restores its base's cache, and one
+          # that saved its own would push the base's out of the budget.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/new-app-ui' }}
 
       # fmt is platform-independent; run it once (the Windows runners'
       # git autocrlf setting can also produce false CRLF diffs there).
@@ -119,9 +137,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.88.0
 
+      # The CLI is a subset of what `rust` builds, so restore its cache rather
+      # than keep a second one.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-system-trust
+          shared-key: windows-latest
+          save-if: false
 
       - name: Build the CLI
         run: cargo build --locked -p gate-connect-cli
@@ -209,6 +230,56 @@ jobs:
           certutil -delstore Root "Gate Connect Local CA" 2>&1 | Out-Null
           exit 0
 
+  # AG-906: the catalog routing suite with the engine's CA trusted
+  # machine-wide, on all three OS. `Rust (workspace)` already runs the suite
+  # with a pinned throwaway root; this job proves the other half, that a client
+  # validating through the OS trust store accepts the engine's leaves for every
+  # catalog host. Same pattern as `win-system-trust`: the CA lives under a
+  # throwaway home, `trust-ca --system-trust` is the only machine write, every
+  # call that could raise a dialog is bounded, and the root is removed under
+  # always().
+  catalog-routing:
+    name: catalog-routing (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      # A subset of what `rust` builds, so restore its cache rather than keep
+      # a second one.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}
+          save-if: false
+
+      # Built before anything is trusted, so the trusted window is short.
+      - name: Build the CLI and the suite
+        shell: bash
+        run: |
+          cargo build --locked -p gate-connect-cli
+          cargo test --locked --no-run -p gate-connect-core --test catalog_routing
+
+      - name: Trust the CA machine-wide and run the suite
+        shell: bash
+        run: bash ci/catalog-routing/run.sh
+
+      - name: Remove the CA from the machine store
+        if: always()
+        shell: bash
+        run: bash ci/catalog-routing/cleanup.sh
+
   web:
     name: Web (frontend)
     runs-on: ubuntu-latest
@@ -277,11 +348,10 @@ jobs:
     with:
       release: false
       # Apple Silicon only on a pull request: the universal build compiles
-      # Rust twice and took about 21 minutes cold. A push to main and a manual
-      # run keep the universal build, and a release always builds it, so an
-      # Intel-only break is caught on main, or on the tag. Work merged into
-      # another branch is not checked for it until then: run this workflow by
-      # hand on that branch as part of release prep if it matters.
+      # Rust twice and took about 21 minutes cold. A push (to main or
+      # feat/new-app-ui) and a manual run keep the universal build, and a
+      # release always builds it, so an Intel-only break is caught on the
+      # merge, not only on the tag.
       macos_universal: ${{ github.event_name != 'pull_request' }}
 
   # The seam neither other suite covers: a CLICK in the real frontend reaching
@@ -319,6 +389,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-ui-e2e
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/new-app-ui' }}
 
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4

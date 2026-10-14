@@ -114,7 +114,8 @@ export function useSectionRouting({
         // no names and drops out. `claude-web` is one of those, so the scan
         // asks about `claude` and `Claude` and about nothing else.
         const movedKeys = moved.map((m) => m.key);
-        if (movedKeys.length > 0) await runningApps.offerAfterChange(movedKeys);
+        if (movedKeys.length > 0)
+          await runningApps.offerAfterChange(movedKeys, next ? "on" : "off");
         // No failure summary is built here. `useRouting` reports each member's
         // failure through `onError`, classified and carrying the backend string;
         // the sentence this used to compose ("<section> is partly on - the rest
