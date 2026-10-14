@@ -484,7 +484,8 @@ pub(crate) fn set_auth_mode(platform: &impl Platform, oauth: bool) -> Result<(),
     Ok(())
 }
 
-/// Switch who pays the upstream provider, and re-apply a connected Codex.
+/// Switch who pays the upstream provider, and re-apply a connected Codex and
+/// OpenCode.
 pub(crate) fn set_billing_mode(platform: &impl Platform, payg: bool) -> Result<(), String> {
     let mode = if payg {
         BillingMode::Payg
@@ -496,36 +497,45 @@ pub(crate) fn set_billing_mode(platform: &impl Platform, payg: bool) -> Result<(
         .map_err(|e| format!("{e:#}"))?;
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     platform.refresh_engine_mode();
-    reapply_codex_for_mode(platform, mode);
+    reapply_for_mode(platform, mode);
     Ok(())
 }
 
-/// Rewrite Codex's provider block for `mode`, if Codex is currently routed
-/// through Gate. Silent when Codex isn't installed or isn't connected - there
-/// is nothing to rewrite, and a mode switch is not the place to start routing a
-/// tool the user never connected.
-fn reapply_codex_for_mode(platform: &impl Platform, mode: BillingMode) {
-    let Some(integ) = platform
-        .integrations()
-        .into_iter()
-        .find(|i| i.id() == ToolId::Codex)
-    else {
-        return;
-    };
-    if !matches!(integ.status(), Ok(gate_connect_core::Status::Connected)) {
-        return;
-    }
+/// Rewrite the config of each tool whose shape depends on `mode`, if Gate
+/// currently routes it. Silent for a tool that isn't installed or isn't
+/// connected - there is nothing to rewrite, and a mode switch is not the place
+/// to start routing a tool the user never connected.
+///
+/// Codex's provider block says whether Codex authenticates at all. OpenCode's
+/// connect adds providers of its own when OpenCode names none, and which ones
+/// depends on the mode. Each is asked differently: Codex has to read Connected,
+/// while OpenCode reads Drifted after a switch to BYOK by design - its PAYG
+/// providers are the drift - so it is re-applied whenever Gate manages it.
+fn reapply_for_mode(platform: &impl Platform, mode: BillingMode) {
     let Ok(Some(account)) = platform.account() else {
         return;
     };
-    let input = ConnectInput {
-        gateway_base_url: account.gateway_base_url,
-        billing_mode: mode,
-        relay_base_url: platform.relay_base_url(),
-        engine_proxy_url: platform.engine_proxy_url(),
-    };
-    if let Err(e) = integ.connect(&input) {
-        eprintln!("re-applying Codex for the new billing mode failed: {e:#}");
+    for integ in platform.integrations() {
+        let routed = match integ.id() {
+            ToolId::Codex => matches!(integ.status(), Ok(gate_connect_core::Status::Connected)),
+            ToolId::OpenCode => matches!(integ.config_is_managed(), Ok(true)),
+            _ => false,
+        };
+        if !routed {
+            continue;
+        }
+        let input = ConnectInput {
+            gateway_base_url: account.gateway_base_url.clone(),
+            billing_mode: mode,
+            relay_base_url: platform.relay_base_url(),
+            engine_proxy_url: platform.engine_proxy_url(),
+        };
+        if let Err(e) = integ.connect(&input) {
+            eprintln!(
+                "re-applying {} for the new billing mode failed: {e:#}",
+                integ.display_name()
+            );
+        }
     }
 }
 
@@ -2428,6 +2438,45 @@ mod tests {
         assert_eq!(
             detected.calls(),
             ["set_billing_mode Byok", "refresh_engine_mode"]
+        );
+    }
+
+    /// OpenCode is re-applied whenever Gate manages its config, Drifted
+    /// included: after a switch to BYOK the providers Gate added for PAYG are
+    /// the drift, and the re-apply is what takes them out.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn set_billing_mode_reapplies_a_managed_opencode_even_when_drifted() {
+        let platform = FakePlatform {
+            tools: vec![FakeTool {
+                status: Ok(Status::Drifted("added for pay-as-you-go".into())),
+                managed: true,
+                ..FakeTool::new(ToolId::OpenCode)
+            }],
+            relay_url: Some("http://127.0.0.1:47001".into()),
+            ..signed_in()
+        };
+        assert_eq!(set_billing_mode(&platform, false), Ok(()));
+        assert_eq!(
+            platform.calls(),
+            [
+                "set_billing_mode Byok".to_string(),
+                "refresh_engine_mode".to_string(),
+                format!(
+                    "connect opencode {GATEWAY} Byok relay=Some(\"http://127.0.0.1:47001\") \
+                     proxy=None"
+                ),
+            ]
+        );
+
+        let unmanaged = FakePlatform {
+            tools: vec![FakeTool::new(ToolId::OpenCode)],
+            ..signed_in()
+        };
+        assert_eq!(set_billing_mode(&unmanaged, true), Ok(()));
+        assert_eq!(
+            unmanaged.calls(),
+            ["set_billing_mode Payg", "refresh_engine_mode"]
         );
     }
 
