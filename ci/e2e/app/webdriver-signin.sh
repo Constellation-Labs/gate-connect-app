@@ -153,14 +153,18 @@ fi
   MOCK_CERT="$(native "$WORK/leaf.pem")" MOCK_KEY="$(native "$WORK/leaf.key")" \
   "$(command -v node)" "$(native "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
-# native(): on Windows the curl on PATH may be the system one, which cannot
-# read a /tmp path.
+# On Windows the curl on PATH is the system one (Schannel): it needs a native
+# path, and it fails a leaf with no CRL distribution point as "revocation
+# status unknown". This probe only checks the name and the CA; the OS store
+# check below is what speaks for the app.
+CURL_TLS=(--cacert "$(native "$WORK/ca.pem")")
+[ "$OS" = windows ] && CURL_TLS+=(--ssl-no-revoke)
 for _ in $(seq 1 50); do
-  if curl -fsS --cacert "$(native "$WORK/ca.pem")" "https://$GATEWAY_HOST/health" >/dev/null 2>&1; then break; fi
+  if curl -fsS "${CURL_TLS[@]}" "https://$GATEWAY_HOST/health" >/dev/null 2>&1; then break; fi
   sleep 0.2
 done
 # The name resolves to the mock and the leaf verifies against the throwaway CA.
-curl -fsS --cacert "$(native "$WORK/ca.pem")" "https://$GATEWAY_HOST/health"
+curl -fsS "${CURL_TLS[@]}" "https://$GATEWAY_HOST/health"
 echo
 # And the OS trust store accepts it, which is what the app's TLS stack asks.
 if [ "$OS" = windows ]; then

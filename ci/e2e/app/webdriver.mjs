@@ -118,16 +118,23 @@ function lit(text) {
 // XPath, as a WebDriver element id. Found by the driver itself (Find
 // Elements), not returned from a script, so no driver has to serialize a
 // node out of the page.
+let lastLook = '';
 async function findShown(xpath) {
   const els = await wd('POST', s('/elements'), { using: 'xpath', value: xpath });
+  const seen = [];
   for (const el of els) {
     const id = el[W3C_ELEMENT] || el.ELEMENT;
     try {
-      if ((await wd('GET', s(`/element/${id}/displayed`))) && (await wd('GET', s(`/element/${id}/enabled`)))) return id;
-    } catch {
+      const displayed = await wd('GET', s(`/element/${id}/displayed`));
+      const enabled = await wd('GET', s(`/element/${id}/enabled`));
+      if (displayed && enabled) return id;
+      seen.push(`displayed=${displayed} enabled=${enabled}`);
+    } catch (e) {
       // Stale between the find and the check: the page moved on.
+      seen.push(String(e.message || e).slice(0, 200));
     }
   }
+  lastLook += ` [${els.length} match${seen.length ? ': ' + seen.join('; ') : ''}]`;
   return null;
 }
 
@@ -139,6 +146,7 @@ async function poll(secs, find) {
   const until = Date.now() + secs * 1000;
   let last = '';
   for (;;) {
+    lastLook = '';
     try {
       const hit = await inEachWindow(find);
       if (hit) return hit;
@@ -147,7 +155,7 @@ async function poll(secs, find) {
       // reason for the failure message.
       last = String(e.message || e);
     }
-    if (Date.now() > until) return { miss: last };
+    if (Date.now() > until) return { miss: [last, lastLook.trim()].filter(Boolean).join(' ') };
     await sleep(500);
   }
 }
