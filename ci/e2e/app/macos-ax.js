@@ -43,10 +43,12 @@ function safe(f) {
 }
 
 // One node per element, with every attribute a match might use. Children are
-// read one level at a time; the tree is a few hundred elements, so this is a
-// second or two, which is fine for a step that waits anyway.
-function walk(el, depth, out) {
-  if (depth > 40) return;
+// read one level at a time. With `stop`, the walk ends at the first node it
+// accepts and returns it, so a wait does not read the whole tree on every poll
+// (about 4s on the intro, more on a busy screen). Without it, every node is
+// collected (for `dump`).
+function walk(el, depth, out, stop) {
+  if (depth > 40) return null;
   const kids = (() => {
     try {
       return el.uiElements();
@@ -65,17 +67,20 @@ function walk(el, depth, out) {
       title: safe(() => k.title()),
       placeholder: safe(() => k.attributes.byName("AXPlaceholderValue").value()),
     };
+    if (stop && stop(node)) return node;
     out.push(node);
-    walk(k, depth + 1, out);
+    const hit = walk(k, depth + 1, out, stop);
+    if (hit) return hit;
   }
+  return null;
 }
 
-function tree() {
+function tree(stop) {
   const p = proc();
-  if (!p) return [];
+  if (!p) return stop ? null : [];
   const out = [];
   for (const w of p.windows()) {
-    out.push({
+    const node = {
       el: w,
       depth: 0,
       role: "AXWindow",
@@ -84,20 +89,25 @@ function tree() {
       value: "",
       title: "",
       placeholder: "",
-    });
-    walk(w, 1, out);
+    };
+    if (stop && stop(node)) return node;
+    out.push(node);
+    const hit = walk(w, 1, out, stop);
+    if (hit) return hit;
   }
-  return out;
+  return stop ? null : out;
 }
 
 function texts(n) {
   return [n.name, n.desc, n.value, n.title, n.placeholder].filter((s) => s.length > 0);
 }
 
-function poll(secs, find) {
+// Wait until a node matching `match` is on screen, reading the tree only as
+// far as the first match.
+function poll(secs, match) {
   const until = Date.now() + secs * 1000;
   for (;;) {
-    const hit = find(tree());
+    const hit = tree(match);
     if (hit) return hit;
     if (Date.now() > until) return null;
     delay(0.5);
@@ -123,6 +133,9 @@ function run(argv) {
       ObjC.import("ApplicationServices");
       const trusted = $.AXIsProcessTrusted();
       console.log("AXIsProcessTrusted: " + trusted);
+      // Fail here with the real cause. Without the grant every later step
+      // would time out 60-90s on and blame the app.
+      if (!trusted) fail("osascript is not trusted for accessibility on this runner (the image's TCC grant is missing)");
       try {
         console.log("System Events UI scripting enabled: " + se.uiElementsEnabled());
       } catch (e) {
@@ -149,19 +162,16 @@ function run(argv) {
     }
     case "wait-text": {
       const [, secs, text] = argv;
-      const hit = poll(Number(secs), (t) => t.find((n) => texts(n).some((s) => s.includes(text))));
+      const hit = poll(Number(secs), (n) => texts(n).some((s) => s.includes(text)));
       if (!hit) fail(`no element reading "${text}" within ${secs}s`);
       console.log("found: " + describeNode(hit).trim());
       return;
     }
     case "click": {
       const [, secs, text] = argv;
-      const hit = poll(Number(secs), (t) =>
-        t.find(
-          (n) =>
-            (n.role === "AXButton" || n.role === "AXLink") &&
-            texts(n).some((s) => s.trim() === text),
-        ),
+      const hit = poll(
+        Number(secs),
+        (n) => (n.role === "AXButton" || n.role === "AXLink") && texts(n).some((s) => s.trim() === text),
       );
       if (!hit) fail(`no button "${text}" within ${secs}s`);
       hit.el.actions.byName("AXPress").perform();
@@ -170,10 +180,9 @@ function run(argv) {
     }
     case "type": {
       const [, secs, label, text] = argv;
-      const hit = poll(Number(secs), (t) =>
-        t.find(
-          (n) => n.role === "AXTextField" && texts(n).some((s) => s.includes(label)),
-        ),
+      const hit = poll(
+        Number(secs),
+        (n) => n.role === "AXTextField" && texts(n).some((s) => s.includes(label)),
       );
       if (!hit) fail(`no text field labelled "${label}" within ${secs}s`);
       const p = proc();

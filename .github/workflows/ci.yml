@@ -294,6 +294,9 @@ jobs:
   # failed step land in `app-e2e-macos`.
   app-e2e-macos:
     name: App e2e (macOS)
+    # Waits on all three bundle legs: a reusable workflow cannot expose one
+    # leg as a dependency, so a Windows or Linux bundling failure skips this
+    # job too. Free today, since macOS is the slowest leg.
     needs: bundle
     runs-on: macos-latest
     timeout-minutes: 15

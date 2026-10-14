@@ -25,7 +25,15 @@
 # Env: BUNDLE_DIR (a .dmg somewhere under it), OUT (screenshots, AX dumps, logs).
 set -euo pipefail
 
-[ "${CI:-}" = "true" ] || { echo "macos-signin.sh changes /etc/hosts, the System keychain and port 443: CI runners only" >&2; exit 2; }
+# GitHub-hosted runners only. Past this line the script redirects the gateway
+# host in /etc/hosts, trusts a root in the System keychain, binds 443 and
+# deletes /Applications/Gate Connect.app, and undoes none of it: the runner is
+# thrown away. CI=true alone is not enough (self-hosted runners and some
+# developer shells set it), so both GitHub-hosted markers are required.
+if [ "${GITHUB_ACTIONS:-}" != "true" ] || [ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ]; then
+  echo "macos-signin.sh changes /etc/hosts, the System keychain, port 443 and the installed app: GitHub-hosted runners only" >&2
+  exit 2
+fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -80,7 +88,10 @@ step "mock-gateway"
     -out leaf.pem -days 2 -extfile leaf.ext 2>/dev/null
 )
 sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$WORK/ca.pem"
-echo "127.0.0.1 $GATEWAY_HOST" | sudo tee -a /etc/hosts >/dev/null
+# Both families: the gateway publishes AAAA records, and with only an IPv4 line
+# macOS can still resolve the real IPv6 address. The mock listens on 127.0.0.1
+# only, so ::1 is refused at once and the app falls back to IPv4.
+printf '127.0.0.1 %s\n::1 %s\n' "$GATEWAY_HOST" "$GATEWAY_HOST" | sudo tee -a /etc/hosts >/dev/null
 sudo dscacheutil -flushcache
 sudo killall -HUP mDNSResponder || true
 : >"$WORK/capture.jsonl"
@@ -161,6 +172,14 @@ assert acct.get("api_key_prefix") == key[:12], acct
 assert host in acct.get("gateway_base_url", ""), acct
 assert key not in open(path).read(), "the key itself is on disk"
 PY
+# The key is in the keychain, and in no file the app wrote. find-generic-password
+# without -w reads only the entry's attributes: no secret, no prompt.
+security find-generic-password -s "ai.constellation.gate-connect.account.gateway-api-key" -a "$(id -un)" >/dev/null \
+  || { echo "::error::no keychain entry for the API key" >&2; exit 1; }
+if grep -rqF -- "$KEY" "$DATA"; then
+  echo "::error::the API key is in a file under $DATA" >&2
+  exit 1
+fi
 # And the app used it: the mock (and only the mock, since the host resolves to
 # 127.0.0.1) received the dashboard's own reads carrying this key.
 python3 - "$WORK/capture.jsonl" "$KEY" <<'PY'
