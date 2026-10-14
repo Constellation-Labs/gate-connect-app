@@ -277,9 +277,11 @@ jobs:
     with:
       release: false
       # Apple Silicon only on a pull request: the universal build compiles
-      # Rust twice and took about 21 minutes cold. A push and a manual run
-      # keep the universal build, and a release always builds it, so an
-      # Intel-only break is still caught before it ships.
+      # Rust twice and took about 21 minutes cold. A push to main and a manual
+      # run keep the universal build, and a release always builds it, so an
+      # Intel-only break is caught on main, or on the tag. Work merged into
+      # another branch is not checked for it until then: run this workflow by
+      # hand on that branch as part of release prep if it matters.
       macos_universal: ${{ github.event_name != 'pull_request' }}
 
   # The seam neither other suite covers: a CLICK in the real frontend reaching
