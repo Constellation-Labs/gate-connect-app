@@ -244,6 +244,12 @@ echo
 endstep
 
 step "launch"
+if [ "$OS" = windows ]; then
+  # What the app and its WebView2 browser process were started with, read
+  # while the driver is still waiting on them: the evidence for whether the
+  # debugging port reached the runtime.
+  ( sleep 20; powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.Name -match 'gate|msedge|webview' } | Format-List ProcessId, ParentProcessId, Name, CommandLine" >"$OUT/processes-at-launch.txt" 2>&1 ) &
+fi
 "${WD[@]}" start "$(native "$APP")" 120
 "${WD[@]}" windows || true
 "${WD[@]}" dump >"$OUT/01-launched.page.txt" 2>&1 || true
