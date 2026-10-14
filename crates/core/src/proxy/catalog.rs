@@ -487,3 +487,95 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    //! The routing decision for each catalog entry switched off (AG-906). The
+    //! end-to-end half, one request per entry through the real engine, is in
+    //! `tests/catalog_routing.rs`.
+
+    use super::default_domains;
+    use crate::proxy::{decide, should_intercept_host, upstream_path, Decision, ProxyDomain};
+
+    /// A concrete path under `prefix`, as a client sends it (upstream path
+    /// included). Same sampling as the engine test.
+    fn sample_request_path(entry: &ProxyDomain, prefix: &str) -> String {
+        let tail = if prefix == "/organizations/" {
+            "/organizations/org-1/chat_conversations/conv-1/completion".to_string()
+        } else if prefix.ends_with('/') {
+            format!("{prefix}probe")
+        } else {
+            prefix.to_string()
+        };
+        format!("{}{tail}", upstream_path(&entry.upstream_url))
+    }
+
+    fn catalog_with(enabled: impl Fn(&ProxyDomain) -> bool) -> Vec<ProxyDomain> {
+        default_domains()
+            .into_iter()
+            .map(|mut d| {
+                d.enabled = enabled(&d);
+                d
+            })
+            .collect()
+    }
+
+    /// Switched on alone, an entry rewrites every path it claims under its own
+    /// slug. This is what makes the off check below mean something: the sample
+    /// paths are ones the entry really routes.
+    #[test]
+    fn an_entry_switched_on_alone_claims_every_path_it_names() {
+        for entry in default_domains() {
+            let domains = catalog_with(|d| d.slug == entry.slug);
+            for host in &entry.hosts {
+                assert!(
+                    should_intercept_host(&domains, host),
+                    "[{}] {host}",
+                    entry.slug
+                );
+                for prefix in &entry.rewrite_prefixes {
+                    let path = sample_request_path(&entry, prefix);
+                    assert_eq!(
+                        decide(&domains, host, &path),
+                        Decision::Rewrite {
+                            upstream_url: entry.upstream_url.clone(),
+                            slug: entry.slug.clone(),
+                        },
+                        "[{}] {host}{path}",
+                        entry.slug
+                    );
+                }
+            }
+        }
+    }
+
+    /// Switched off, with every other entry on, an entry's paths are never
+    /// rewritten under its slug, and its host is only intercepted when another
+    /// entry that is still on names the same host (chatgpt.com).
+    #[test]
+    fn an_entry_switched_off_routes_none_of_its_paths() {
+        for off in default_domains() {
+            let domains = catalog_with(|d| d.slug != off.slug);
+            for host in &off.hosts {
+                let shared = domains.iter().any(|d| d.enabled && d.matches_host(host));
+                assert_eq!(
+                    should_intercept_host(&domains, host),
+                    shared,
+                    "[{}] off: {host} intercepted only through a sibling entry",
+                    off.slug
+                );
+                for prefix in &off.rewrite_prefixes {
+                    let path = sample_request_path(&off, prefix);
+                    // No sibling claims these paths today either, so any
+                    // rewrite here means the switch did not take.
+                    if let Decision::Rewrite { slug, .. } = decide(&domains, host, &path) {
+                        panic!(
+                            "[{}] is off, but {host}{path} was routed under [{slug}]",
+                            off.slug
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
