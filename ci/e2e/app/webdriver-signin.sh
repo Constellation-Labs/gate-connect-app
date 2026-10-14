@@ -97,6 +97,9 @@ on_exit() {
     echo "::error::app e2e ($OS) failed at step: $STEP"
     os_screenshot "$OUT/failed-$STEP.screen.png"
     if [ -f "$WD_SESSION" ]; then
+      # An error card keeps its cause under a Details disclosure; open it so
+      # the dump carries the cause.
+      "${WD[@]}" click 2 "Details" >/dev/null 2>&1 || true
       "${WD[@]}" screenshot "$OUT/failed-$STEP.png" || true
       "${WD[@]}" dump >"$OUT/failed-$STEP.page.txt" 2>&1 || true
     fi
@@ -120,15 +123,23 @@ if [ "$OS" = linux ]; then
   step "keyring"
   # Unlocks (and so creates) the login keyring with an empty password, and
   # serves org.freedesktop.secrets on this session bus.
-  eval "$(printf '' | gnome-keyring-daemon --unlock --components=secrets)"
+  eval "$(printf 'e2e' | gnome-keyring-daemon --unlock --components=secrets)"
   export GNOME_KEYRING_CONTROL
   echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS DISPLAY=${DISPLAY:-}"
+  # Prove the store takes a write and gives it back before the app needs it,
+  # so a broken keyring names itself here and not as a failed sign-in.
+  printf 'probe' | secret-tool store --label="app e2e probe" gc-app-e2e probe
+  [ "$(secret-tool lookup gc-app-e2e probe)" = "probe" ] || { echo "the Secret Service did not return what was stored" >&2; exit 1; }
+  secret-tool clear gc-app-e2e probe
+  echo "Secret Service round trip ok"
   endstep
 fi
 
 step "mock-gateway"
 (
   cd "$WORK"
+  # -subj "/CN=..." would otherwise reach openssl as a Windows path.
+  export MSYS2_ARG_CONV_EXCL='*'
   openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
     -subj "/CN=Gate Connect App E2E CA" -days 2 \
     -addext "basicConstraints=critical,CA:TRUE" \
@@ -140,7 +151,7 @@ step "mock-gateway"
     -out leaf.pem -days 2 -extfile leaf.ext 2>/dev/null
 )
 if [ "$OS" = windows ]; then
-  "${NOCONV[@]}" certutil -addstore Root "$(native "$WORK/ca.pem")" >/dev/null
+  "${NOCONV[@]}" certutil -addstore Root "$(native "$WORK/ca.pem")" | tail -2
   printf '\r\n127.0.0.1 %s\r\n::1 %s\r\n' "$GATEWAY_HOST" "$GATEWAY_HOST" >>"$HOSTS"
   "${NOCONV[@]}" ipconfig /flushdns >/dev/null
 else
