@@ -140,7 +140,13 @@ switch ($Command) {
     [System.Windows.Forms.SendKeys]::SendWait($escaped)
     Start-Sleep -Milliseconds 300
     $value = $hit.El.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
-    if ($value -ne $text) { Fail "field `"$label`" reads $($value.Length) characters after typing $($text.Length)" }
+    if (-not [string]::Equals($value, $text, [StringComparison]::Ordinal)) {
+      # Where they part, by position only: the value may be a real secret on
+      # some later flow, so no characters are printed.
+      $i = 0
+      while ($i -lt [Math]::Min($value.Length, $text.Length) -and $value[$i] -eq $text[$i]) { $i++ }
+      Fail "field `"$label`" reads $($value.Length) characters after typing $($text.Length), first difference at $i"
+    }
     Write-Output "typed $($text.Length) characters into: $((Describe $hit).Trim())"
   }
   default {
