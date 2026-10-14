@@ -844,21 +844,25 @@ describe("browserTrustRestartAdvice", () => {
     );
   });
 
-  it("asks for something that actually re-runs the write", () => {
-    // Not "switch routing on again": the note is raised from inside the enable
-    // that just trusted the CA, so routing is already on, and
-    // `manager_linux::enable` returns early before `ca::ensure_trusted` when
-    // the client is connected. Off and on again is what reaches the write.
+  it("offers something that actually re-runs the write", () => {
+    // A button, not a routing toggle: there is no routing switch to turn off
+    // and on, and the note used to send people looking for one. The retry runs
+    // `proxy_trust_ca`, which reaches the browser write directly.
     //
-    // Unconditional, for all three failure readings. Guarding the second
-    // assertion on the body mentioning "routing" made this vacuous for
-    // `write_failed`, whose copy did not - and what the guard was hiding was
-    // that `write_failed` prescribed no retry at all: it named the store, and
-    // then left the reader with nothing to do once they had unlocked it.
+    // Unconditional, for all three failure readings: `write_failed` once
+    // prescribed no retry at all - it named the store, and then left the reader
+    // with nothing to do once they had unlocked it.
     for (const nss of ["tools_missing", "write_failed", "not_written"] as const) {
-      const body = browserTrustRestartAdvice("linux", nss)?.body ?? "";
-      expect(body).not.toContain("switch routing on again");
-      expect(body).toContain("turn routing off and on again");
+      const advice = browserTrustRestartAdvice("linux", nss);
+      expect(advice?.retry).toBeTruthy();
+      expect(advice?.body).not.toMatch(/routing (off|on)/);
+    }
+  });
+
+  it("offers no retry once the write landed", () => {
+    // Reopening the browser is the only step left, and Gate cannot run it.
+    for (const nss of ["trusted", null] as const) {
+      expect(browserTrustRestartAdvice("linux", nss)?.retry).toBeUndefined();
     }
   });
 
@@ -871,7 +875,7 @@ describe("browserTrustRestartAdvice", () => {
     const advice = browserTrustRestartAdvice("linux", "not_written");
     expect(advice?.body).not.toContain("diagnostics report");
     expect(advice?.body).not.toContain("libnss3-tools");
-    expect(advice?.body).toContain("turn routing off and on again");
+    expect(advice?.retry).toBe("Add to browsers");
   });
 
   it("counts the stores the way the report does", () => {
@@ -880,7 +884,7 @@ describe("browserTrustRestartAdvice", () => {
     // say on a machine with two locked databases.
     const advice = browserTrustRestartAdvice("linux", "write_failed");
     expect(advice?.title).not.toContain("One browser");
-    expect(advice?.body).toContain("at least one");
+    expect(advice?.body).toMatch(/at least one/i);
   });
 
   it("says who is unaffected, and does not count Firefox among them", () => {

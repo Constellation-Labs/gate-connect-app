@@ -170,6 +170,26 @@ describe("NoteBanner", () => {
     expect(container.querySelector(".from-amber-50.border-amber-300")).not.toBeNull();
     expect(screen.getByRole("status").textContent).toContain(props.body);
   });
+
+  it("draws only the dismiss without an action", () => {
+    render(<NoteBanner {...props} />);
+    expect(screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Dismiss",
+    ]);
+  });
+
+  it("runs its action on click, and holds it while busy", () => {
+    const onClick = vi.fn();
+    const { rerender } = render(
+      <NoteBanner {...props} action={{ label: "Add to browsers", onClick }} />,
+    );
+    screen.getByRole("button", { name: "Add to browsers" }).click();
+    expect(onClick).toHaveBeenCalledTimes(1);
+
+    rerender(<NoteBanner {...props} action={{ label: "Add to browsers", onClick, busy: true }} />);
+    const button = screen.getByRole("button", { name: "Add to browsers" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
 });
 
 /**

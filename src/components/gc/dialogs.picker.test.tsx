@@ -123,7 +123,7 @@ describe("the model picker, choosing several", () => {
   it("states the cost consequence, and says what is needed when the draft empties", () => {
     renderPicker();
     expect(screen.getByRole("dialog").textContent).toContain(
-      "consume Gate credits",
+      "use Gate credits",
     );
 
     // The empty draft is a dead end without a sentence beside the refused
@@ -195,7 +195,7 @@ describe("the model picker, choosing one", () => {
   it("drops the footer note, which is about a set being assembled", () => {
     renderPicker({ multiple: false });
     const dialog = screen.getByRole("dialog").textContent ?? "";
-    expect(dialog).not.toContain("consume Gate credits");
+    expect(dialog).not.toContain("use Gate credits");
     expect(dialog).not.toContain("No models enabled");
   });
 

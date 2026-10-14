@@ -88,7 +88,7 @@ describe("docs/analytics-events.md stays in step with the code", () => {
     // The copy names the switch, and the no and the Skip.
     expect(dialogs).toMatch(/Once you sign in, and while\s+sharing is on/);
     // Once per install, so the copy says "the first time".
-    expect(dialogs).toMatch(/The first time you say no, or turn sharing off later, one final note/);
+    expect(dialogs).toMatch(/The first time you say no, or turn sharing off later, Gate sends one\s+last note/);
     // The gateway does store the device id with requests.
     expect(dialogs).toMatch(/stored with each request your account sends/);
     expect(dialogs).not.toMatch(/does not use it to tie this device/);

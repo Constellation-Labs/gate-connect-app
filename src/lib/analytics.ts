@@ -370,9 +370,10 @@ async function boot(): Promise<void> {
   void trackMilestone("app_first_launched");
 }
 
-/** The backend's broadcasts, emitted by `src-tauri/src/lib.rs` under the same
- *  names (`ANALYTICS_IDENTITY_EVENT`, `ANALYTICS_CONSENT_EVENT`) and pinned on
- *  both sides by `analytics.contract.test.ts`. */
+/** The backend's broadcasts: the names are defined in `src-tauri/src/lib.rs`
+ *  (`ANALYTICS_IDENTITY_EVENT`, `ANALYTICS_CONSENT_EVENT`), emitted from
+ *  `src-tauri/src/commands.rs`, and pinned on both sides by
+ *  `analytics.contract.test.ts`. */
 export const ANALYTICS_IDENTITY_EVENT = "analytics-identity-changed";
 export const ANALYTICS_CONSENT_EVENT = "analytics-consent-changed";
 
@@ -980,8 +981,9 @@ function keptApiKeyOrg(s: SessionFacts): string | null {
   return s.authMode === "api_key" && storedAuthMode === "api_key" ? storedOrg : null;
 }
 
-/** The backend's rejections of `set_analytics_identity`, pinned against
- *  `src-tauri/src/lib.rs` by `analytics.contract.test.ts`. */
+/** The backend's rejections of `set_analytics_identity`: defined in
+ *  `src-tauri/src/lib.rs`, returned from `src-tauri/src/commands.rs`, and
+ *  pinned against both by `analytics.contract.test.ts`. */
 export const IDENTITY_NOT_LIVE = "analytics-identity-not-live";
 export const IDENTITY_UNCONFIRMED = "analytics-identity-unconfirmed";
 /** How often, and how far apart, a save that could not be confirmed is

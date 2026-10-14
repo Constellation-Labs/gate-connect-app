@@ -263,6 +263,42 @@ test.describe("new UI certificate and diagnostics", () => {
     await expect(app.page.getByText("Your browsers can’t see the certificate")).toHaveCount(0);
   });
 
+  test("on Linux, a failed browser write offers a retry that re-runs it", async ({ boot }) => {
+    // The note's button, rather than the routing toggle the copy used to ask
+    // for: `proxy_trust_ca` reaches the browser write directly.
+    const app = await boot({ platform: "linux", proxy: { running: true, ca_trusted: false } });
+    await app.patch({ proxy: { ca_trusted: true, ca_nss_trust: "not_written" } });
+    await app.emit("proxy-state-changed");
+    await expect(app.page.getByText("Your browsers don’t have the certificate yet")).toBeVisible();
+    expect(await app.lastCall("proxy_trust_ca")).toBeNull();
+
+    await app.page.getByRole("button", { name: "Add to browsers" }).click();
+
+    await expect.poll(() => app.lastCall("proxy_trust_ca")).not.toBeNull();
+  });
+
+  // The other two failures carry the same button, each under its own label:
+  // "Try again" where a store refused, since there is something to fix first.
+  for (const [reading, title, label] of [
+    ["tools_missing", "Your browsers can’t see the certificate", "Add to browsers"],
+    ["write_failed", "A browser certificate store refused the certificate", "Try again"],
+  ] as const) {
+    test(`on Linux, ${reading} offers "${label}", which re-runs the write`, async ({ boot }) => {
+      const app = await boot({ platform: "linux", proxy: { running: true, ca_trusted: false } });
+      await app.patch({ proxy: { ca_trusted: true, ca_nss_trust: reading } });
+      await app.emit("proxy-state-changed");
+      await expect(app.page.getByText(title)).toBeVisible();
+      // No routing switch to point at any more, so the copy must not.
+      await expect(app.page.getByText(/turn routing off and on/)).toHaveCount(0);
+      expect(await app.lastCall("proxy_trust_ca")).toBeNull();
+
+      // Exact: Overview's activity card has a "Try again: Activity" of its own.
+      await app.page.getByRole("button", { name: label, exact: true }).click();
+
+      await expect.poll(() => app.lastCall("proxy_trust_ca")).not.toBeNull();
+    });
+  }
+
   test("an untrusted certificate is not offered for removal", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: false } });
 
