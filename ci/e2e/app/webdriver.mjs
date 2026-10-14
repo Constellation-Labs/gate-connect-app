@@ -123,7 +123,10 @@ async function findShown(xpath) {
   const els = await wd('POST', s('/elements'), { using: 'xpath', value: xpath });
   const seen = [];
   for (const el of els) {
-    const id = el[W3C_ELEMENT] || el.ELEMENT;
+    // A reference is an object with one key; WebKitWebDriver's key is not
+    // the W3C name, so take whichever it is.
+    const id = el[W3C_ELEMENT] || el.ELEMENT || Object.values(el)[0];
+    if (!id) seen.push('reference ' + JSON.stringify(el));
     try {
       const displayed = await wd('GET', s(`/element/${id}/displayed`));
       const enabled = await wd('GET', s(`/element/${id}/enabled`));

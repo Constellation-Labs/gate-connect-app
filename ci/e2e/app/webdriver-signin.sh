@@ -57,9 +57,9 @@ case "$(uname -s)" in
   *) echo "webdriver-signin.sh drives Windows and Linux; macOS is macos-signin.sh" >&2; exit 2 ;;
 esac
 
-# Git Bash would rewrite a lone /S into a path; the installer and certutil
-# take Windows switches, so leave every argument as written.
-export MSYS2_ARG_CONV_EXCL='*'
+# Git Bash rewrites an argument that looks like a path, which turns a Windows
+# switch such as /flushdns into one. NOCONV runs a command without that.
+NOCONV=(env MSYS2_ARG_CONV_EXCL='*')
 native() { if [ "$OS" = windows ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
 if [ "$OS" = windows ]; then
@@ -140,9 +140,9 @@ step "mock-gateway"
     -out leaf.pem -days 2 -extfile leaf.ext 2>/dev/null
 )
 if [ "$OS" = windows ]; then
-  certutil -addstore Root "$(native "$WORK/ca.pem")" >/dev/null
+  "${NOCONV[@]}" certutil -addstore Root "$(native "$WORK/ca.pem")" >/dev/null
   printf '\r\n127.0.0.1 %s\r\n::1 %s\r\n' "$GATEWAY_HOST" "$GATEWAY_HOST" >>"$HOSTS"
-  ipconfig /flushdns >/dev/null
+  "${NOCONV[@]}" ipconfig /flushdns >/dev/null
 else
   sudo cp "$WORK/ca.pem" /usr/local/share/ca-certificates/gate-connect-app-e2e.crt
   sudo update-ca-certificates >/dev/null
@@ -274,7 +274,7 @@ echo "the key is in no file under $DATA"
 SERVICE="ai.constellation.gate-connect.account.gateway-api-key"
 if [ "$OS" = windows ]; then
   # Credential Manager lists targets only; keyring names them <user>.<service>.
-  cmdkey /list | grep -F "$SERVICE" || { echo "no Credential Manager entry for $SERVICE" >&2; exit 1; }
+  "${NOCONV[@]}" cmdkey /list | grep -F "$SERVICE" || { echo "no Credential Manager entry for $SERVICE" >&2; exit 1; }
 else
   # SearchItems returns item paths, not secrets.
   FOUND="$(gdbus call --session --dest org.freedesktop.secrets \
