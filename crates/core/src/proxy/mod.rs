@@ -2173,6 +2173,20 @@ pub mod testing {
     /// Same, for the device-name label.
     pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
 
+    /// This install's CA as (certificate, private key) PEM, loaded or created
+    /// exactly as the engine's manager does it.
+    ///
+    /// For `tests/catalog_routing.rs` in its OS-trust mode, which runs only in
+    /// the `catalog-routing` CI job: the job trusts this CA machine-wide with
+    /// `proxy trust-ca --system-trust`, and the test boots the engine on the
+    /// same pair so a client validating through the OS store accepts its
+    /// leaves. The key stays `pub(crate)` on `Ca`; this is the one door.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub fn engine_ca_for_tests() -> anyhow::Result<(String, String)> {
+        let ca = super::ca::load_or_create()?;
+        Ok((ca.cert_pem().to_string(), ca.key_pem().to_string()))
+    }
+
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
         super::inject_attribution(headers, None, None);
     }
@@ -2302,11 +2316,8 @@ fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str
         return Some(slug);
     }
     let ua = raw_ua.map(|v| v.to_ascii_lowercase());
-    if ua
-        .as_deref()
-        .is_some_and(|ua| CODEX_APP_AGENTS.iter().any(|prefix| ua.starts_with(prefix)))
-    {
-        return None;
+    if let Some(answer) = ua.as_deref().and_then(|ua| codex_mode(ua, headers)) {
+        return answer;
     }
     if let Some(slug) = ua.as_deref().and_then(|ua| {
         CLIENT_TOOL_NEEDLES
@@ -2351,17 +2362,58 @@ pub(crate) const CLIENT_TOOL_NEEDLES: [(&str, crate::taxonomy::Client); 5] = [
     ("hermes", crate::taxonomy::Client::Hermes),
 ];
 
-/// The Codex desktop app's own agents, lower-cased prefixes. Both contain the
-/// `codex` needle, and stamping them `codex` filed the desktop app's traffic
-/// under the CLI: the gateway prefers `x-gate-client` over its own detector,
-/// which names these `codex-desktop`. They are left unstamped outright, before
-/// the OpenAI checks: the app sends `originator` on chatgpt.com, so falling
-/// through would stamp it `chatgpt` and file it under the ChatGPT desktop app
-/// instead. The blank hands it to the gateway's detector, which is the honest
-/// answer this function prefers to a wrong slug. `codex-mcp-client` is the
-/// desktop app's MCP client, captured beside its `Codex Desktop/` builds; the
-/// CLI sends `codex_cli_rs/`, which still matches.
-const CODEX_APP_AGENTS: [&str; 2] = ["codex desktop/", "codex-mcp-client/"];
+/// The ChatGPT desktop app's Codex mode, by its own agents.
+///
+/// OpenAI folded the standalone Codex desktop app into the ChatGPT desktop app
+/// (2026-07-09), and the gateway's harness manifest keeps one entry for the
+/// merged app, `chatgpt-desktop` (AG-1040). So these agents are stamped with
+/// that app's slug, [`crate::taxonomy::Client::ChatGpt`], which is what the
+/// app's own chat traffic is stamped with too.
+///
+/// `None` means "not the Codex mode, carry on"; `Some(None)` means "the Codex
+/// mode's client library, but not provably the desktop app: leave it blank".
+/// Both agents contain the `codex` needle, so either way they must be answered
+/// here, before the needle table, or the app is filed under the Codex CLI. The
+/// CLI sends `codex_cli_rs/`, which matches neither prefix.
+///
+/// `codex-mcp-client/` is the MCP client library, which other Codex front-ends
+/// share. It is the app's only when the request carries no `originator` or one
+/// of the app's own ([`CODEX_APP_ORIGINATORS`]); `codex_vscode` is the VS Code
+/// extension and stays blank. That is the gateway's `chatgpt-desktop` rule,
+/// mirrored so the stamp and the detector name the same requests.
+fn codex_mode(ua: &str, headers: &HeaderMap) -> Option<Option<&'static str>> {
+    let chatgpt = Some(crate::taxonomy::Client::ChatGpt.slug());
+    if ua.starts_with(CODEX_DESKTOP_AGENT) {
+        return Some(chatgpt);
+    }
+    if !ua.starts_with(CODEX_MCP_CLIENT_AGENT) {
+        return None;
+    }
+    let originator = headers
+        .get("originator")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    Some(match originator {
+        None => chatgpt,
+        Some(o)
+            if CODEX_APP_ORIGINATORS
+                .iter()
+                .any(|a| o.eq_ignore_ascii_case(a)) =>
+        {
+            chatgpt
+        }
+        Some(_) => None,
+    })
+}
+
+/// The Codex mode's own agent, lower-cased.
+const CODEX_DESKTOP_AGENT: &str = "codex desktop/";
+/// The MCP client library the Codex mode's tool plane uses, lower-cased.
+const CODEX_MCP_CLIENT_AGENT: &str = "codex-mcp-client/";
+/// The `originator` values the desktop app sends, as the gateway enumerates
+/// them. Enumerated rather than prefix-matched, as there.
+const CODEX_APP_ORIGINATORS: [&str; 3] = ["Codex Desktop", "Codex Browser", "codex_work_desktop"];
 
 /// Whether the ChatGPT desktop app sent this.
 ///
@@ -2380,7 +2432,8 @@ const CODEX_APP_AGENTS: [&str; 2] = ["codex desktop/", "codex-mcp-client/"];
 /// The value of `originator` is deliberately not read. It names the front-end
 /// ("Codex Desktop" and others), and mapping strings nobody has captured to
 /// slugs would be the guessing this module refuses everywhere else. Presence,
-/// on a chatgpt.com entry, is the claim.
+/// on a chatgpt.com entry, is the claim. [`codex_mode`] does read the value,
+/// for the app's Codex mode, against the enumerated [`CODEX_APP_ORIGINATORS`].
 fn chatgpt_app(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str> {
     if !domain.is_some_and(|slug| CHATGPT_HOST_DOMAINS.contains(&slug)) {
         return None;
@@ -5559,18 +5612,19 @@ mod tests {
             // now prefers `x-gate-client` - which is to say, this side's answer
             // - over its own detector.
             ("openclaw/1.4.0", Some("openclaw"), None),
-            // The Codex desktop app, captured verbatim. Both carry the `codex`
-            // needle and neither is the CLI: left unstamped here, the gateway's
-            // own detector names them `codex-desktop`.
+            // The ChatGPT desktop app's Codex mode, captured verbatim. Both
+            // carry the `codex` needle and neither is the CLI: stamped as the
+            // merged app here, and the gateway's own detector names them
+            // `chatgpt-desktop`, the manifest entry for that app (AG-1040).
             (
                 "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
-                None,
-                Some("codex-desktop"),
+                Some("chatgpt"),
+                Some("chatgpt-desktop"),
             ),
             (
                 "codex-mcp-client/0.148.0-alpha.9",
-                None,
-                Some("codex-desktop"),
+                Some("chatgpt"),
+                Some("chatgpt-desktop"),
             ),
             // Not agents. A wrong slug here would file somebody else's traffic
             // under a tool's name in the very view a user opens to find out
@@ -5607,17 +5661,18 @@ mod tests {
         // Case is the tool's business, not ours: one tool has to be one series.
         assert_eq!(tool("Codex/1.0"), Some("codex"));
         // The three codex-like agents: the CLI is `codex`, the desktop app's
-        // two agents are not. Stamping them `codex` filed the app under the
-        // CLI, since the gateway trusts this stamp over its own detector.
+        // two agents are the ChatGPT app's Codex mode. Stamping them `codex`
+        // filed the app under the CLI, since the gateway trusts this stamp
+        // over its own detector.
         assert_eq!(
             tool("codex_cli_rs/0.55.0 (Mac OS 15.0.0; arm64)"),
             Some("codex")
         );
         assert_eq!(
             tool("Codex Desktop/26.825.32147 (Windows NT 10.0; x64)"),
-            None
+            Some("chatgpt")
         );
-        assert_eq!(tool("codex-mcp-client/0.148.0-alpha.9"), None);
+        assert_eq!(tool("codex-mcp-client/0.148.0-alpha.9"), Some("chatgpt"));
 
         // No agent, or one we don't recognise, is unattributed - never a guess.
         // A wrong slug would put one tool's traffic under another's name in the
@@ -5895,20 +5950,67 @@ mod tests {
         // splits, so both must answer.
         assert_eq!(client_tool(&h, Some("chatgpt")), Some("chatgpt"));
 
-        // The Codex desktop app sends `originator` too, and is not the ChatGPT
-        // app: it stays unstamped on these entries, for the gateway to name.
-        for ua in [
-            "Codex Desktop/26.825.32147 (Windows NT 10.0; x64)",
-            "codex-mcp-client/0.148.0-alpha.9",
+        // The app's Codex mode sends `originator` too, and since OpenAI merged
+        // the Codex desktop app into this one it IS this app (AG-1040): the
+        // same slug on both entries.
+        for (ua, originator) in [
+            (
+                "Codex Desktop/26.825.32147 (Windows NT 10.0; x64)",
+                "Codex Desktop",
+            ),
+            ("codex-mcp-client/0.148.0-alpha.9", "Codex Desktop"),
+            ("codex-mcp-client/0.148.0-alpha.9", "codex_work_desktop"),
         ] {
-            let mut codex_app = h.clone();
+            let mut codex_app = HeaderMap::new();
+            codex_app.insert(
+                HeaderName::from_static("originator"),
+                HeaderValue::from_static(originator),
+            );
             codex_app.insert(
                 hyper::header::USER_AGENT,
                 HeaderValue::from_str(ua).unwrap(),
             );
-            assert_eq!(client_tool(&codex_app, Some("chatgpt-apps")), None, "{ua}");
-            assert_eq!(client_tool(&codex_app, Some("chatgpt")), None, "{ua}");
+            assert_eq!(
+                client_tool(&codex_app, Some("chatgpt-apps")),
+                Some("chatgpt"),
+                "{ua}"
+            );
+            assert_eq!(
+                client_tool(&codex_app, Some("chatgpt")),
+                Some("chatgpt"),
+                "{ua}"
+            );
+            // On no routed entry at all, the agent alone still names the app.
+            assert_eq!(client_tool(&codex_app, None), Some("chatgpt"), "{ua}");
         }
+    }
+
+    /// The Codex MCP client library is shared by other Codex front-ends, so it
+    /// names the desktop app only when the front-end says nothing or says it is
+    /// the app. The VS Code extension stays blank rather than wrong, as it does
+    /// in the gateway's `chatgpt-desktop` detector.
+    #[test]
+    fn the_mcp_client_names_the_app_only_for_the_apps_own_originators() {
+        let with = |originator: Option<&'static str>| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_static("codex-mcp-client/0.148.0-alpha.9"),
+            );
+            if let Some(o) = originator {
+                h.insert(
+                    HeaderName::from_static("originator"),
+                    HeaderValue::from_static(o),
+                );
+            }
+            client_tool(&h, Some("chatgpt-apps"))
+        };
+        assert_eq!(with(None), Some("chatgpt"));
+        assert_eq!(with(Some("Codex Browser")), Some("chatgpt"));
+        assert_eq!(with(Some("codex_vscode")), None);
+        assert_eq!(with(Some("SomeoneElse")), None);
+        // Never the CLI, whatever the originator says.
+        assert_ne!(with(Some("codex_vscode")), Some("codex"));
     }
 
     /// The same header on another vendor's entry is not believed.

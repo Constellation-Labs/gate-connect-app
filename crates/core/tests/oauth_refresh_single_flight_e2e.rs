@@ -13,9 +13,18 @@
 //! session under it. One test function, because the seams and the session
 //! state are process-global and the steps run in order.
 //!
-//! The one timing assumption: callers spawned while a refresh is held read the
-//! session within `SETTLE` of starting. Each of them only reads two atomics and
-//! a file before queueing, so `SETTLE` is generous by orders of magnitude.
+//! No step waits on a sleep. A held refresh is released only once every
+//! caller lined up behind it has been counted at the refresh lock
+//! (`oauth::refresh_callers_for_tests`), which is after it has read the
+//! session it will be judged by. A caller that arrived after the release would
+//! rightly refresh again (step 3), so letting one in late is not a test of
+//! sharing; it is what made this flaky on a loaded runner (AG-1067).
+//!
+//! One real time limit remains: the Cognito client gives up after 10s
+//! (`oauth.rs`), so a held refresh cannot be held longer than that. Lining the
+//! callers up is therefore bounded by [`QUEUE_LIMIT`], below that timeout, so a
+//! stalled runner fails with the counts it saw rather than on a refresh that
+//! timed out underneath the test.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -23,12 +32,48 @@ use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gate_connect_core::env;
 use gate_connect_core::oauth::{self, OAuthTokens, SessionReading};
 
-const SETTLE: Duration = Duration::from_millis(300);
+/// How long to wait for something that must happen before failing the test
+/// instead of hanging it. A bound, never a pause: every wait returns as soon as
+/// what it waits for has happened.
+const DEADLINE: Duration = Duration::from_secs(300);
+
+/// How long the callers get to line up behind a held refresh. Below the
+/// Cognito client's 10s timeout, which would otherwise end the held refresh
+/// first and fail the test on a misleading assertion.
+const QUEUE_LIMIT: Duration = Duration::from_secs(8);
+
+/// Wait until `done` holds, or fail after [`DEADLINE`] with `what` and the
+/// last thing `done` saw.
+fn await_until(what: &str, done: impl Fn() -> Result<(), String>) {
+    await_within(what, DEADLINE, done)
+}
+
+/// [`await_until`] with its own limit.
+fn await_within(what: &str, limit: Duration, done: impl Fn() -> Result<(), String>) {
+    let start = Instant::now();
+    loop {
+        let seen = match done() {
+            Ok(()) => return,
+            Err(seen) => seen,
+        };
+        assert!(start.elapsed() < limit, "{what} within {limit:?}: {seen}");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// `Ok` once `seen` reaches `want`, else what it is at.
+fn reached(seen: u64, want: u64) -> Result<(), String> {
+    if seen >= want {
+        Ok(())
+    } else {
+        Err(format!("at {seen} of {want}"))
+    }
+}
 
 /// A token endpoint the test steers. Answers with whatever `script` holds next
 /// (a renewal `at-renewed-<n>` once it is empty), and while `held` is set,
@@ -110,13 +155,9 @@ impl Cognito {
     /// Wait until `n` requests have arrived, so a refresh is known to be in
     /// flight (and holding the refresh lock) before the test moves on.
     fn await_hits(&self, n: usize) {
-        for _ in 0..500 {
-            if self.hits() >= n {
-                return;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        panic!("Cognito never saw request {n}");
+        await_until(&format!("Cognito did not see request {n}"), || {
+            reached(self.hits() as u64, n as u64)
+        });
     }
 
     fn script(&self, status: &'static str, body: &'static str) {
@@ -175,14 +216,26 @@ fn store_expired() {
     oauth::store(&bundle("at-expired", "rt-1", "client123", now_unix() - 60)).expect("store");
 }
 
-/// Start `n` callers of `f` while Cognito is held, give them `SETTLE` to read
-/// the session and queue, then release Cognito and collect what each returned.
+/// Start `n` callers of `f` while Cognito is held, wait until one refresh is in
+/// flight and all `n` have reached the refresh lock, then release Cognito and
+/// collect what each returned.
+///
+/// Reaching the lock means a caller has read the session generation and the
+/// refresh count it will compare against. The held refresh cannot end before
+/// the release while it is under the client's 10s timeout, which
+/// [`QUEUE_LIMIT`] keeps the wait inside, so every caller is provably inside
+/// the window.
 fn queued_behind_one<T: Send + 'static>(cognito: &Cognito, n: usize, f: fn() -> T) -> Vec<T> {
     cognito.hold();
     let before = cognito.hits();
+    let arrived = oauth::refresh_callers_for_tests();
     let handles: Vec<_> = (0..n).map(|_| thread::spawn(f)).collect();
     cognito.await_hits(before + 1);
-    thread::sleep(SETTLE);
+    await_within(
+        &format!("not all {n} callers reached the refresh"),
+        QUEUE_LIMIT,
+        || reached(oauth::refresh_callers_for_tests(), arrived + n as u64),
+    );
     cognito.release();
     handles
         .into_iter()

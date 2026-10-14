@@ -105,10 +105,10 @@ describe("useSectionRouting routeMembers", () => {
 
     expect(h.routing.setAppRouted).toHaveBeenCalledWith("claude-code", true);
     expect(h.routing.setDomainRouted).toHaveBeenCalledWith("anthropic", true);
-    expect(h.runningApps.offerAfterChange).toHaveBeenCalledWith([
-      "claude-code",
-      "anthropic",
-    ]);
+    expect(h.runningApps.offerAfterChange).toHaveBeenCalledWith(
+      ["claude-code", "anthropic"],
+      "on",
+    );
   });
 
   it("does nothing for an empty list", async () => {

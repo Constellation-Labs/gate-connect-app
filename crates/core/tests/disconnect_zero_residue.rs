@@ -1223,8 +1223,6 @@ fn hermes_leaves_a_user_owned_proxy_alone() {
 /// a same-second write cannot hide a missing one.
 #[test]
 fn only_gates_own_changes_move_the_reopen_bound() {
-    use gate_connect_core::config_changes::changed_at;
-
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
 
@@ -1278,11 +1276,70 @@ fn only_gates_own_changes_move_the_reopen_bound() {
     );
 }
 
+/// Unix seconds of the newest change Gate recorded for `path`.
+fn changed_at(path: &std::path::Path) -> Option<u64> {
+    gate_connect_core::config_changes::history(path)
+        .last()
+        .map(|change| change.at)
+}
+
+/// A quit takes Gate out and the next launch puts it back. The record keeps
+/// both changes, and the view after the round trip is the view before it, so a
+/// session that outlived the relaunch is not told to reopen.
+#[test]
+fn a_round_trip_through_disconnect_puts_back_the_same_view() {
+    use gate_connect_core::config_changes::history;
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, r#"{"model":"opus"}"#).unwrap();
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+    claude.disconnect().unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    let changes = history(&settings);
+    assert_eq!(changes.len(), 3, "{changes:?}");
+    assert_eq!(changes[0].view, changes[2].view);
+    assert_ne!(changes[0].view, changes[1].view);
+}
+
+/// An edit Gate did not make - here the quit's revert, written by hand so its
+/// record never lands - is found by the next write and kept, stamped just
+/// after the change before it, so a session opened in the gap is still told
+/// to reopen when Gate puts its own view back.
+#[test]
+fn a_view_gate_did_not_record_is_kept_when_the_next_write_finds_it() {
+    use gate_connect_core::config_changes::history;
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, r#"{"model":"opus"}"#).unwrap();
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+    fs::write(&settings, r#"{"model":"opus"}"#).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    let changes = history(&settings);
+    assert_eq!(changes.len(), 3, "{changes:?}");
+    assert_eq!(changes[1].at, (changes[0].at + 1).min(changes[2].at));
+    assert_ne!(changes[0].view, changes[1].view);
+    assert_eq!(changes[0].view, changes[2].view);
+}
+
 /// Not only Claude Code: every integration writes through the same record.
 #[test]
 fn opencode_changes_are_recorded_too() {
-    use gate_connect_core::config_changes::changed_at;
-
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     seed_relay_port(9977);
