@@ -1487,8 +1487,9 @@ impl HttpHandler for GateHandler {
         //
         // A NAVIGATION splits off here and does neither. It can render the
         // interstitial itself, so it needs no window opened on its behalf and
-        // must keep the real page (see the substitution at the end of this
-        // function). What it does instead is REPORT: the solve webview's own
+        // must keep the real challenge page (see the substitution at the end
+        // of this function; the only navigation answer replaced is the JSON
+        // the window lands on once it is let through). What it does instead is REPORT: the solve webview's own
         // load is the navigation this sees in practice, and whether Cloudflare
         // challenged it is the only way to tell a window that is showing a
         // challenge from one that is showing chatgpt.com. The GUI reveals on
@@ -1516,6 +1517,8 @@ impl HttpHandler for GateHandler {
             // Cloudflare declined to challenge from one that never reached us.
             crate::proxy::record_cf_navigation_seen();
         }
+        // Set in the let-through arm below, acted on at the end with `notice`.
+        let mut solved_page = false;
         let notice = match (cf_challenge_detected(turn, &res), navigation) {
             // The solve webview's own load, challenged. Record it and get out
             // of the way: no window to open (this one IS the window) and
@@ -1548,6 +1551,14 @@ impl HttpHandler for GateHandler {
                         res.headers().contains_key("cf-mitigated"),
                     ) {
                         crate::proxy::record_cf_navigation_let_through();
+                        // What the window shows once Cloudflare is done with it.
+                        // The `/backend-api/...` paths it is sent to answer a
+                        // signed-out load with JSON, usually an error like
+                        // `{"detail":"Unauthorized"}`, which reads as the check
+                        // having failed when it just passed. JSON only: an HTML
+                        // answer is a real page (the app's own shell loads `/`,
+                        // which is also the fallback path) and stays untouched.
+                        solved_page = is_json_response(&res);
                     }
                 }
                 None
@@ -1557,9 +1568,9 @@ impl HttpHandler for GateHandler {
         // The gateway refused a call we authenticated with the OAuth bearer.
         // Tell the shell so it can re-verify the session; the response is
         // returned unchanged either way - a tool that can handle its own 401
-        // must still see it. (The challenge above is the one case that does
-        // replace a response, and only because the app cannot use what it
-        // would otherwise get.)
+        // must still see it. (The challenge above and the solve window's
+        // let-through page are the only cases that replace a response, and
+        // only because neither surface can use what it would otherwise get.)
         //
         // Status only: the error code that names the reason
         // (`invalid_gate_token`) is in the body, and the body is a stream we
@@ -1681,6 +1692,9 @@ impl HttpHandler for GateHandler {
         if let Some(notice) = notice {
             return cf_challenge_response(res.status(), notice);
         }
+        if solved_page {
+            return cf_solved_page_response(&res);
+        }
         res
     }
 }
@@ -1769,6 +1783,86 @@ fn cf_challenge_response(
         // every other part is pre-validated.
         .expect("challenge response builds")
 }
+
+/// The page the solve window shows in place of the origin's JSON once
+/// Cloudflare has let it through (see the let-through arm in
+/// `handle_response`).
+///
+/// `set-cookie` is the one header carried over: the `cf_clearance` the window
+/// is polling for can land on this very response, and dropping it would turn
+/// a solved check into a failed capture. Everything else describes the body
+/// being replaced.
+fn cf_solved_page_response(
+    upstream: &hudsucker::hyper::Response<Body>,
+) -> hudsucker::hyper::Response<Body> {
+    let mut builder = hudsucker::hyper::Response::builder()
+        .status(hudsucker::hyper::StatusCode::OK)
+        .header(
+            hudsucker::hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )
+        .header(
+            hudsucker::hyper::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        );
+    for cookie in upstream
+        .headers()
+        .get_all(hudsucker::hyper::header::SET_COOKIE)
+    {
+        builder = builder.header(hudsucker::hyper::header::SET_COOKIE, cookie.clone());
+    }
+    builder
+        .body(Body::from(CF_SOLVED_PAGE))
+        // Infallible: static parts plus header values that already parsed.
+        .expect("solved page response builds")
+}
+
+/// Self-contained, since nothing of the app's is reachable from a chatgpt.com
+/// page: the popover's surface, ink ramp and shadow-as-border card, written out
+/// by hand. The icon is a neutral ink arrow rather than a success check: this
+/// page also shows when the cookie capture goes on to fail, so it points the
+/// way back without claiming the check worked. Geist is named first for a machine that has it
+/// installed and falls back to the system face otherwise.
+const CF_SOLVED_PAGE: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>You can go back to ChatGPT</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: #ffffff; color: oklch(0.165 0 0);
+    font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    width: 300px; padding: 28px 24px 24px; border-radius: 12px; text-align: center;
+    box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent),
+      0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 6%, transparent),
+      0 2px 4px -1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent);
+  }
+  .icon {
+    width: 36px; height: 36px; margin: 0 auto 16px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: oklch(0.96 0 0); color: oklch(0.26 0 0);
+  }
+  h1 { margin: 0 0 6px; font-size: 17px; font-weight: 600; color: oklch(0.09 0 0); }
+  p { margin: 0; font-size: 13.5px; line-height: 1.45; color: oklch(0.38 0 0); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+  </div>
+  <h1>You can go back to ChatGPT</h1>
+  <p>This window closes on its own.</p>
+</div>
+</body>
+</html>
+"#;
 
 /// What to tell the user for each notify outcome. Split from the response so
 /// the wording can be tested without a runtime to drain a body with.
@@ -1870,6 +1964,18 @@ fn wants_html<T>(req: &Request<T>) -> bool {
                 .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/html"))
         })
     })
+}
+
+/// Whether a response's body is JSON, by its `content-type` media type.
+///
+/// What tells the solve window's let-through answer worth replacing (the
+/// origin's JSON error on a `/backend-api/...` path) from a real page.
+fn is_json_response<T>(res: &hudsucker::hyper::Response<T>) -> bool {
+    res.headers()
+        .get(hudsucker::hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
 }
 
 /// True when the request is asking to leave HTTP for another protocol.
@@ -3579,6 +3685,61 @@ mod tests {
                 .is_none());
             assert!(res.headers().get("cf-mitigated").is_none());
         }
+    }
+
+    /// The solve window's page must still carry every cookie the origin set:
+    /// `cf_clearance` can land on that very response.
+    #[test]
+    fn the_solved_page_is_html_and_keeps_every_cookie() {
+        let upstream = hudsucker::hyper::Response::builder()
+            .status(hudsucker::hyper::StatusCode::UNAUTHORIZED)
+            .header("content-type", "application/json")
+            .header("set-cookie", "cf_clearance=abc; Path=/")
+            .header("set-cookie", "__cf_bm=def; Path=/")
+            .header("content-encoding", "br")
+            .body(Body::empty())
+            .unwrap();
+        let res = cf_solved_page_response(&upstream);
+        assert_eq!(res.status(), hudsucker::hyper::StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(hudsucker::hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+        let cookies: Vec<_> = res
+            .headers()
+            .get_all(hudsucker::hyper::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(cookies, ["cf_clearance=abc; Path=/", "__cf_bm=def; Path=/"]);
+        // The replacement body is not compressed, so the upstream's encoding
+        // must not describe it.
+        assert!(res
+            .headers()
+            .get(hudsucker::hyper::header::CONTENT_ENCODING)
+            .is_none());
+    }
+
+    /// Only JSON is replaced: an HTML answer is a real page, the app's own
+    /// shell among them.
+    #[test]
+    fn only_a_json_answer_counts_as_the_solved_page() {
+        let res = |content_type: Option<&str>| {
+            let mut builder = hudsucker::hyper::Response::builder();
+            if let Some(value) = content_type {
+                builder = builder.header("content-type", value);
+            }
+            builder.body(()).unwrap()
+        };
+        assert!(is_json_response(&res(Some("application/json"))));
+        assert!(is_json_response(&res(Some(
+            "Application/JSON; charset=utf-8"
+        ))));
+        assert!(!is_json_response(&res(Some("text/html; charset=utf-8"))));
+        assert!(!is_json_response(&res(Some("application/json-seq"))));
+        assert!(!is_json_response(&res(None)));
     }
 
     /// The wording is the only thing the user sees, so a window that did not

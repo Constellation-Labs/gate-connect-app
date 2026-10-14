@@ -151,14 +151,21 @@ jobs:
       # upstream break turns this job red on PRs that touch nothing here
       # (96c64b45 did on 2026-10-06). Bump the SHA deliberately, after a newer
       # commit is seen to install cleanly.
+      #
+      # raw.githubusercontent.com rate-limits unauthenticated reads per runner
+      # IP, and shared macOS runners hit it: a 429 failed #450 on 2026-10-13.
+      # --retry treats 429 as transient and honours Retry-After. The script is
+      # saved first so a failed fetch stops the step before bash runs anything.
       - name: Install Hermes (Linux/macOS)
         if: matrix.os != 'windows-latest'
         shell: bash
         env:
           HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_COMMIT/scripts/install.sh" \
-            | bash -s -- --skip-browser --commit "$HERMES_COMMIT"
+          curl -fsSL --retry 5 --retry-delay 10 --retry-max-time 120 \
+            -o "$RUNNER_TEMP/hermes-install.sh" \
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_COMMIT/scripts/install.sh"
+          bash "$RUNNER_TEMP/hermes-install.sh" --skip-browser --commit "$HERMES_COMMIT"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
