@@ -3,6 +3,15 @@
 # that failed midway does not leave a trusted root on the runner. Best-effort
 # throughout: the CLI path first, then the raw store delete as a backstop.
 set -u
+
+# CI only, like run.sh: it deletes every CA named "Gate Connect Local CA",
+# which is also the production CN, so a workstation run would remove the
+# real install's trust.
+if [ "${CI:-}" != "true" ]; then
+  echo "refusing to run outside CI: this script changes the machine trust store" >&2
+  exit 2
+fi
+
 # shellcheck source=ci/catalog-routing/env.sh
 . "$(dirname "$0")/env.sh"
 
