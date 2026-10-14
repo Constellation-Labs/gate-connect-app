@@ -14,6 +14,7 @@ import {
   REOPEN_IDLE_WATCH_MS,
   reopenKey,
   reopenTools,
+  routesNewConversations,
   type ReopenPresence,
   type ReopenStage,
   type ReopenTool,
@@ -65,9 +66,36 @@ export type RunningAppsStage =
    *  request for exactly this offer is in flight, which is what the dialog's
    *  spinner reads: on the stage rather than beside it, so an offer that
    *  replaces this one mid-close does not inherit the spinner. */
-  | { kind: "offer"; tools: ReopenTool[]; slugs?: string[]; closing?: boolean }
+  | {
+      kind: "offer";
+      tools: ReopenTool[];
+      slugs?: string[];
+      closing?: boolean;
+      /** Names of running tools that route per conversation
+       *  ([`routesNewConversations`]): not offered for closing, and named in a
+       *  line of their own. */
+      conversations?: string[];
+    }
+  /** The only tools running route per conversation, so there is nothing to
+   *  close: say that new conversations are protected. */
+  | { kind: "conversations"; names: string[] }
   /** Signalled. Each tool is now followed to its own conclusion. */
   | { kind: "work"; tools: ReopenTool[]; slugs?: string[] };
+
+/**
+ * Why a close is being offered, which decides what a per-conversation tool
+ * (`routesNewConversations`) is told. Required at every call site, because
+ * each answer is wrong for some caller:
+ *
+ * - `on`: routing was turned on. Its next conversation is protected without a
+ *   restart, so it is told that rather than offered a close.
+ * - `off`: routing was turned off. Closing fixes nothing and there is nothing
+ *   to reassure about, so it is left out without a word.
+ * - `model`: its model list changed. That comes from Codex's app-server daemon,
+ *   which reloads only once no session is open, so the close is offered.
+ * - `reopen`: the pane's reopen card asked. Offered like any other tool.
+ */
+export type OfferReason = "on" | "off" | "model" | "reopen";
 
 export interface RunningApps {
   stage: RunningAppsStage | null;
@@ -75,9 +103,10 @@ export interface RunningApps {
    * Probe, and open the sequence only if something is actually running.
    *
    * `slugs` are the tools whose configs the write actually touched. Omitting
-   * them asks about every tool, which only the master toggle means.
+   * them asks about every tool, which only the master toggle means. `change`
+   * says why: see [`OfferReason`].
    */
-  offerAfterChange: (slugs?: string[]) => Promise<void>;
+  offerAfterChange: (slugs: string[] | undefined, change: OfferReason) => Promise<void>;
   closeApps: () => Promise<void>;
   /** Move one row, for an action the shell owns: a retried write, a tool put
    *  back on its own defaults. Scoped to one slug on purpose - AG-566 AC 10
@@ -184,7 +213,7 @@ export function useRunningApps({
    * to close apps that may not be open.
    */
   const offerAfterChange = useCallback(
-    async (slugs?: string[]) => {
+    async (slugs: string[] | undefined, change: OfferReason) => {
       try {
         // Narrowed to what actually changed. A master toggle passes nothing and
         // still offers everything, because it moved every tool's route; a single
@@ -199,20 +228,42 @@ export function useRunningApps({
         // routes it carries are the point of the step: "reopen required"
         // without them does not say what reopening would change.
         const verdicts = await verdictMap();
-        const tools = reopenTools(
+        const found = reopenTools(
           agents,
           nameMap(agents.map((a) => a.slug)),
           verdicts,
         );
-        if (tools.length === 0) {
+        const perConversation = (t: ReopenTool) =>
+          (change === "on" || change === "off") && routesNewConversations(t.slug);
+        const tools = found.filter((t) => !perConversation(t));
+        // Said only over a verdict that reads On: "protected" is a claim about
+        // the user's traffic, and a write that landed is not a route that works.
+        const conversations =
+          change === "on"
+            ? found
+                .filter((t) => perConversation(t) && verdicts.get(t.slug)?.state === "on")
+                .map((t) => t.name)
+            : [];
+        if (tools.length === 0 && found.length > 0 && conversations.length === 0) {
+          // Only a per-conversation tool is running, and either routing went off
+          // or the route is not working yet: nothing to close, and nothing true
+          // to say beyond what its row already says.
+          return;
+        }
+        if (tools.length === 0 && conversations.length === 0) {
           // Same answer as an empty scan: every process the walk yielded was
           // one no slug claims, so there is no tool here to offer anything
           // about.
           nothingRunning.current?.(slugs);
           return;
         }
+        if (tools.length === 0) {
+          commit({ kind: "conversations", names: conversations });
+          track("routing_notice_shown");
+          return;
+        }
         waited.current = new Map();
-        commit({ kind: "offer", tools, slugs });
+        commit({ kind: "offer", tools, slugs, conversations });
         track("routing_notice_shown");
       } catch (err) {
         trackError(err, "close_agents");
@@ -223,7 +274,9 @@ export function useRunningApps({
 
   const markStage = useCallback(
     (slug: string, next: ReopenStage, error?: string) => {
-      for (const t of stageRef.current?.tools ?? []) {
+      const current = stageRef.current;
+      const tools = current && current.kind !== "conversations" ? current.tools : [];
+      for (const t of tools) {
         if (t.slug === slug) waited.current.set(t.key, 0);
       }
       commitTools((t) => (t.slug === slug ? { ...t, stage: next, error } : t));

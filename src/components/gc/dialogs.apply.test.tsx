@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ApplyChangesDialog } from "./dialogs";
+import { ApplyChangesDialog, NewConversationsDialog } from "./dialogs";
 import type { DialogReopenTool } from "./dialogs";
 
 const noop = () => {};
@@ -160,5 +160,40 @@ describe("ApplyChangesDialog closing", () => {
 
     expect(onCloseApps).not.toHaveBeenCalled();
     expect(onReopenLater).not.toHaveBeenCalled();
+  });
+});
+
+const claudeCode: DialogReopenTool = {
+  key: "claude-code:Claude Code",
+  slug: "claude-code",
+  name: "Claude Code",
+  stage: "reopen_required",
+  running: true,
+  canReopen: false,
+  verifiable: true,
+  routeInUse: null,
+  requestedRoute: null,
+};
+
+describe("Codex after routing is turned on", () => {
+  it("names the per-conversation tools on a line of their own", () => {
+    render(
+      <ApplyChangesDialog
+        tools={[claudeCode]}
+        conversations={["Codex"]}
+        onCloseApps={noop}
+        onReopenLater={noop}
+      />,
+    );
+    expect(screen.getByText(/New Codex conversations are protected/)).toBeTruthy();
+  });
+
+  it("offers nothing to close when only Codex is running", () => {
+    const onDone = vi.fn();
+    render(<NewConversationsDialog names={["Codex"]} onDone={onDone} />);
+    expect(screen.getByText("New conversations are protected")).toBeTruthy();
+    expect(screen.queryByText(/close/i)).toBeNull();
+    fireEvent.click(screen.getByText("Got it"));
+    expect(onDone).toHaveBeenCalled();
   });
 });

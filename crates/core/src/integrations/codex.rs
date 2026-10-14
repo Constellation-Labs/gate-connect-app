@@ -842,7 +842,7 @@ impl Integration for Codex {
         if doc.as_table().is_empty() {
             // Nothing of the user's - and no stub to preserve - is left;
             // remove the file rather than leave an empty one behind.
-            crate::config_changes::remove(&path)?;
+            crate::config_changes::remove_with_view(&path, routing_view)?;
         } else {
             write_doc(&path, &doc)?;
         }
@@ -926,8 +926,25 @@ fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
     // 0o600 defensively (the file no longer carries the Gate key - the relay
     // injects it - but may hold other user config). Atomic-write protects
     // against partial writes tearing the TOML on crash.
-    crate::config_changes::write(path, doc.to_string().as_bytes(), 0o600)
+    crate::config_changes::write_with_view(path, doc.to_string().as_bytes(), 0o600, routing_view)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+/// What a running Codex acted on: the document without the tables Codex
+/// writes for itself - a project's trust level, a dismissed notice - which it
+/// adds whenever the user answers a prompt, and which would otherwise make
+/// every round trip of Gate's values read as news. A file that is not TOML is
+/// its own bytes.
+fn routing_view(bytes: &[u8]) -> Vec<u8> {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|raw| raw.parse::<DocumentMut>().ok())
+        .map(|mut view| {
+            view.remove("projects");
+            view.remove("notice");
+            view.to_string().into_bytes()
+        })
+        .unwrap_or_else(|| bytes.to_vec())
 }
 
 fn new_table() -> Table {
@@ -1109,8 +1126,8 @@ fn is_managed_daemon_command(cmd: &[std::ffi::OsString]) -> bool {
             && rest.get(1).is_some_and(|a| *a == "pid-update-loop"))
 }
 
-/// Whether Codex's managed app-server daemon predates the last change Gate made
-/// to Codex's config, without restarting it. The test
+/// Whether Codex's managed app-server daemon loaded a config other than the one
+/// in place now, without restarting it. The test
 /// [`refresh_app_server_daemon`] applies, for a caller deciding whether a
 /// refresh is worth waiting for.
 pub fn app_server_daemon_is_stale() -> bool {
@@ -1147,13 +1164,18 @@ fn daemon_state() -> DaemonState {
         return DaemonState::NotRunning;
     };
     let started = daemon.iter().map(|(_, t)| *t).max().unwrap_or(0);
-    let changed = config_path()
-        .ok()
-        .and_then(|p| crate::config_changes::changed_at(&p));
-    if changed.is_none_or(|changed| started >= changed) {
-        DaemonState::Current
-    } else {
+    let changes = config_path()
+        .map(|p| crate::config_changes::history(&p))
+        .unwrap_or_default();
+    if crate::reopen::reopen_pending(&crate::reopen::ReopenEvidence {
+        process_names_known: true,
+        process_starts: &[started],
+        config_changes: &changes,
+        ca_cert_changed_at: None,
+    }) {
         DaemonState::Stale(exe)
+    } else {
+        DaemonState::Current
     }
 }
 
@@ -1173,10 +1195,11 @@ pub enum DaemonRefresh {
 /// The daemon reads both only when it starts: measured on 0.159, a TUI session
 /// opened after a model change was still offered the catalog it had loaded.
 ///
-/// "Predates" is the same test the reopen check applies to a running tool - the
-/// process's start time against `config_changes`' record of Gate's last write -
-/// so every caller agrees on what is stale: a model save, the restart notice's
-/// Close, and startup's reconnect (review on #382: one rule, one code path).
+/// "Predates" is the same test the reopen check applies to a running tool -
+/// [`crate::reopen::reopen_pending`] over `config_changes`' history, so a quit
+/// and relaunch that put the same config back does not count. Every caller
+/// therefore agrees on what is stale: a model save, the restart notice's Close,
+/// and startup's reconnect (review on #382: one rule, one code path).
 /// Nothing runs for a daemon that is current or absent; `restart` on an absent
 /// one would start a daemon the user never asked for.
 ///
@@ -1552,6 +1575,24 @@ fn upgrade_inline_to_table(item: &mut Item) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_routing_view_leaves_out_codex_s_own_tables() {
+        let routed = "model_provider = \"gate\"\n\n[model_providers.gate]\nbase_url = \"http://127.0.0.1:1/v1\"\n";
+        let trusted = format!(
+            "{routed}\n[projects.\"/w\"]\ntrust_level = \"trusted\"\n\n[notice]\nhide_full_access_warning = true\n"
+        );
+        assert_eq!(
+            routing_view(routed.as_bytes()),
+            routing_view(trusted.as_bytes())
+        );
+        let moved = routed.replace(":1/", ":2/");
+        assert_ne!(
+            routing_view(routed.as_bytes()),
+            routing_view(moved.as_bytes())
+        );
+        assert_eq!(routing_view(b"= not toml"), b"= not toml");
+    }
 
     #[test]
     fn only_the_managed_daemon_is_the_daemon() {

@@ -90,31 +90,35 @@ function harness() {
 /** Open the offer, which is the one place closing is possible. */
 async function toOffer(api: { current: ReturnType<typeof useRunningApps> | null }) {
   await act(async () => {
-    await api.current!.offerAfterChange();
+    await api.current!.offerAfterChange(undefined, "on");
   });
+}
+
+/** The rows of an offer or a work stage; empty for anything else. */
+function toolsOf(api: { current: ReturnType<typeof useRunningApps> | null }) {
+  const stage = api.current!.stage;
+  return stage && stage.kind !== "conversations" ? stage.tools : [];
 }
 
 /** The slugs a stage is about, which is all most assertions here care about. */
 function slugsOf(api: { current: ReturnType<typeof useRunningApps> | null }) {
-  const stage = api.current!.stage;
-  return stage ? stage.tools.map((t) => t.slug) : null;
+  return api.current!.stage ? toolsOf(api).map((t) => t.slug) : null;
 }
 
 function stagesOf(api: { current: ReturnType<typeof useRunningApps> | null }) {
-  const stage = api.current!.stage;
-  return stage ? stage.tools.map((t) => t.stage) : null;
+  return api.current!.stage ? toolsOf(api).map((t) => t.stage) : null;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   (runningAgents as Mock).mockResolvedValue({
-    scanned_names: ["claude", "codex"],
-    agents: [agent("codex", "codex", 10)],
+    scanned_names: ["claude", "opencode"],
+    agents: [agent("opencode", "opencode", 10)],
   });
   (closeRunningAgents as Mock).mockResolvedValue(1);
   (reopenRunningAgents as Mock).mockResolvedValue(1);
   (routingVerdicts as Mock).mockResolvedValue([
-    verdict("codex", "needs_attention", "reopen_required"),
+    verdict("opencode", "needs_attention", "reopen_required"),
   ]);
 });
 afterEach(cleanup);
@@ -124,22 +128,22 @@ describe("useRunningApps: when to say anything", () => {
     const { api } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
     expect(api.current!.stage?.kind).toBe("offer");
-    expect(slugsOf(api)).toEqual(["codex"]);
-    // The tool's own name, not the process name: the reader knows it as Codex.
-    expect(api.current!.stage!.tools[0].name).toBe("Codex");
+    expect(slugsOf(api)).toEqual(["opencode"]);
+    // The tool's own name, not the process name: the reader knows it as OpenCode.
+    expect(toolsOf(api)[0].name).toBe("OpenCode");
   });
 
   it("says nothing when nothing is running", async () => {
     // A dialog about no apps is a dialog about nothing.
-    (runningAgents as Mock).mockResolvedValue({ scanned_names: ["codex"], agents: [] });
+    (runningAgents as Mock).mockResolvedValue({ scanned_names: ["opencode"], agents: [] });
     const { api } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
     expect(api.current!.stage).toBeNull();
@@ -150,17 +154,17 @@ describe("useRunningApps: when to say anything", () => {
     // reopen card's own button look broken: the card is built from a verdict
     // read at some earlier moment, and by the time somebody presses it the tool
     // may already have been reopened. So the caller hears about it and re-reads.
-    (runningAgents as Mock).mockResolvedValue({ scanned_names: ["codex"], agents: [] });
+    (runningAgents as Mock).mockResolvedValue({ scanned_names: ["opencode"], agents: [] });
     const { api, onNothingRunning } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange(["codex"]);
+      await api.current!.offerAfterChange(["opencode"], "on");
     });
 
     expect(api.current!.stage).toBeNull();
     // With the slugs it was asked about, so a caller can tell which invitation
     // is the stale one.
-    expect(onNothingRunning).toHaveBeenCalledWith(["codex"]);
+    expect(onNothingRunning).toHaveBeenCalledWith(["opencode"]);
   });
 
   it("does not call it when the scan itself failed", async () => {
@@ -170,7 +174,7 @@ describe("useRunningApps: when to say anything", () => {
     const { api, onNothingRunning } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange(["codex"]);
+      await api.current!.offerAfterChange(["opencode"], "on");
     });
 
     expect(onNothingRunning).not.toHaveBeenCalled();
@@ -183,7 +187,7 @@ describe("useRunningApps: when to say anything", () => {
     const { api, onError } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
     expect(api.current!.stage).toBeNull();
@@ -191,23 +195,23 @@ describe("useRunningApps: when to say anything", () => {
   });
 
   it("counts two processes of one app as one app", async () => {
-    // The pid is not something the reader can act on, and "codex, codex" reads
+    // The pid is not something the reader can act on, and "opencode, opencode" reads
     // as a bug.
     (runningAgents as Mock).mockResolvedValue({
-      scanned_names: ["codex"],
+      scanned_names: ["opencode"],
       agents: [
-        agent("codex", "codex", 10),
-        agent("codex", "codex", 11),
+        agent("opencode", "opencode", 10),
+        agent("opencode", "opencode", 11),
         agent("claude-code", "claude", 12),
       ],
     });
     const { api } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
-    expect(slugsOf(api)).toEqual(["codex", "claude-code"]);
+    expect(slugsOf(api)).toEqual(["opencode", "claude-code"]);
   });
 
   it("draws the Code tab and a terminal CLI as two rows, closed as one slug", async () => {
@@ -227,7 +231,7 @@ describe("useRunningApps: when to say anything", () => {
     const { api } = harness();
     await toOffer(api);
 
-    expect(api.current!.stage!.tools.map((t) => t.name)).toEqual([
+    expect(toolsOf(api).map((t) => t.name)).toEqual([
       "Claude Code",
       "Claude Code in Claude Desktop",
     ]);
@@ -242,14 +246,14 @@ describe("useRunningApps: when to say anything", () => {
     });
 
     expect(closeRunningAgents).toHaveBeenCalledWith(["claude-code"]);
-    expect(api.current!.stage!.tools.map((t) => t.running)).toEqual([false, true]);
+    expect(toolsOf(api).map((t) => t.running)).toEqual([false, true]);
   });
 
   it("carries the two routes the verdict established", async () => {
     // "Reopen required" without them does not say what reopening would change.
     (routingVerdicts as Mock).mockResolvedValue([
       {
-        ...verdict("codex", "needs_attention", "reopen_required"),
+        ...verdict("opencode", "needs_attention", "reopen_required"),
         route_in_use: "https://api.openai.com",
         requested_route: "https://gate.example/v1",
       },
@@ -257,10 +261,10 @@ describe("useRunningApps: when to say anything", () => {
     const { api } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
-    expect(api.current!.stage!.tools[0]).toMatchObject({
+    expect(toolsOf(api)[0]).toMatchObject({
       routeInUse: "https://api.openai.com",
       requestedRoute: "https://gate.example/v1",
     });
@@ -274,11 +278,11 @@ describe("useRunningApps: when to say anything", () => {
     const { api } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
     expect(api.current!.stage?.kind).toBe("offer");
-    expect(api.current!.stage!.tools[0].routeInUse).toBeNull();
+    expect(toolsOf(api)[0].routeInUse).toBeNull();
   });
 });
 
@@ -297,7 +301,7 @@ describe("useRunningApps: closing takes one answer", () => {
     // running processes are restarted now or later.
     const { api } = harness();
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
     act(() => api.current!.dismiss());
@@ -311,10 +315,10 @@ describe("useRunningApps: closing takes one answer", () => {
     // that says the next move is theirs - not on a claim that it is routing.
     (runningAgents as Mock)
       .mockResolvedValueOnce({
-        scanned_names: ["codex"],
-        agents: [agent("codex", "codex", 10)],
+        scanned_names: ["opencode"],
+        agents: [agent("opencode", "opencode", 10)],
       })
-      .mockResolvedValue({ scanned_names: ["codex"], agents: [] });
+      .mockResolvedValue({ scanned_names: ["opencode"], agents: [] });
     const { api } = harness();
     await toOffer(api);
 
@@ -333,10 +337,10 @@ describe("useRunningApps: closing takes one answer", () => {
     // detached from the shell session the user just agreed to close.
     (runningAgents as Mock)
       .mockResolvedValueOnce({
-        scanned_names: ["codex"],
-        agents: [agent("codex", "codex", 10)],
+        scanned_names: ["opencode"],
+        agents: [agent("opencode", "opencode", 10)],
       })
-      .mockResolvedValue({ scanned_names: ["codex"], agents: [] });
+      .mockResolvedValue({ scanned_names: ["opencode"], agents: [] });
     const { api } = harness();
     await toOffer(api);
 
@@ -455,7 +459,7 @@ describe("useRunningApps: closing takes one answer", () => {
       agents: [agent("claude-code", "claude", 11)],
     });
     await act(async () => {
-      await api.current!.offerAfterChange(["claude-code"]);
+      await api.current!.offerAfterChange(["claude-code"], "on");
     });
     await act(async () => {
       finish(1);
@@ -492,7 +496,7 @@ describe("useRunningApps: closing takes one answer", () => {
 
     expect(onError).toHaveBeenCalled();
     expect(stagesOf(api)).toEqual(["close_failed"]);
-    expect(api.current!.stage!.tools[0].error).toContain("permission denied");
+    expect(toolsOf(api)[0].error).toContain("permission denied");
     // Nothing is left spinning: the failure is the work stage's to show.
     expect(api.current!.stage?.kind).toBe("work");
   });
@@ -509,11 +513,11 @@ describe("useRunningApps: following a tool back", () => {
     // valid. Nothing has read that file, so this must not report it applied.
     (runningAgents as Mock)
       .mockResolvedValueOnce({
-        scanned_names: ["codex"],
-        agents: [agent("codex", "codex", 10)],
+        scanned_names: ["opencode"],
+        agents: [agent("opencode", "opencode", 10)],
       })
-      .mockResolvedValue({ scanned_names: ["codex"], agents: [] });
-    (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "on")]);
+      .mockResolvedValue({ scanned_names: ["opencode"], agents: [] });
+    (routingVerdicts as Mock).mockResolvedValue([verdict("opencode", "on")]);
     const { api } = harness();
     await toOffer(api);
 
@@ -527,15 +531,15 @@ describe("useRunningApps: following a tool back", () => {
   it("verifies once a new process is up", async () => {
     (runningAgents as Mock)
       .mockResolvedValueOnce({
-        scanned_names: ["codex"],
-        agents: [agent("codex", "codex", 10)],
+        scanned_names: ["opencode"],
+        agents: [agent("opencode", "opencode", 10)],
       })
       // Reopened: a process that started after the change.
       .mockResolvedValue({
-        scanned_names: ["codex"],
-        agents: [agent("codex", "codex", 44, false)],
+        scanned_names: ["opencode"],
+        agents: [agent("opencode", "opencode", 44, false)],
       });
-    (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "on")]);
+    (routingVerdicts as Mock).mockResolvedValue([verdict("opencode", "on")]);
     const { api } = harness();
     await toOffer(api);
 
@@ -551,14 +555,14 @@ describe("useRunningApps: following a tool back", () => {
     // own settings, and that reading is the proof the change landed.
     (runningAgents as Mock)
       .mockResolvedValueOnce({
-        scanned_names: ["codex"],
-        agents: [agent("codex", "codex", 10)],
+        scanned_names: ["opencode"],
+        agents: [agent("opencode", "opencode", 10)],
       })
       .mockResolvedValue({
-        scanned_names: ["codex"],
-        agents: [agent("codex", "codex", 44, false)],
+        scanned_names: ["opencode"],
+        agents: [agent("opencode", "opencode", 44, false)],
       });
-    (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "off")]);
+    (routingVerdicts as Mock).mockResolvedValue([verdict("opencode", "off")]);
     const { api } = harness();
     await toOffer(api);
 
@@ -597,14 +601,14 @@ describe("useRunningApps: following a tool back", () => {
 
     expect(stagesOf(api)).toEqual(["reopened"]);
     // And it says the tool's name, not the OS's word for its binary.
-    expect(api.current!.stage!.tools[0].name).toBe("Claude Desktop");
+    expect(toolsOf(api)[0].name).toBe("Claude Desktop");
   });
 
   it("moves one row without touching another", async () => {
     // AG-566 AC 10: retrying one tool repeats nothing for the others.
     (runningAgents as Mock).mockResolvedValue({
-      scanned_names: ["codex", "claude"],
-      agents: [agent("codex", "codex", 10), agent("claude-code", "claude", 11)],
+      scanned_names: ["opencode", "claude"],
+      agents: [agent("opencode", "opencode", 10), agent("claude-code", "claude", 11)],
     });
     const { api } = harness();
     await toOffer(api);
@@ -612,10 +616,10 @@ describe("useRunningApps: following a tool back", () => {
       await api.current!.closeApps();
     });
 
-    act(() => api.current!.markStage("codex", "applying"));
+    act(() => api.current!.markStage("opencode", "applying"));
 
-    expect(api.current!.stage!.tools.map((t) => [t.slug, t.stage])).toEqual([
-      ["codex", "applying"],
+    expect(toolsOf(api).map((t) => [t.slug, t.stage])).toEqual([
+      ["opencode", "applying"],
       // Untouched by the row above: still where the watch left it.
       ["claude-code", "closing"],
     ]);
@@ -634,10 +638,10 @@ describe("useRunningApps: which tool it is talking about", () => {
     const { api } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange(["codex"]);
+      await api.current!.offerAfterChange(["opencode"], "on");
     });
 
-    expect(runningAgents).toHaveBeenCalledWith(["codex"]);
+    expect(runningAgents).toHaveBeenCalledWith(["opencode"]);
   });
 
   it("asks about every tool when the caller names none", async () => {
@@ -646,7 +650,7 @@ describe("useRunningApps: which tool it is talking about", () => {
     const { api } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange();
+      await api.current!.offerAfterChange(undefined, "on");
     });
 
     expect(runningAgents).toHaveBeenCalledWith(undefined);
@@ -658,22 +662,22 @@ describe("useRunningApps: which tool it is talking about", () => {
     // that nothing had reconfigured and the user was never shown.
     const { api } = harness();
     await act(async () => {
-      await api.current!.offerAfterChange(["codex"]);
+      await api.current!.offerAfterChange(["opencode"], "on");
     });
 
     await act(async () => {
       await api.current!.closeApps();
     });
 
-    expect(closeRunningAgents).toHaveBeenCalledWith(["codex"]);
+    expect(closeRunningAgents).toHaveBeenCalledWith(["opencode"]);
   });
 
   it("closes the rows on screen, not the filter it was raised with", async () => {
     // The master toggle offers every running tool and passes no filter, and the
     // close must still name exactly the rows the user agreed to.
     (runningAgents as Mock).mockResolvedValue({
-      scanned_names: ["codex", "claude"],
-      agents: [agent("codex", "codex", 10), agent("claude-code", "claude", 11)],
+      scanned_names: ["opencode", "claude"],
+      agents: [agent("opencode", "opencode", 10), agent("claude-code", "claude", 11)],
     });
     const { api } = harness();
     await toOffer(api);
@@ -682,6 +686,83 @@ describe("useRunningApps: which tool it is talking about", () => {
       await api.current!.closeApps();
     });
 
-    expect(closeRunningAgents).toHaveBeenCalledWith(["codex", "claude-code"]);
+    expect(closeRunningAgents).toHaveBeenCalledWith(["opencode", "claude-code"]);
+  });
+});
+
+/**
+ * Codex reads its route per conversation: a routing change reaches every new
+ * conversation without a restart and none already open, so closing it would end
+ * work and fix nothing. A model change is different - the list comes from its
+ * app-server daemon - and still offers the close.
+ */
+describe("useRunningApps: a tool that routes per conversation", () => {
+  const codexOnly = () =>
+    (runningAgents as Mock).mockResolvedValue({
+      scanned_names: ["codex"],
+      agents: [agent("codex", "codex", 10)],
+    });
+
+  it("says new conversations are protected when routing goes on and works", async () => {
+    codexOnly();
+    (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "on")]);
+    const { api, onNothingRunning } = harness();
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"], "on");
+    });
+    expect(api.current!.stage).toEqual({ kind: "conversations", names: ["Codex"] });
+    expect(onNothingRunning).not.toHaveBeenCalled();
+  });
+
+  it("claims nothing when routing went on but the route is not working", async () => {
+    codexOnly();
+    (routingVerdicts as Mock).mockResolvedValue([
+      verdict("codex", "needs_attention", "relay_down"),
+    ]);
+    const { api } = harness();
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"], "on");
+    });
+    expect(api.current!.stage).toBeNull();
+  });
+
+  it("says nothing when routing goes off", async () => {
+    codexOnly();
+    (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "off")]);
+    const { api, onNothingRunning } = harness();
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"], "off");
+    });
+    expect(api.current!.stage).toBeNull();
+    expect(onNothingRunning).not.toHaveBeenCalled();
+  });
+
+  it("leaves it out of a close offer, and names it on its own line", async () => {
+    (runningAgents as Mock).mockResolvedValue({
+      scanned_names: ["codex", "claude"],
+      agents: [agent("codex", "codex", 10), agent("claude-code", "claude", 11)],
+    });
+    (routingVerdicts as Mock).mockResolvedValue([verdict("codex", "on")]);
+    const { api } = harness();
+    await toOffer(api);
+    expect(slugsOf(api)).toEqual(["claude-code"]);
+    const stage = api.current!.stage;
+    expect(stage?.kind === "offer" && stage.conversations).toEqual(["Codex"]);
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+    expect(closeRunningAgents).toHaveBeenCalledWith(["claude-code"]);
+  });
+
+  it("still offers the close after a model change, or from the reopen card", async () => {
+    codexOnly();
+    for (const reason of ["model", "reopen"] as const) {
+      const { api } = harness();
+      await act(async () => {
+        await api.current!.offerAfterChange(["codex"], reason);
+      });
+      expect(slugsOf(api)).toEqual(["codex"]);
+      cleanup();
+    }
   });
 });

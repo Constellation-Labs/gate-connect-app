@@ -77,9 +77,17 @@ jobs:
           # Apple Silicon, so that build is native and the Intel half (a
           # cross-compile, then lipo) is skipped. A release is always universal.
           targets: ${{ matrix.platform == 'macos-latest' && ((inputs.release || inputs.macos_universal) && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'aarch64-apple-darwin') || '' }}
+      # Skipped on a release, which keeps the release build cold as it was
+      # before this workflow was shared: inside a called workflow GITHUB_JOB is
+      # `bundle` for both callers, so a tag would otherwise restore the cache
+      # main's CI bundle saved. Only main and feat/new-app-ui save, as for the
+      # other Rust caches (#475): each PR leg saving its own ~2 GB evicts the
+      # base caches, the only ones a PR can restore from.
       - uses: swatinem/rust-cache@v2
+        if: ${{ !inputs.release }}
         with:
           workspaces: '. -> target'
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/new-app-ui' }}
       - run: pnpm install --frozen-lockfile
       # The git tag is the single source of truth for the app version. Source
       # files carry a 0.0.0 placeholder; stamp the real version (tag minus the

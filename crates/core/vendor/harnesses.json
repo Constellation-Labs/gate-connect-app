@@ -406,16 +406,16 @@
       ],
       "checked": [
         "Pointing Hermes at Gate as a custom endpoint provider works in both billing modes: paying through Gate, and bringing your own provider keys.",
-        "Gate Connect can set Hermes up for you, and our test suite drives a real Hermes install on macOS and Linux."
+        "Gate Connect can set Hermes up for you, and our test suite drives a real Hermes install on macOS and Linux.",
+        "Gate recognizes Hermes by name in your dashboard: Gate Connect adds a header to Hermes's own config, and a real Hermes install routed through Gate Connect arrives named Hermes through the proxy engine, both on Gate models and with its own provider keys."
       ],
       "not_checked": [
         "Windows: our test suite does not cover Hermes there.",
-        "Attribution on a real install: Gate Connect names Hermes by writing a header into its config, and nothing in our suite has yet driven a real Hermes and seen that header arrive. Until it has, treat naming as designed rather than demonstrated.",
         "Attribution off the OpenAI wire: the header Hermes sends is documented as applying to OpenAI-compatible endpoints only, so a native-Anthropic or Bedrock setup routes through Gate exactly as before but is recorded without a name.",
         "Compression: Hermes's tool names come from its own documentation; we have never seen them on traffic we could attribute to Hermes."
       ],
       "last_verified": null,
-      "notes": "D2 — Works, not Certified, by Julian's decision: no detector, documentation-only compression names, and an e2e suite that skips Windows. AG-670 adds the detector; Hermes is promoted to Certified when it lands. The e2e-real-tools job drives a real install on macOS and Linux and skips Windows. Gate Connect's proxy-engine integration writes ~/.hermes/.env; the Custom endpoint provider the checked list refers to lives in ~/.hermes/config.yaml. Hermes also reaches Gate by hand through the base_url in config.yaml that its guide documents; routing records the mechanism Gate Connect ships."
+      "notes": "D2 — Works, not Certified, by Julian's decision. What keeps it there: the e2e suite does not cover Windows, and the compression names are documentation-only. AG-670 verified attribution and keeps the tier. The e2e-real-tools job drives a real install on macOS and Linux and skips Windows. Gate Connect's proxy-engine integration writes ~/.hermes/.env; the Custom endpoint provider the checked list refers to lives in ~/.hermes/config.yaml. Hermes also reaches Gate by hand through the base_url in config.yaml that its guide documents; routing records the mechanism Gate Connect ships. AG-670 attribution verified 2026-10-06 on staging with Gate Connect 1.0.0-alpha.13: real Hermes requests via the relay Gate models route and via the proxy engine with `x-gate-tool: hermes` were counted under hermes, and OpenAI-SDK-shaped requests through the same engine were not; the e2e-real-tools job asserts x-gate-client=hermes on Linux and macOS on gate-connect-app feat/new-app-ui since #422 (run 38011932242), and reaches its main with #151."
     },
     {
       "id": "claude-desktop",
@@ -549,19 +549,32 @@
         "landing_home_logo": false
       },
       "compression": {
-        "names": []
+        "names": [
+          {
+            "name": "exec",
+            "lane": "command",
+            "evidence": "seen",
+            "calls": 10,
+            "sample": "2026-09-21-staging-audit"
+          },
+          {
+            "name": "write_stdin",
+            "lane": "command",
+            "evidence": "documented"
+          }
+        ]
       },
       "exceptions": [],
       "checked": [
         "With the `chatgpt-apps` domain turned on in Gate Connect, the ChatGPT app's chat traffic goes through Gate.",
-        "Gate recognises the traffic as ChatGPT Desktop in your dashboard."
+        "Gate recognises the traffic as ChatGPT Desktop in your dashboard, including the app's Codex mode, which OpenAI used to ship as a separate Codex desktop app."
       ],
       "not_checked": [
-        "Codex Desktop's model calls ride the same host but come from an embedded agent that ignores your machine's proxy setting; they are not captured.",
+        "Codex mode's model calls travel on the `chatgpt` domain, not `chatgpt-apps`, so they reach Gate only when that domain is turned on.",
         "No automated run on every release: there is no command line for us to drive."
       ],
       "last_verified": null,
-      "notes": "This is the entry the marketing strip's \"ChatGPT\" logo maps to: the desktop app is what Gate Connect can intercept on a person's machine."
+      "notes": "This is the entry the marketing strip's \"ChatGPT\" logo maps to: the desktop app is what Gate Connect can intercept on a person's machine. AG-1040 (decided 2026-10-12): OpenAI merged the standalone Codex desktop app into this app on 2026-07-09, so the former codex-desktop entry (unsupported, routing none) was removed rather than aliased and its traffic is attributed here: the gateway's chatgpt-desktop detector now also names the Codex mode's user agents (`Codex Desktop/…`, `codex-mcp-client/…`) and originators, and Gate Connect stamps them `chatgpt`. Its compression names (exec seen, write_stdin documented) moved here with it. Audit rows written before the merge keep agent_framework codex-desktop. The model-call line in not_checked follows gate-connect-app's proxy catalog (`chatgpt-apps` comment, confirmed 2026-08-14 from a captured row); the earlier text said those calls were never captured."
     },
     {
       "id": "chatgpt-web",
@@ -999,60 +1012,6 @@
       "unsupported_reason": "Gemini support was added early on and then removed again, with no return scheduled. Gate can neither route Gemini traffic nor recognise it.",
       "last_verified": null,
       "notes": "Was on the Gate Connect marketing strip and in three routing-screen alt texts until AG-667 removed it from both (2026-09-09). Added to the platform registry in PR #6 and removed in PR #73; the detector went with it."
-    },
-    {
-      "id": "codex-desktop",
-      "display_name": "Codex Desktop",
-      "vendor": "OpenAI",
-      "category": "desktop",
-      "tier": "unsupported",
-      "routing": {
-        "mechanism": "none",
-        "proxy_domain": null
-      },
-      "surfaces": {
-        "detector": "codex-desktop",
-        "connect": {
-          "na": "Unsupported: the embedded agent ignores the system proxy, so no catalog domain can intercept it."
-        },
-        "client_tool_slug": {
-          "na": "Unsupported: Gate Connect ships no integration for it."
-        },
-        "docs_guide": {
-          "na": "Unsupported: no guide (glossary — no guide, no test, no promise)."
-        },
-        "dashboard_tab": {
-          "na": "Unsupported: nothing to paste on the connect card."
-        },
-        "ci_e2e": {
-          "na": "Unsupported: no CI run."
-        },
-        "gauntlet_journey": {
-          "na": "Unsupported: no guide to follow, so no journey."
-        },
-        "landing_strip": false,
-        "landing_home_logo": false
-      },
-      "compression": {
-        "names": [
-          {
-            "name": "exec",
-            "lane": "command",
-            "evidence": "seen",
-            "calls": 10,
-            "sample": "2026-09-21-staging-audit"
-          },
-          {
-            "name": "write_stdin",
-            "lane": "command",
-            "evidence": "documented"
-          }
-        ]
-      },
-      "exceptions": [],
-      "unsupported_reason": "Nothing can route it: its model calls come from an embedded agent that ignores your machine's proxy setting. Route Codex through its command line instead, which Gate Connect sets up for you.",
-      "last_verified": null,
-      "notes": "D6 — Unsupported because nothing routes it, even though the codex-desktop detector names its tool traffic."
     },
     {
       "id": "antigravity",
