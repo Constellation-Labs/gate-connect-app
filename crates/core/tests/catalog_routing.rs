@@ -128,12 +128,39 @@ fn every_catalog_entry_has_a_routing_assertion() {
 /// loopback ports, and one at a time keeps a failure readable.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// The env var that switches the suite into OS-trust mode.
+///
+/// Set only by the `catalog-routing` CI job, after it has trusted this
+/// install's CA machine-wide with `gate-connect proxy trust-ca --system-trust`.
+/// In that mode the engine signs with that CA, and the scripted client drops
+/// its pinned root and validates through the OS trust store, the way a real
+/// app does. Unset (every local run, and the workspace job), the suite mints
+/// a throwaway CA and pins it, and the OS store is never read.
+const OS_TRUST_ENV: &str = "GATE_CONNECT_ROUTING_OS_TRUST";
+
+fn os_trust_mode() -> bool {
+    std::env::var_os(OS_TRUST_ENV).is_some_and(|v| v == "1")
+}
+
 /// Point every per-user path at a throwaway directory before the first engine
 /// starts, so the install id and preferences the engine reads never touch the
 /// real home. Process-global, which is fine: this file is its own binary.
+///
+/// In OS-trust mode the job has already pointed both seams at the directory
+/// the CLI wrote the CA into, and the test must read that same CA. Both seams
+/// are required there, so the mode can never reach the real keychain or home.
 fn isolate_home() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        if os_trust_mode() {
+            for seam in ["GATE_CONNECT_TEST_HOME", "GATE_CONNECT_TEST_SECRETS"] {
+                assert!(
+                    std::env::var_os(seam).is_some_and(|v| !v.is_empty()),
+                    "{OS_TRUST_ENV}=1 needs {seam} set to the directory the CI job trusted the CA from"
+                );
+            }
+            return;
+        }
         let dir = std::env::temp_dir().join(format!(
             "gate-connect-catalog-routing-{}",
             std::process::id()
@@ -234,7 +261,20 @@ fn only_enabled(slug: &str) -> Vec<ProxyDomain> {
 }
 
 fn start_engine(gateway: &MockGateway, domains: Vec<ProxyDomain>) -> (RunningEngine, String) {
-    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let ca = if os_trust_mode() {
+        gate_connect_core::proxy::testing::engine_ca_for_tests()
+            .expect("loading the CA the CI job trusted machine-wide")
+    } else {
+        mint_ca()
+    };
+    start_engine_with_ca(gateway, domains, ca)
+}
+
+fn start_engine_with_ca(
+    gateway: &MockGateway,
+    domains: Vec<ProxyDomain>,
+    (ca_cert_pem, ca_key_pem): (String, String),
+) -> (RunningEngine, String) {
     let engine = engine::start(
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(),
@@ -357,11 +397,16 @@ async fn every_catalog_entry_routes_through_the_engine() {
 
         let mut sent = Vec::new();
         for host in &entry.hosts {
-            let client = reqwest::Client::builder()
-                .proxy(reqwest::Proxy::all(proxy_for(&engine, host).await).unwrap())
-                .tls_certs_only([reqwest::Certificate::from_pem(ca_pem.as_bytes()).unwrap()])
-                .build()
-                .unwrap();
+            let builder = reqwest::Client::builder()
+                .proxy(reqwest::Proxy::all(proxy_for(&engine, host).await).unwrap());
+            // OS-trust mode adds no root at all: the leaf must validate through
+            // the machine store or the request fails.
+            let builder = if os_trust_mode() {
+                builder
+            } else {
+                builder.tls_certs_only([reqwest::Certificate::from_pem(ca_pem.as_bytes()).unwrap()])
+            };
+            let client = builder.build().unwrap();
             for prefix in &entry.rewrite_prefixes {
                 let gate_path = sample_path(prefix);
                 let url = format!("https://{host}{up_path}{gate_path}");
@@ -469,4 +514,35 @@ async fn an_entry_switched_off_is_not_offered_to_the_engine() {
         }
         engine.stop();
     }
+}
+
+/// The control for OS-trust mode: the same client, facing an engine that signs
+/// with a CA the machine does NOT trust, must fail. Without it a green run
+/// could mean the client accepts anything, not that the OS store trusts ours.
+/// Skipped outside OS-trust mode, where the client pins its root instead.
+#[tokio::test]
+async fn os_trust_mode_rejects_a_ca_the_machine_does_not_trust() {
+    if !os_trust_mode() {
+        return;
+    }
+    let _serial = SERIAL.lock().await;
+    isolate_home();
+
+    let gateway = start_mock_gateway().await;
+    let (engine, _) = start_engine_with_ca(&gateway, only_enabled("anthropic"), mint_ca());
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy_for(&engine, "api.anthropic.com").await).unwrap())
+        .build()
+        .unwrap();
+    let result = client
+        .post("https://api.anthropic.com/v1/messages")
+        .body("{}")
+        .send()
+        .await;
+    engine.stop();
+    assert!(
+        result.is_err(),
+        "a leaf from an untrusted CA was accepted, so the client is not validating through the OS store"
+    );
+    assert!(gateway.captured.lock().unwrap().is_empty());
 }
