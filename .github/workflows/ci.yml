@@ -208,6 +208,53 @@ jobs:
           certutil -delstore Root "Gate Connect Local CA" 2>&1 | Out-Null
           exit 0
 
+  # AG-906: the catalog routing suite with the engine's CA trusted
+  # machine-wide, on all three OS. `Rust (workspace)` already runs the suite
+  # with a pinned throwaway root; this job proves the other half, that a client
+  # validating through the OS trust store accepts the engine's leaves for every
+  # catalog host. Same pattern as `win-system-trust`: the CA lives under a
+  # throwaway home, `trust-ca --system-trust` is the only machine write, every
+  # call that could raise a dialog is bounded, and the root is removed under
+  # always().
+  catalog-routing:
+    name: catalog-routing (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-catalog-routing
+
+      # Built before anything is trusted, so the trusted window is short.
+      - name: Build the CLI and the suite
+        shell: bash
+        run: |
+          cargo build --locked -p gate-connect-cli
+          cargo test --locked --no-run -p gate-connect-core --test catalog_routing
+
+      - name: Trust the CA machine-wide and run the suite
+        shell: bash
+        run: bash ci/catalog-routing/run.sh
+
+      - name: Remove the CA from the machine store
+        if: always()
+        shell: bash
+        run: bash ci/catalog-routing/cleanup.sh
+
   web:
     name: Web (frontend)
     runs-on: ubuntu-latest
