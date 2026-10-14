@@ -87,6 +87,13 @@ if [ "$OS" = "Windows" ]; then
   export XDG_CONFIG_HOME="$(winpath "$HOME/.config")"
   export XDG_DATA_HOME="$(winpath "$HOME/.local/share")"
   export XDG_CACHE_HOME="$(winpath "$HOME/.cache")"
+  # Hermes on Windows defaults to %LOCALAPPDATA%\hermes, which this script does
+  # not redirect, while Gate under GATE_CONNECT_TEST_HOME writes Hermes' config
+  # to <test home>\.hermes and ignores HERMES_HOME. Point Hermes at that same
+  # directory so it reads what Gate wrote. Its runtime stays where the workflow
+  # installed it: a launch under another HERMES_HOME borrows the installing
+  # root's dependency state rather than bootstrapping its own (upstream #123238).
+  export HERMES_HOME="$(winpath "$HOME/.hermes")"
 else
   # opencode resolves its config via XDG; CI runners often pre-set
   # XDG_CONFIG_HOME elsewhere, so pin the XDG roots under our scratch home or
@@ -503,9 +510,8 @@ start_engine() {
   # regression test, and the half that runs on Windows. `serve_pac` rebuilds the
   # body per request from the engine's LIVE rule set, so the served script is a
   # direct read of what the running engine believes - no tool, no MITM, no CA,
-  # no TLS. hermes covers this on Linux and macOS by routing real traffic, but
-  # the workflow does not install hermes on Windows, so without this the
-  # platform that lacked the watcher longest would still assert nothing about it.
+  # no TLS. hermes covers this by routing real traffic, but only when it runs;
+  # this keeps the platform that lacked the watcher longest asserting on its own.
   #
   # Phase A only, like the per-OS channel checks and for a sharper reason: the
   # domains file outlives the phase, so by phase B openrouter is already on and
@@ -1317,7 +1323,10 @@ run_engine_tools() {
     echo "::notice::skipping hermes - proxy-routed, and the engine is not up"
   else
     # HERMES_HOME when set (see where HOME is redirected), as Hermes and Gate read.
+    # On Windows HERMES_HOME is the native form of $HOME/.hermes; write through
+    # the msys form so the shell-side file ops stay in one path style.
     hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+    [ "$OS" = "Windows" ] && hermes_home="$HOME/.hermes"
     mkdir -p "$hermes_home"
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
       > "$hermes_home/config.yaml"
@@ -1416,13 +1425,10 @@ fi
 # starting would skip claude-code, openclaw and hermes and stay green. Here a
 # skip becomes a FAIL naming the tool.
 #
-# The one declared absence is Hermes on Windows, which the workflow does not
-# install (install.ps1 has no browser-skip switch); the gateway manifest
-# publishes the same gap as an exception. A new absence goes here, with its
+# Every OS expects the same set. A new absence goes here, per OS, with its
 # reason, or it fails.
 # ---------------------------------------------------------------------------
 EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw hermes"
-[ "$OS" = "Windows" ] && EXPECTED_TOOLS="codex opencode claude-code-standard claude-code-1m openclaw"
 # A harness that started and failed, or a mode whose login failed, has already
 # counted its FAIL above; only one that never reached `run_tool` is counted here.
 for mode in api-key oauth; do
