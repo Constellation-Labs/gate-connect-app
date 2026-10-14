@@ -140,7 +140,11 @@ switch ($Command) {
     [System.Windows.Forms.SendKeys]::SendWait($escaped)
     Start-Sleep -Milliseconds 300
     $value = $hit.El.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
-    if (-not [string]::Equals($value, $text, [StringComparison]::Ordinal)) {
+    # A password field reads back masked, one bullet per character, so only
+    # its length can be checked.
+    if ($hit.El.Current.IsPassword) {
+      if ($value.Length -ne $text.Length) { Fail "password field `"$label`" holds $($value.Length) characters after typing $($text.Length)" }
+    } elseif (-not [string]::Equals($value, $text, [StringComparison]::Ordinal)) {
       # Where they part, by position only: the value may be a real secret on
       # some later flow, so no characters are printed.
       $i = 0
