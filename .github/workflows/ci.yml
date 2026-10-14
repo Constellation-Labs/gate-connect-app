@@ -7,13 +7,23 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # feat/new-app-ui too, so the Rust caches below are saved on its ref: a
+    # PR can restore only from its own ref and its base's, and most PRs are
+    # based on it. Drop it when #151 merges and main is the only base.
+    branches: [main, feat/new-app-ui]
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# Full debuginfo is most of a `target/` dir, and the Rust caches are what fill
+# the repo's 10 GB cache budget. Line tables keep file:line in a failing test's
+# backtrace. Every workflow that restores the `rust` job's cache sets the same
+# value, because rust-cache hashes `CARGO_*` into the key and a mismatch misses.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   rust:
@@ -43,7 +53,12 @@ jobs:
           # Key by the exact image: the cache would otherwise be shared with
           # jobs on other ubuntu versions (same runner OS), and objects
           # compiled against a newer glibc fail to link on 22.04.
-          key: ${{ matrix.os }}
+          # Shared so the jobs that build a subset of the workspace (below, and
+          # in e2e-real-tools.yml and launchd-restart.yml) can restore it.
+          shared-key: ${{ matrix.os }}
+          # Only base branches save. A PR restores its base's cache, and one
+          # that saved its own would push the base's out of the budget.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/new-app-ui' }}
 
       # fmt is platform-independent; run it once (the Windows runners'
       # git autocrlf setting can also produce false CRLF diffs there).
@@ -118,9 +133,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.88.0
 
+      # The CLI is a subset of what `rust` builds, so restore its cache rather
+      # than keep a second one.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-system-trust
+          shared-key: windows-latest
+          save-if: false
 
       - name: Build the CLI
         run: cargo build --locked -p gate-connect-cli
@@ -235,9 +253,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.88.0
 
+      # A subset of what `rust` builds, so restore its cache rather than keep
+      # a second one.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-catalog-routing
+          shared-key: ${{ matrix.os }}
+          save-if: false
 
       # Built before anything is trusted, so the trusted window is short.
       - name: Build the CLI and the suite
@@ -345,6 +366,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-ui-e2e
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/new-app-ui' }}
 
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4

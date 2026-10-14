@@ -48,9 +48,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: '. -> target'
       - run: pnpm install --frozen-lockfile
       # The git tag is the single source of truth for the app version. Source
       # files carry a 0.0.0 placeholder; stamp the real version (tag minus the
