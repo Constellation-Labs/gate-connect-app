@@ -193,14 +193,17 @@ test.describe("new UI running apps", () => {
     // shipping. Both sides of the build split are covered properly in
     // `dialogs.apply.test.tsx`, which stubs the flag; what is left here is what
     // the frame actually draws.
+    //
+    // Claude Code, not Codex: a routing change offers Codex no close at all,
+    // because it routes per conversation (`routesNewConversations`).
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
-      tools: [CODEX],
-      runningAgentNames: ["codex"],
+      tools: [CLAUDE_CODE],
+      runningAgentNames: ["claude"],
       staleAgents: 1,
     });
 
-    await app.routeApp("ChatGPT / Codex");
+    await app.routeApp("Claude");
 
     const dialog = app.page.getByRole("dialog");
     // Who reopens it, read off the backend rather than written into the copy -
@@ -210,7 +213,7 @@ test.describe("new UI running apps", () => {
     //
     // One assertion, not two: a separate `toContainText("Codex")` above this
     // proved nothing the sentence does not already contain.
-    await expect(dialog).toContainText("reopen Codex yourself");
+    await expect(dialog).toContainText("reopen Claude Code yourself");
   });
 
   test("a tool that comes back ends the flow with nothing drawn", async ({ boot }) => {
@@ -220,21 +223,22 @@ test.describe("new UI running apps", () => {
     // verified reopen apart any more - the all-clear dialog went with #389, and
     // the rail reads the sweep, which already says Protected for this config
     // before the reopen (review on #389) - so this checks only that no dialog
-    // is drawn on either side of it.
+    // is drawn on either side of it. Claude Code for the reason the test above
+    // gives: Codex is offered no close after a routing change.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
-      tools: [CODEX],
-      runningAgentNames: ["codex"],
+      tools: [CLAUDE_CODE],
+      runningAgentNames: ["claude"],
     });
 
-    await app.routeApp("ChatGPT / Codex");
+    await app.routeApp("Claude");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
 
     // The user opens it again. No all-clear follows ("Change is ready" is not
     // in the Figma, and went on 2026-09-30).
-    await app.patch({ runningAgentNames: ["codex"] });
+    await app.patch({ runningAgentNames: ["claude"] });
     await expect.poll(() => app.lastCall("running_agents"), { timeout: 15_000 }).not.toBeNull();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
