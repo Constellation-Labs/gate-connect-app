@@ -14,11 +14,23 @@ name: E2E (real tools)
 # truth.
 on:
   pull_request:
+  # feat/new-app-ui too: its merges are what ships next, and gate's weekly
+  # last_verified refresh counts only push/schedule/dispatch runs, never
+  # pull_request ones. Drop it when #151 merges and main is the only branch.
   push:
-    branches: [main]
+    branches: [main, feat/new-app-ui]
   workflow_dispatch:
-  # schedule:
-  #   - cron: '0 6 * * *'
+    inputs:
+      alert:
+        description: Post to Slack if this run fails, as the nightly does (to test the alert)
+        type: boolean
+        default: false
+  # Nightly at 06:00 UTC. GitHub fires `schedule` from the default branch only,
+  # so this starts running when it reaches main; a failure posts to Slack (the
+  # `alert` job below). Third-party CLIs are pinned, so a red night means our
+  # code or a model/vendor change, not a silent CLI upgrade.
+  schedule:
+    - cron: '0 6 * * *'
 
 permissions:
   contents: read
@@ -149,3 +161,38 @@ jobs:
             [ -f "$f" ] || continue
             echo "=== $(basename "$f") ==="; cat "$f" 2>/dev/null
           done
+
+  # AG-673 AC3: a failed nightly reaches named people. Runs only for the
+  # schedule, or a manual run with `alert` ticked, so PR failures stay on the PR.
+  # Posts to #gate-alerts-staging through SLACK_ALERTS_WEBHOOK_URL (AG-1038),
+  # not SLACK_WEBHOOK_URL, which is release notes. A missing secret fails this
+  # job by name: a skipped alert would look exactly like a quiet night.
+  alert:
+    name: nightly alert
+    needs: e2e
+    if: >-
+      always() && needs.e2e.result == 'failure' &&
+      (github.event_name == 'schedule' || inputs.alert == true)
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+    env:
+      WEBHOOK: ${{ secrets.SLACK_ALERTS_WEBHOOK_URL }}
+      GH_TOKEN: ${{ github.token }}
+      # Slack member ids: matheus.reis, Gabriel Claramunt.
+      MENTIONS: <@U0AEQU9KJ80> <@U07P0BLK1M3>
+    steps:
+      - name: Post failure to Slack
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then
+            echo "::error::SLACK_ALERTS_WEBHOOK_URL is not set; the failure alert was not sent (AG-1038)."
+            exit 1
+          fi
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          failed="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" \
+            -q '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')"
+          text="$MENTIONS Real-tools e2e failed on \`$GITHUB_REF_NAME\` (${GITHUB_SHA:0:7}): ${failed:-see run}. <$run_url|Open the run>"
+          jq -n --arg text "$text" '{text: $text}' \
+            | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$WEBHOOK"
