@@ -1,11 +1,12 @@
-// WebDriver driver for the installed Gate Connect bundle on Windows and Linux
-// (AG-905), the counterpart of macos-ax.js.
+// WebDriver driver for the installed Gate Connect bundle on Linux (AG-905),
+// the counterpart of macos-ax.js and windows-uia.ps1.
 //
 // It talks plain W3C WebDriver over HTTP to tauri-driver, which launches the
-// installed binary under the platform's native driver: msedgedriver (WebView2)
-// on Windows, WebKitWebDriver (WebKitGTK) on Linux. No test hook in the app:
-// tauri-driver turns automation on from the environment it launches the app
-// with, which the release build honours as it is.
+// installed binary under WebKitWebDriver. No test hook in the app:
+// tauri-driver sets TAURI_WEBVIEW_AUTOMATION, which tauri-runtime-wry reads at
+// runtime in any build profile, so the release build accepts automation as it
+// is. (On Windows tauri-driver's msedgedriver cannot attach to this app; see
+// windows-uia.ps1.)
 //
 // One command per process, like macos-ax.js, so the shell script reads the
 // same step by step. The session lives in $WD_SESSION (a JSON file), which

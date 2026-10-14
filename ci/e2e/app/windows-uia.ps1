@@ -4,10 +4,11 @@
 # Why not WebDriver: msedgedriver attaches to WebView2 by handing the runtime
 # --remote-debugging-port through WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, and
 # the runtime drops that variable when the app passes its own
-# AdditionalBrowserArguments in code, which wry always does. Seen on CI: the
-# browser process ran with wry's list and no debugging port, so the session
-# failed with "DevToolsActivePort file doesn't exist" (a per-user WebView2
-# policy with the same value was dropped too). Getting the port in would take
+# AdditionalBrowserArguments in code, which wry always does. Seen on CI (runs
+# 38613220395 and 38614276454, WebView2 153): the browser process ran with
+# wry's list and no debugging port, so the session failed with
+# "DevToolsActivePort file doesn't exist", and a per-user WebView2 policy with
+# the same value was dropped too. Getting the port in would take
 # a change to the app, which a release build must not carry.
 #
 # UI Automation needs nothing from the app. WebView2 publishes the page to the
