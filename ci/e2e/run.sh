@@ -1154,12 +1154,20 @@ fi
 # Same idea for OpenClaw: its catalog id drifts, so pick a current anthropic one
 # from `openclaw infer model list` (JSON lines) rather than pinning. The request
 # reaches the relay regardless of whether the id is "real" (the mock 200s), but a
-# catalog id keeps openclaw from bailing before it sends.
+# catalog id keeps openclaw from bailing before it sends. Since 2026.9.x the
+# list has no `anthropic` rows until a hosted catalog is loaded. It still lists
+# the same ids under `claude-cli`, and `anthropic/<id>` is their canonical ref,
+# so fall back to those. Deprecated rows are skipped. Rows now nest
+# `contextWindows` with ids of their own, so take the first "id" only.
 OPENCLAW_MODEL=""
 if command -v openclaw >/dev/null 2>&1; then
-  OPENCLAW_MODEL=$(openclaw infer model list 2>/dev/null \
-    | grep '"provider":"anthropic"' | grep -v -- '-latest"' \
-    | head -n1 | sed -E 's/.*"id":"([^"]+)".*/\1/')
+  OPENCLAW_ROWS=$(openclaw infer model list 2>/dev/null \
+    | grep -v '"status":"deprecated"' | grep -v -- '-latest"')
+  for p in anthropic claude-cli; do
+    OPENCLAW_MODEL=$(printf '%s\n' "$OPENCLAW_ROWS" | grep "\"provider\":\"$p\"" \
+      | head -n1 | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    [ -n "$OPENCLAW_MODEL" ] && break
+  done
 fi
 
 # Run every installed tool against the relay and assert the given auth mode's
@@ -1245,12 +1253,12 @@ run_engine_tools() {
   #     Nothing dials Anthropic: /v1/messages is a rewrite prefix, so the engine
   #     never opens the upstream leg.
   #
-  #     Needle is /v1/chat/completions: the anthropic catalog entry's upstream
-  #     is the bare host, so the forwarded path is the app's own, and since
-  #     2026.8.1 openclaw's anthropic transport is the OpenAI-compatible
-  #     endpoint (`api=openai-completions`) rather than /v1/messages. The
-  #     catalog names that path, so a capture here also proves the intercept
-  #     still covers it; a pass on /v1/messages would mean openclaw reverted.
+  #     Needle is /v1/messages: the anthropic catalog entry's upstream is the
+  #     bare host, so the forwarded path is the app's own. In 2026.8.x
+  #     openclaw's anthropic transport was the OpenAI-compatible
+  #     endpoint (`api=openai-completions`). Since 2026.9.x it is the native
+  #     Messages API again (`api=anthropic-messages`), so the request lands on
+  #     /v1/messages. A pass on /v1/chat/completions would mean it moved back.
   #
   #     We seed a minimal anthropic provider block (with a dummy apiKey so
   #     openclaw actually fires the call): gate-connect detects OpenClaw off the
@@ -1276,7 +1284,7 @@ run_engine_tools() {
     # spell `openclaw`. Asserting it on that premise would turn this row red
     # with no product bug behind it. Capture the real User-Agent, add it to the
     # table in `proxy/mod.rs`, then drop this override.
-    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" client= -- \
+    run_tool "openclaw" "openclaw" "/v1/messages" "$mode" client= -- \
       openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 
