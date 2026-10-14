@@ -744,7 +744,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await expect(app.page.getByText(/left Gate, so requests will fail/)).toBeVisible();
+    await expect(app.page.getByText(/Requests will fail until you choose another model/)).toBeVisible();
     // The rule the ticket is emphatic about.
     await expect(app.page.getByText(/will not pick a replacement/)).toBeVisible();
   });
@@ -764,7 +764,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await expect(app.page.getByText(/left Gate, so requests will fail/)).toHaveCount(0);
+    await expect(app.page.getByText(/Requests will fail until you choose another model/)).toHaveCount(0);
   });
 
   test("says nothing about a model remembered under App default", async ({ boot }) => {
@@ -778,7 +778,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await expect(app.page.getByText(/left Gate, so requests will fail/)).toHaveCount(0);
+    await expect(app.page.getByText(/Requests will fail until you choose another model/)).toHaveCount(0);
   });
 
   test("highlights an empty balance", async ({ boot }) => {

@@ -880,7 +880,7 @@ describe("browserTrustRestartAdvice", () => {
     // say on a machine with two locked databases.
     const advice = browserTrustRestartAdvice("linux", "write_failed");
     expect(advice?.title).not.toContain("One browser");
-    expect(advice?.body).toContain("at least one");
+    expect(advice?.body).toMatch(/at least one/i);
   });
 
   it("says who is unaffected, and does not count Firefox among them", () => {

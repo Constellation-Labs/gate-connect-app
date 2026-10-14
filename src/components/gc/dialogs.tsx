@@ -403,7 +403,7 @@ export function ReviewConfigDialog({
       icon="triangleAlert"
       title={`Review ${app.name} configuration`}
       // Typographic apostrophe, as drawn (`130:57448`).
-      subtitle="Gate found settings that it didn’t create. They will not be replaced without your approval"
+      subtitle="Gate found settings it didn’t create. It won’t replace them without your approval."
       secondary={{ label: "Keep existing config", onClick: onKeep }}
       primary={{ label: "Replace config and protect", onClick: onReplace }}
       onDismiss={onKeep}
@@ -445,8 +445,8 @@ export function ReviewConfigDialog({
           keychain.
         </p>
         <p className="mt-3">
-          Your configuration is restored when you turn protection off,
-          disconnect Gate Connect, or do a complete reset.
+          Gate puts your original settings back when you turn protection off,
+          disconnect, or reset.
         </p>
       </ModalNote>
     </Modal>
@@ -1254,8 +1254,8 @@ export function ModelPickerDialog({
                 </>
               ) : (
                 <p>
-                  Requests for the models enabled here consume Gate credits.
-                  Gate never uses a model you have not enabled.
+                  These models use Gate credits. Gate only uses the ones you
+                  select here.
                 </p>
               )}
             </ModalNote>
@@ -1554,10 +1554,10 @@ export function OpenCodeEnvDialog({
           clause before it; with the clause corrected the cut still stands,
           since naming git, curl and npm carries the breadth on its own. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Providers you already set up keep OpenCode&apos;s own settings. Ones you
-        add later route through your proxy variables, which apply to any
-        command-line tool that reads them, git, curl and npm included, and make
-        Node programs you start afterwards trust Gate&apos;s certificate.
+        Providers you already set up keep OpenCode&apos;s own settings. New ones
+        route through Gate using proxy variables. Other command-line tools that
+        read them, like git, curl and npm, route too, and Node programs you start
+        afterwards trust Gate&apos;s certificate.
       </p>
       {/* AG-895. The ticket reads "toggling OpenCode asks me to close Codex",
           and the literal claim does not survive the code - every caller of
@@ -1819,8 +1819,8 @@ export function CollectedDataLists({
               with the organization when known. "The first time" is what keeps
               the sentence true after a second opt-out, which sends nothing. */}
           <li>
-            The first time you say no, or turn sharing off later, one final note
-            says so, tied to your organization and account when known.
+            The first time you say no, or turn sharing off later, Gate sends one
+            last note saying so, linked to your account and organization if known.
           </li>
           <li>App version and operating system.</li>
           <li>

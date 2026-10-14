@@ -37,7 +37,7 @@ import type { ClassifiedError } from "./errors";
  * reasonable, and the configuration is the thing that explains it. */
 export const NO_DASHBOARD: ClassifiedError = {
   title: "This gateway has no dashboard",
-  hint: "Gate Connect is pointed at a gateway with no dashboard to open. Switch to a Gate server in Settings to reach it.",
+  hint: "Switch to a Gate server in Settings to open one.",
   raw: "no dashboard origin for the active gateway",
 };
 
