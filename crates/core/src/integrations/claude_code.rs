@@ -567,7 +567,7 @@ impl Integration for ClaudeCode {
         // The file now holds nothing but our additions - remove it rather
         // than leaving a stray `{}` behind (matching Codex's disconnect).
         if settings.is_empty() {
-            crate::config_changes::remove(&path)?;
+            crate::config_changes::remove_with_view(&path, routing_view)?;
             return Ok(());
         }
         write_settings(&settings)
@@ -937,7 +937,41 @@ fn load_settings() -> Result<Option<Map<String, Value>>> {
 }
 
 fn write_settings(settings: &Map<String, Value>) -> Result<()> {
-    super::json_config::write_object(&settings_path()?, settings)
+    super::json_config::write_object_with_view(&settings_path()?, settings, routing_view)
+}
+
+/// What a running `claude` acted on: the `env` block, which is everything Gate
+/// routes by. The rest of the file is Claude Code's own and it rewrites it at
+/// will - a permission approval, a model switch - so a view that took it in
+/// would read every round trip of Gate's values as news. Sorted, so a
+/// reordering is not a change; empty when there is no `env`, which is also how
+/// a removed file reads. A file that is not JSON is its own bytes.
+///
+/// **Gate's `modelPicker` is left out on purpose**: a running session reloads
+/// it. Measured 2026-10-13 on Claude Code 2.1.296 - a second picker entry
+/// written while a session was open appeared in that session's `/model` menu
+/// without a restart - so a change to Gate's model list is not one a running
+/// `claude` misses.
+fn routing_view(bytes: &[u8]) -> Vec<u8> {
+    // A blank file reads as absent, as `load_object` reads it.
+    if bytes.trim_ascii().is_empty() {
+        return Vec::new();
+    }
+    serde_json::from_slice::<Value>(bytes)
+        .map(|settings| {
+            settings
+                .get("env")
+                .and_then(Value::as_object)
+                .map(|env| {
+                    // Sorted here rather than trusted to be: `serde_json::Map`
+                    // keeps insertion order whenever any crate in the build
+                    // turns on its `preserve_order` feature.
+                    let sorted: std::collections::BTreeMap<&String, &Value> = env.iter().collect();
+                    serde_json::to_vec(&sorted).unwrap_or_default()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_else(|_| bytes.to_vec())
 }
 
 use super::json_config::ensure_object;
@@ -960,6 +994,21 @@ fn reject_non_object_env(settings: &Map<String, Value>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_routing_view_is_the_env_block_alone() {
+        let routed = br#"{"env":{"B":"2","A":"1"},"permissions":{"allow":[]}}"#;
+        let approved =
+            br#"{"permissions":{"allow":["Bash(ls)"]},"model":"x","env":{"A":"1","B":"2"}}"#;
+        assert_eq!(routing_view(routed), routing_view(approved));
+        assert_ne!(
+            routing_view(routed),
+            routing_view(br#"{"env":{"A":"1","B":"3"}}"#)
+        );
+        assert_eq!(routing_view(br#"{"model":"x"}"#), routing_view(b""));
+        assert_eq!(routing_view(b" \n"), routing_view(b""));
+        assert_eq!(routing_view(b"not json"), b"not json");
+    }
 
     #[test]
     fn managed_keys_keep_the_anthropic_base_url_canonical() {

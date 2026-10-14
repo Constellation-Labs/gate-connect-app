@@ -2871,7 +2871,7 @@ fn agent_row_for(
 /// Code: it reads the `~/.claude/settings.json` the claude-code integration
 /// rewrites, so a scan asking which `claude-code` processes are stale must find
 /// it, and it goes stale on that file's changes rather than on the desktop
-/// app's (`config_changed_at_unix` is keyed by this slug). Filing it under
+/// app's (`config_changes_of` is keyed by this slug). Filing it under
 /// `anthropic` dropped it from every one of those scans, and Gate reported no
 /// restart needed over a session still running without the route.
 ///
@@ -2909,21 +2909,22 @@ fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
     agent_row_of(process).map(|(slug, _, _, _)| *slug)
 }
 
-/// Did this agent start before the last change to something it reads once at
-/// launch, and so is still using what it loaded then?
+/// Did this agent load something it reads once at launch that has changed
+/// since, and so is still using what it loaded then?
 ///
 /// The per-process form of [`reopen_pending_for`], and the same decision:
 /// [`gate_connect_core::reopen::reopen_pending`] over this process's start, its
-/// tool's configuration file and Gate's CA certificate. One rule, so the count,
-/// the listing and the per-tool verdict cannot disagree about a process.
+/// tool's configuration history and Gate's CA certificate. One rule, so the
+/// count and the listing cannot disagree about a process; the per-tool verdict
+/// departs from it for Codex alone, as [`reopen_pending_for`] explains.
 ///
-/// **The configuration's time is Gate's record, not its mtime.** The mtime
+/// **The configuration's history is Gate's record, not its mtime.** The mtime
 /// moved on the tool's own edits too - Claude Code rewrites `settings.json` on
 /// every permission approval - and each one made every older process read as
 /// stale with nothing Gate routes by changed.
-/// [`gate_connect_core::config_changes`] is stamped only when Gate's write
-/// actually changed the file. A hand edit to a routing value is what this
-/// gives up, and the config status still reports that one.
+/// [`gate_connect_core::config_changes`] records a change only when Gate's
+/// write actually changed the file, and a hand edit to a routing value only
+/// when Gate next writes over it; the config status reports that one sooner.
 ///
 /// **Not "started before routing came up".** That was the rule until the
 /// forwarder fronted both the proxy and the relay, and it asked the wrong
@@ -2946,7 +2947,7 @@ fn agent_needs_reopen(process: &sysinfo::Process, since: Option<u64>) -> bool {
             gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
                 process_names_known: true,
                 process_starts: &[process.start_time()],
-                config_changed_at: at_or_after(config_changed_at_unix(slug), since),
+                config_changes: &changes_since(config_changes_of(slug), since),
                 ca_cert_changed_at: at_or_after(ca_cert_changed_at_unix(), since),
             })
         })
@@ -2962,6 +2963,23 @@ fn agent_needs_reopen(process: &sysinfo::Process, since: Option<u64>) -> bool {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn at_or_after(changed_at: Option<u64>, since: Option<u64>) -> Option<u64> {
     changed_at.filter(|&changed_at| since.is_none_or(|since| changed_at >= since))
+}
+
+/// [`at_or_after`] for a configuration's history: kept whole when its newest
+/// change is at or after `since`, and empty otherwise. Whole, because what an
+/// older process loaded is read off the earlier changes; it is the newest one
+/// the toggle has to have made.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn changes_since(
+    changes: Vec<gate_connect_core::config_changes::Change>,
+    since: Option<u64>,
+) -> Vec<gate_connect_core::config_changes::Change> {
+    let newest = changes.last().map(|change| change.at);
+    if at_or_after(newest, since).is_some() {
+        changes
+    } else {
+        Vec::new()
+    }
 }
 
 /// The user's Settings choices. Never fails: a missing or mangled file loads as
@@ -3325,7 +3343,7 @@ fn agent_process_names(slug: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// When Gate last changed this tool's configuration file, in Unix seconds.
+/// Gate's changes to this tool's configuration file, oldest first.
 ///
 /// The durable half of the reopen decision: the file is what the tool reads at
 /// startup, and the record survives restarts of Gate, reboots and reinstalls -
@@ -3336,18 +3354,19 @@ fn agent_process_names(slug: &str) -> Vec<&'static str> {
 /// **Gate's record, not the file's mtime.** The mtime moved on the tool's own
 /// edits too - Claude Code rewrites `settings.json` on every permission
 /// approval - and each one made every older process read as stale with
-/// nothing Gate routes by changed. [`gate_connect_core::config_changes`] is
-/// stamped only when Gate's write actually changed the file.
+/// nothing Gate routes by changed. [`gate_connect_core::config_changes`]
+/// records a change only when Gate's write actually changed the file.
 ///
-/// `None` for a tool with no configuration file of its own (the environment
+/// Empty for a tool with no configuration file of its own (the environment
 /// channel) and for one Gate has no recorded change to. Both mean the same
 /// thing to the caller: no recorded change, so no claim.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn config_changed_at_unix(slug: &str) -> Option<u64> {
-    let integration = gate_connect_core::registry::ToolId::from_slug(slug)
-        .and_then(gate_connect_core::registry::find)?;
-    let path = integration.config_location()?;
-    gate_connect_core::config_changes::changed_at(std::path::Path::new(&path))
+fn config_changes_of(slug: &str) -> Vec<gate_connect_core::config_changes::Change> {
+    gate_connect_core::registry::ToolId::from_slug(slug)
+        .and_then(gate_connect_core::registry::find)
+        .and_then(|integration| integration.config_location())
+        .map(|path| gate_connect_core::config_changes::history(std::path::Path::new(&path)))
+        .unwrap_or_default()
 }
 
 /// When Gate's CA certificate was last written, as Unix seconds.
@@ -3390,8 +3409,8 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Is a process for this one tool running that predates the last change to that
-/// tool's configuration, and is therefore still using whatever it loaded then?
+/// Is a process for this one tool running that loaded a configuration other than
+/// the one in place now, and is therefore still using whatever it loaded then?
 ///
 /// Narrowed to one tool *and* given a durable bound, which is what a per-tool
 /// verdict needs: it has to say which row to mark, and survive a restart of
@@ -3399,12 +3418,25 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
 ///
 /// The decision itself is [`gate_connect_core::reopen::reopen_pending`], which
 /// is pure and carries the reasoning. This function is only the three readings
-/// it is made from: the process names for the slug, their start times, and the
-/// configuration file's mtime.
+/// it is made from: the process names for the slug, their start times, and
+/// Gate's history of changes to the configuration file.
+///
+/// **Never for Codex** ([`verdict_asks_for_reopen`]). Codex reads its route per
+/// conversation (`integrations::codex`): every conversation started after a
+/// change takes the new route without a restart, and none already open ever
+/// does, so a process older than the change is neither a reason to call the
+/// row Not protected nor something reopening would fix. Nor does a certificate
+/// re-mint touch it: Codex reaches Gate only through the loopback relay, over
+/// plain HTTP, and never loads Gate's certificate. This is the one place the
+/// verdict and [`agent_needs_reopen`] part ways: the process-level answer still
+/// says the process predates the config, which the reopen flow's watch needs
+/// after a model change, when closing Codex is what lets its app-server daemon
+/// reload the model list. The frontend's `routesNewConversations` is the same
+/// fact, and the two move together.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn reopen_pending_for(slug: &str) -> bool {
     let wanted = agent_process_names(slug);
-    if wanted.is_empty() {
+    if wanted.is_empty() || !verdict_asks_for_reopen(slug) {
         // No process table walk for a tool the walk could not recognise, and
         // no stat either. `process_names_known: false` below is the same
         // answer, stated where the decision lives.
@@ -3415,9 +3447,16 @@ fn reopen_pending_for(slug: &str) -> bool {
     gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
         process_names_known: true,
         process_starts: &starts,
-        config_changed_at: config_changed_at_unix(slug),
+        config_changes: &config_changes_of(slug),
         ca_cert_changed_at: ca_cert_changed_at_unix(),
     })
+}
+
+/// Whether a tool's verdict can read "Reopen to finish" at all. False for
+/// Codex alone; see [`reopen_pending_for`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn verdict_asks_for_reopen(slug: &str) -> bool {
+    slug != ToolId::Codex.slug()
 }
 
 /// One tool's routing verdict, flattened for the frontend.
@@ -7616,6 +7655,18 @@ mod tests {
     /// `NODE_EXTRA_CA_CERTS` and what `proxy_env` exports. If the tools are
     /// ever pointed somewhere else, this should move with them rather than
     /// keep naming a path nobody reads.
+    /// Codex alone never reads "Reopen to finish": it routes per conversation
+    /// and never loads the certificate. Pinned beside the frontend's
+    /// `routesNewConversations`, which says the same thing about the same slug.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn only_codex_is_spared_a_reopen_verdict() {
+        assert!(!verdict_asks_for_reopen("codex"));
+        for slug in ["claude-code", "opencode", "hermes", "anthropic", "chatgpt"] {
+            assert!(verdict_asks_for_reopen(slug), "{slug}");
+        }
+    }
+
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn reopen_source_is_the_file_tools_read() {
@@ -7760,10 +7811,14 @@ mod tests {
     #[test]
     fn reopen_counts_only_changes_since_the_bound() {
         let missed = |started: u64, config: Option<u64>, ca: Option<u64>, since: Option<u64>| {
+            let config = config
+                .map(|at| gate_connect_core::config_changes::Change { at, view: None })
+                .into_iter()
+                .collect();
             gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
                 process_names_known: true,
                 process_starts: &[started],
-                config_changed_at: at_or_after(config, since),
+                config_changes: &changes_since(config, since),
                 ca_cert_changed_at: at_or_after(ca, since),
             })
         };
