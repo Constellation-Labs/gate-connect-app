@@ -41,6 +41,11 @@ on:
 permissions:
   contents: read
 
+# Must match ci.yml's, or the shared Rust cache below misses: rust-cache hashes
+# `CARGO_*` into the key.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   # AG-902: a schedule fires whether or not the branch moved, so a quiet day
   # would rebuild and re-test a commit that already passed. Only schedule and
@@ -97,9 +102,12 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@1.88.0
+      # The CLI is a subset of what ci.yml's `rust` job builds, so restore its
+      # cache rather than keep a second one.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-e2e
+          shared-key: ${{ matrix.os }}
+          save-if: false
 
       - uses: actions/setup-node@v4
         with:
