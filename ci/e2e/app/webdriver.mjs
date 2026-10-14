@@ -41,28 +41,25 @@ function fail(msg) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function wd(method, path, body) {
+async function wd(method, path, body, timeoutMs = Number(process.env.WD_COMMAND_TIMEOUT_MS || 30000)) {
   const res = await fetch(WD_URL + path, {
     method,
     // A command that never answers (a window still loading, say) must fail
     // the step rather than hold it until the job's timeout.
-    signal: AbortSignal.timeout(Number(process.env.WD_COMMAND_TIMEOUT_MS || 30000)),
+    signal: AbortSignal.timeout(timeoutMs),
     headers: { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  // An error the driver answered with, as against no driver to ask: `start`
-  // retries the second and fails at once on the first.
-  const answered = (msg) => Object.assign(new Error(msg), { answered: true });
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    throw answered(`${method} ${path}: HTTP ${res.status}: ${text.slice(0, 500)}`);
+    throw new Error(`${method} ${path}: HTTP ${res.status}: ${text.slice(0, 500)}`);
   }
   if (!res.ok || (json.value && json.value.error)) {
     const v = json.value || {};
-    throw answered(`${method} ${path}: ${v.error || res.status}: ${v.message || text.slice(0, 500)}`);
+    throw new Error(`${method} ${path}: ${v.error || res.status}: ${v.message || text.slice(0, 500)}`);
   }
   return json.value;
 }
@@ -167,28 +164,27 @@ async function main(argv) {
   const [cmd, ...args] = argv;
   switch (cmd) {
     case 'start': {
+      // One attempt, never a retry: the driver launches the app as it starts
+      // the session, so a second attempt would launch a second copy, which
+      // the single-instance plugin hands to the first and exits. The script
+      // has already waited for the driver to answer /status.
       const [app, secs = '120'] = args;
       if (!app) fail('start needs the app binary');
-      const until = Date.now() + Number(secs) * 1000;
-      let last;
-      for (;;) {
-        try {
-          const v = await wd('POST', '/session', {
-            capabilities: { alwaysMatch: { 'tauri:options': { application: app } } },
-          });
-          fs.writeFileSync(SESSION_FILE, JSON.stringify({ id: v.sessionId }));
-          console.log(`session ${v.sessionId}`);
-          console.log(JSON.stringify(v.capabilities, null, 2));
-          return;
-        } catch (e) {
-          last = e;
-          // The driver is up and said no: a native driver that cannot
-          // attach, or an app that would not start. Waiting will not change it.
-          if (e.answered) fail(`session not created: ${e.message}`);
-          if (Date.now() > until) fail(`no session within ${secs}s: ${last.message || last}`);
-          await sleep(2000);
-        }
+      let v;
+      try {
+        v = await wd(
+          'POST',
+          '/session',
+          { capabilities: { alwaysMatch: { 'tauri:options': { application: app } } } },
+          Number(secs) * 1000,
+        );
+      } catch (e) {
+        fail(`session not created: ${e.message || e}`);
       }
+      fs.writeFileSync(SESSION_FILE, JSON.stringify({ id: v.sessionId }));
+      console.log(`session ${v.sessionId}`);
+      console.log(JSON.stringify(v.capabilities, null, 2));
+      return;
     }
     case 'windows': {
       for (const h of await handles()) {

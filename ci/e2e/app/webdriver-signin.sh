@@ -218,6 +218,14 @@ command -v tauri-driver >/dev/null || { echo "tauri-driver is not on PATH" >&2; 
 if [ "$OS" = windows ]; then
   [ -n "${MSEDGEDRIVER:-}" ] && [ -f "$MSEDGEDRIVER" ] || { echo "MSEDGEDRIVER must name msedgedriver.exe" >&2; exit 1; }
   NATIVE_DRIVER="$(native "$MSEDGEDRIVER")"
+  # msedgedriver asks WebView2 for its debugging port through
+  # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, and the runtime drops that in
+  # favour of the arguments wry passes in code (seen in run 38613220395: the
+  # browser process ran with wry's list and no --remote-debugging-port). The
+  # same setting as a per-user WebView2 policy, keyed by the app's exe name,
+  # is read by the loader too. This is the experiment.
+  "${NOCONV[@]}" reg add 'HKCU\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments' \
+    /v "$(basename "$APP")" /t REG_SZ /d "--remote-debugging-port=0 --enable-automation" /f
 else
   NATIVE_DRIVER="$(command -v WebKitWebDriver)" || { echo "WebKitWebDriver is not on PATH (webkit2gtk-driver)" >&2; exit 1; }
   [ -n "${DISPLAY:-}" ] || { echo "no DISPLAY: run under xvfb-run" >&2; exit 1; }
