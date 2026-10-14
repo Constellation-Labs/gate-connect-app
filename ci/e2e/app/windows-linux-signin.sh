@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# AG-905 spike: install the built Windows or Linux bundle, launch it under
-# tauri-driver, and sign in with an API key through the app's own window,
-# driven by WebDriver (webdriver.mjs). The macOS half is macos-signin.sh; this
-# is the same flow and the same three assertions.
+# AG-905 spike: install the built Windows or Linux bundle, launch it, and sign
+# in with an API key through the app's own window. The macOS half is
+# macos-signin.sh; this is the same flow and the same assertions, with a
+# driver per OS behind one `drv` function:
+#
+#   Linux    WebDriver (webdriver.mjs) through tauri-driver and WebKitWebDriver.
+#   Windows  UI Automation (windows-uia.ps1), the macOS choice again.
 #
 # CI runners only. It edits the hosts file, trusts a root machine-wide, binds
 # port 443 and installs the app, none of which belongs on a developer machine.
@@ -20,12 +23,11 @@
 #      so ::1 is refused at once and the app falls back to v4);
 #   3. ci/e2e/mock-gateway.mjs on 443 with that leaf, logging every request.
 #
-# Driving: tauri-driver launches the installed binary through the platform's
-# own WebDriver, msedgedriver for WebView2 on Windows and WebKitWebDriver for
-# WebKitGTK on Linux. Neither needs anything compiled into the app: on Windows
-# msedgedriver hands WebView2 its remote-debugging arguments through the
-# environment, and on Linux tauri-driver sets TAURI_WEBVIEW_AUTOMATION, which
-# tauri-runtime-wry reads at runtime in any build profile.
+# Neither driver needs anything compiled into the app. On Linux tauri-driver
+# sets TAURI_WEBVIEW_AUTOMATION, which tauri-runtime-wry reads at runtime in
+# any build profile, and WebKitWebDriver attaches. On Windows tauri-driver does
+# not attach to this app (windows-uia.ps1's header has the evidence), and UI
+# Automation reads the page WebView2 publishes to the OS, as AX does on macOS.
 #
 # Linux runs under a display and a session bus (the workflow wraps this in
 # xvfb-run and dbus-run-session), and starts gnome-keyring here: a release
@@ -38,7 +40,7 @@ set -euo pipefail
 
 # CI=true alone is not enough: self-hosted runners and some dev boxes set it.
 if [ "${GITHUB_ACTIONS:-}" != "true" ] || [ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ]; then
-  echo "webdriver-signin.sh changes the hosts file, the machine trust store, port 443 and the installed app: GitHub-hosted runners only" >&2
+  echo "windows-linux-signin.sh changes the hosts file, the machine trust store, port 443 and the installed app: GitHub-hosted runners only" >&2
   exit 2
 fi
 
@@ -54,7 +56,7 @@ KEY="sk-gw-e2e-00000000000000000000000000000000"
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*) OS=windows ;;
   Linux) OS=linux ;;
-  *) echo "webdriver-signin.sh drives Windows and Linux; macOS is macos-signin.sh" >&2; exit 2 ;;
+  *) echo "windows-linux-signin.sh drives Windows and Linux; macOS is macos-signin.sh" >&2; exit 2 ;;
 esac
 
 # Git Bash rewrites an argument that looks like a path, which turns a Windows
@@ -74,7 +76,18 @@ fi
 
 WORK="$(mktemp -d)"
 export WD_SESSION="$WORK/session.json"
-WD=(node "$HERE/webdriver.mjs")
+
+# The driver, one command per call, the same verbs as macos-ax.js.
+drv() {
+  if [ "$OS" = windows ]; then
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(native "$HERE/windows-uia.ps1")" "$@"
+  else
+    node "$HERE/webdriver.mjs" "$@"
+  fi
+}
+# The page as the driver sees it: a WebDriver screenshot of the webview on
+# Linux; Windows has only the screen.
+page_shot() { [ "$OS" = linux ] && drv screenshot "$1" || true; }
 
 os_screenshot() {
   local file="$1"
@@ -96,15 +109,15 @@ on_exit() {
   if [ "$rc" -ne 0 ]; then
     echo "::error::app e2e ($OS) failed at step: $STEP"
     os_screenshot "$OUT/failed-$STEP.screen.png"
-    if [ -f "$WD_SESSION" ]; then
+    if [ "$OS" = windows ] || [ -f "$WD_SESSION" ]; then
       # An error card keeps its cause under a Details disclosure; open it so
       # the dump carries the cause.
-      "${WD[@]}" click 2 "Details" >/dev/null 2>&1 || true
-      "${WD[@]}" screenshot "$OUT/failed-$STEP.png" || true
-      "${WD[@]}" dump >"$OUT/failed-$STEP.page.txt" 2>&1 || true
+      drv click 2 "Details" >/dev/null 2>&1 || true
+      page_shot "$OUT/failed-$STEP.png"
+      drv dump >"$OUT/failed-$STEP.page.txt" 2>&1 || true
     fi
   fi
-  [ -f "$WD_SESSION" ] && "${WD[@]}" quit >/dev/null 2>&1 || true
+  [ -f "$WD_SESSION" ] && drv quit >/dev/null 2>&1 || true
   cp "$WORK/capture.jsonl" "$WORK/mock.out" "$WORK/driver.out" "$OUT/" 2>/dev/null || true
   cp -R "$DATA" "$OUT/app-data" 2>/dev/null || true
   [ -n "${DRIVER_PID:-}" ] && kill "$DRIVER_PID" 2>/dev/null || true
@@ -214,46 +227,38 @@ endstep
 step "driver"
 # Each prerequisite is checked here, so a missing one names itself rather than
 # reading later as a window that never appeared.
-command -v tauri-driver >/dev/null || { echo "tauri-driver is not on PATH" >&2; exit 1; }
 if [ "$OS" = windows ]; then
-  [ -n "${MSEDGEDRIVER:-}" ] && [ -f "$MSEDGEDRIVER" ] || { echo "MSEDGEDRIVER must name msedgedriver.exe" >&2; exit 1; }
-  NATIVE_DRIVER="$(native "$MSEDGEDRIVER")"
-  # msedgedriver asks WebView2 for its debugging port through
-  # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, and the runtime drops that in
-  # favour of the arguments wry passes in code (seen in run 38613220395: the
-  # browser process ran with wry's list and no --remote-debugging-port). The
-  # same setting as a per-user WebView2 policy, keyed by the app's exe name,
-  # is read by the loader too. This is the experiment.
-  "${NOCONV[@]}" reg add 'HKCU\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments' \
-    /v "$(basename "$APP")" /t REG_SZ /d "--remote-debugging-port=0 --enable-automation" /f
+  drv probe
 else
+  command -v tauri-driver >/dev/null || { echo "tauri-driver is not on PATH" >&2; exit 1; }
   NATIVE_DRIVER="$(command -v WebKitWebDriver)" || { echo "WebKitWebDriver is not on PATH (webkit2gtk-driver)" >&2; exit 1; }
   [ -n "${DISPLAY:-}" ] || { echo "no DISPLAY: run under xvfb-run" >&2; exit 1; }
   [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || { echo "no session bus: run under dbus-run-session" >&2; exit 1; }
+  echo "native driver: $NATIVE_DRIVER"
+  tauri-driver --port 4444 --native-driver "$NATIVE_DRIVER" >"$WORK/driver.out" 2>&1 &
+  DRIVER_PID=$!
+  for _ in $(seq 1 50); do
+    if curl -fsS http://127.0.0.1:4444/status >/dev/null 2>&1; then break; fi
+    sleep 0.2
+  done
+  curl -fsS http://127.0.0.1:4444/status || { cat "$WORK/driver.out"; exit 1; }
+  echo
 fi
-"$NATIVE_DRIVER" --version || true
-echo "native driver: $NATIVE_DRIVER"
-tauri-driver --port 4444 --native-driver "$NATIVE_DRIVER" >"$WORK/driver.out" 2>&1 &
-DRIVER_PID=$!
-for _ in $(seq 1 50); do
-  if curl -fsS http://127.0.0.1:4444/status >/dev/null 2>&1; then break; fi
-  sleep 0.2
-done
-curl -fsS http://127.0.0.1:4444/status || { cat "$WORK/driver.out"; exit 1; }
-echo
 endstep
 
 step "launch"
 if [ "$OS" = windows ]; then
-  # What the app and its WebView2 browser process were started with, read
-  # while the driver is still waiting on them: the evidence for whether the
-  # debugging port reached the runtime.
-  ( sleep 20; powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.Name -match 'gate|msedge|webview' } | Format-List ProcessId, ParentProcessId, Name, CommandLine" >"$OUT/processes-at-launch.txt" 2>&1 ) &
+  # Started as Explorer would, detached from this shell.
+  powershell -NoProfile -Command "Start-Process -FilePath '$(native "$APP")'"
+  drv wait-window 90
+else
+  # tauri-driver launches it, with automation allowed, as the session starts.
+  drv start "$APP" 120
+  drv windows || true
 fi
-"${WD[@]}" start "$(native "$APP")" 120
-"${WD[@]}" windows || true
-"${WD[@]}" dump >"$OUT/01-launched.page.txt" 2>&1 || true
-"${WD[@]}" screenshot "$OUT/01-launched.png" || true
+drv dump >"$OUT/01-launched.page.txt" 2>&1 || true
+page_shot "$OUT/01-launched.png"
+os_screenshot "$OUT/01-launched.screen.png"
 endstep
 
 # A first launch opens the intro window: a welcome frame and a few steps, each
@@ -261,32 +266,33 @@ endstep
 # "Get started" shows, so a step added to or dropped from the intro does not
 # break this; ten clicks is far more than the intro has.
 step "intro"
-"${WD[@]}" wait-text 60 "Welcome to Gate Connect"
+drv wait-text 60 "Welcome to Gate Connect"
 for clicks in $(seq 0 10); do
-  if "${WD[@]}" wait-text 2 "Get started" >/dev/null 2>&1; then break; fi
+  if drv wait-text 2 "Get started" >/dev/null 2>&1; then break; fi
   if [ "$clicks" -eq 10 ]; then
     echo "no \"Get started\" after $clicks clicks on Next" >&2
     exit 1
   fi
-  "${WD[@]}" click 30 "Next"
+  drv click 30 "Next"
 done
-"${WD[@]}" click 30 "Get started"
+drv click 30 "Get started"
 endstep
 
 step "welcome"
-"${WD[@]}" click 60 "Use an API key"
+drv click 60 "Use an API key"
 endstep
 
 step "api-key-pane"
-"${WD[@]}" wait-text 30 "Paste a Gate API key"
-"${WD[@]}" type 30 "API key" "$KEY"
-"${WD[@]}" click 30 "Connect and continue"
+drv wait-text 30 "Paste a Gate API key"
+drv type 30 "API key" "$KEY"
+drv click 30 "Connect and continue"
 endstep
 
 step "signed-in"
-"${WD[@]}" wait-text 60 "Name this device"
-"${WD[@]}" screenshot "$OUT/02-signed-in.png" || true
-"${WD[@]}" dump >"$OUT/02-signed-in.page.txt" 2>&1 || true
+drv wait-text 60 "Name this device"
+page_shot "$OUT/02-signed-in.png"
+os_screenshot "$OUT/02-signed-in.screen.png"
+drv dump >"$OUT/02-signed-in.page.txt" 2>&1 || true
 node "$HERE/assert-signin.mjs" "$(native "$DATA/account.json")" "$(native "$WORK/capture.jsonl")" "$KEY" "$GATEWAY_HOST"
 # The key is in no file the app wrote, not only account.json.
 if grep -rqF "$KEY" "$DATA"; then
