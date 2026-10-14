@@ -50,8 +50,9 @@ import { routingState, showsFraction } from "../../lib/routingState";
  *   "partly routed" and "Gate is protecting you" are drawn. Since AG-913 the
  *   words come from `lib/routingState`, shared with the topbar banner so the
  *   two surfaces cannot describe one reading differently. The drawn sub-line
- *   is "On/Off · N of M tools routing"; the On/Off half is gone, because the
- *   master switch it reported is gone - see `RoutingCard`.
+ *   reads "N of M Apps", the topbar's noun (decided 2026-10-13). It was once
+ *   "On/Off · N of M tools routing"; the On/Off half went with the master
+ *   switch it reported - see `RoutingCard`.
  * - **Contact support is in the menu**, as `744:38201` draws it. It was omitted
  *   for as long as the address behind it 404'd; support resolved to the
  *   dashboard's own Overview page on 2026-09-07 (that is where the support
@@ -234,8 +235,8 @@ export function Tray({
  * tile recipe on green, amber or grey (`Connect/routing` 694:34185,
  * `Connect/partial` 694:34024; the grey none state is the window banner's,
  * `1390:14024`, which no tray frame draws yet). Counts derive from the rows so
- * the card can never disagree with the switches under it; "tools routing" is
- * the drawn phrase.
+ * the card can never disagree with the switches under it; the drawn phrase is
+ * "N of M Apps", the topbar's noun (decided 2026-10-13).
  *
  * **The denominator is intent, not every row.** It counted every row, chat
  * domains included, and that docstring read like a drawn decision - it predates
