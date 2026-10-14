@@ -149,6 +149,23 @@ describe("useRunningApps: when to say anything", () => {
     expect(api.current!.stage).toBeNull();
   });
 
+  it("skips the takeover on an empty scan without running the sweep (f2f8c6c)", async () => {
+    // The skip decision lives here: an empty `running_agents` ends the offer
+    // before anything else is asked. Falling through to the routing sweep
+    // would still end with no dialog, but only after a probe of every tool
+    // for an offer that was never going to be made.
+    (runningAgents as Mock).mockResolvedValue({ scanned_names: ["codex"], agents: [] });
+    const { api, onNothingRunning } = harness();
+
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+
+    expect(api.current!.stage).toBeNull();
+    expect(routingVerdicts).not.toHaveBeenCalled();
+    expect(onNothingRunning).toHaveBeenCalledTimes(1);
+  });
+
   it("tells the caller nothing was running, rather than swallowing the click", async () => {
     // No dialog is still the right answer, but silence alone is what made the
     // reopen card's own button look broken: the card is built from a verdict
