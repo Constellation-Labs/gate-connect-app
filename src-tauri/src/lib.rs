@@ -5062,7 +5062,8 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // did). Release the latch, reporting no capture so the cooldown
             // keeps the next challenge from reopening immediately. Closed
             // AFTER Cloudflare let the page through, the user was looking at
-            // the origin's error page with nothing left to solve, and closing
+            // the engine's "go back to ChatGPT" page with nothing left to
+            // solve, and closing
             // it is the obvious thing to do: that is a failed capture, not an
             // unsolved check, and "finish the check" would be the wrong advice.
             let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) else {
@@ -5142,7 +5143,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // stays true once Cloudflare has let the page through, so a
             // challenge that cleared on its own while hidden would otherwise
             // be revealed anyway - with a notification asking the user to
-            // accept a screen that is gone, over the origin's error page.
+            // accept a screen that is gone, over the "go back to ChatGPT" page.
             // What happens after a pass is the capture check's business below.
             let passed = gate_connect_core::proxy::cf_navigation_passed_since(started).is_some();
             if !revealed
@@ -5225,12 +5226,13 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             };
             let Some(value) = fresh else {
                 // Cloudflare has let the page through, so there is nothing on
-                // screen left to solve - on a `/backend-api/...` path the window
-                // is now showing the origin's `{"detail":"Unauthorized"}` to a
-                // signed-out load. The cookie normally lands with that reload;
-                // past `CAPTURE_GRACE` without one, the capture has failed and
-                // the user cannot help it along, so close rather than leave an
-                // error page up until the deadline. Checked after the jar read,
+                // screen left to solve - on a `/backend-api/...` path the origin
+                // answers that signed-out load with `{"detail":"Unauthorized"}`,
+                // which the engine swaps for a "go back to ChatGPT" page. The
+                // cookie normally lands with that reload; past `CAPTURE_GRACE`
+                // without one, the capture has failed and the user cannot help
+                // it along, so close rather than leave the page up until the
+                // deadline. Checked after the jar read,
                 // so the tick that trips this still had its chance to capture.
                 if let Some(passed) = gate_connect_core::proxy::cf_navigation_passed_since(started)
                 {
