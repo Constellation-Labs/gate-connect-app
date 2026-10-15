@@ -49,17 +49,22 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
  * The tools whose pane draws the Gate model card.
  *
  * An explicit list rather than the rail's `coversAllProviders`, which answers a
- * different question - whether a row has one upstream host to name. Hermes
- * talks to several providers and so is multi-provider on the rail, yet its
- * `config.yaml` holds a provider entry Gate can write the chosen set into, so it
- * gets the card. OpenCode, OpenClaw, the environment channel and the chat
- * domains have no config Gate writes a model into, so they do not.
+ * different question - whether a row has one upstream host to name. Hermes and
+ * OpenCode talk to several providers and so are multi-provider on the rail, yet
+ * each config holds a provider entry Gate can write the chosen set into, so they
+ * get the card. OpenClaw, the environment channel and the chat domains have no
+ * config Gate writes a model into, so they do not.
  *
- * All three are written by the backend (`Integration::supports_gate_models`):
+ * All four are written by the backend (`Integration::supports_gate_models`):
  * Codex's `config.toml` and model catalog, Hermes' `config.yaml`, Claude
- * Code's `settings.json`.
+ * Code's `settings.json`, OpenCode's `opencode.json`.
  */
-export const GATE_MODEL_TOOLS: ReadonlySet<string> = new Set(["codex", "hermes", "claude-code"]);
+export const GATE_MODEL_TOOLS: ReadonlySet<string> = new Set([
+  "codex",
+  "hermes",
+  "claude-code",
+  "opencode",
+]);
 
 /**
  * The most Gate models one app can be put on at once (design, 2026-09-30).
