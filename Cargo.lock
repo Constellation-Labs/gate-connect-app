@@ -1671,7 +1671,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1681,9 +1680,11 @@ dependencies = [
  "anyhow",
  "dirs 5.0.1",
  "hmac",
+ "libc",
  "rand 0.8.6",
  "sha2",
  "socket2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
