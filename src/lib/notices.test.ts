@@ -29,7 +29,7 @@ function member(key: string, attention: MemberAttention, name = key): GroupMembe
       credential: "brokered",
       status:
         attention === "error"
-          ? { kind: "error", message: `${name} read failed` }
+          ? { kind: "error", message: `${name} read failed`, intended: false }
           : { kind: "connected" },
     },
     client: "codex",

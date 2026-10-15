@@ -8,7 +8,7 @@
 
 use crate::platform::{App, Platform};
 use crate::{
-    status_for, AccountDto, BackendError, ConfiguredModelDto, OAuthStatusDto, StatusDto, ToolDto,
+    AccountDto, BackendError, ConfiguredModelDto, OAuthStatusDto, StatusDto, ToolDto,
     ToolModelChoiceDto, ToolModelsDto,
 };
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -19,7 +19,7 @@ use gate_connect_core::account::{AuthMode, BillingMode};
 use gate_connect_core::analytics::{Identity, SaveOutcome};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use gate_connect_core::proxy::ProxyState;
-use gate_connect_core::{ConnectInput, Integration, ToolId};
+use gate_connect_core::{ConnectInput, Integration, Status, ToolId};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -50,7 +50,7 @@ pub(crate) fn list_tools(platform: &impl Platform) -> Vec<ToolDto> {
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
             config_location: integ.config_location(),
-            status: status_for(integ.as_ref()),
+            status: status_for(platform, integ.as_ref()),
             coverage: integ.upstream_coverage(),
             client: integ.client(),
             scope: integ.scope(),
@@ -80,10 +80,51 @@ pub(crate) fn tool_versions(platform: &impl Platform) -> HashMap<String, Option<
         .collect()
 }
 
+/// What a tool's switch says, read off a status that answered: on when Gate's
+/// configuration is in place, whether or not it is winning. `None` for a tool
+/// that is not installed, which has no switch to record.
+///
+/// The same three the window's rail reads as on (`NewUiApp`'s `apps`), so the
+/// record and the switch it stands in for cannot disagree.
+fn switch_on(status: &Status) -> Option<bool> {
+    match status {
+        Status::NotInstalled => None,
+        Status::Detected => Some(false),
+        Status::Connected | Status::Drifted(_) | Status::Overridden(_) => Some(true),
+    }
+}
+
+/// A tool's status for the UI.
+///
+/// A read that answers is also recorded as what the switch says, so a later
+/// read that fails can still say it: an `Error` carries the last recorded
+/// answer as `intended`, and a tool never recorded reads off (AG-1120).
+/// Recording is best-effort - it is a fallback for a read that fails, and
+/// failing to keep one must not fail the read that succeeded.
+fn status_for(platform: &impl Platform, integ: &dyn Integration) -> StatusDto {
+    let slug = integ.id().to_string();
+    match integ.status() {
+        Ok(status) => {
+            if let Some(on) = switch_on(&status) {
+                if let Err(e) = platform.record_tool_intent(&slug, on) {
+                    eprintln!("[gate] recording {slug}'s switch failed: {e:#}");
+                }
+            }
+            status.into()
+        }
+        Err(e) => StatusDto::Error {
+            // `{e:#}` prints the whole anyhow context chain; bare Display
+            // would stop at the outermost context and drop the root cause.
+            message: format!("{e:#}"),
+            intended: platform.tool_intent(&slug).unwrap_or(false),
+        },
+    }
+}
+
 /// One tool's status, by slug.
 pub(crate) fn tool_status(platform: &impl Platform, slug: &str) -> Result<StatusDto, String> {
     let integ = find_integration(platform, slug)?;
-    Ok(status_for(integ.as_ref()))
+    Ok(status_for(platform, integ.as_ref()))
 }
 
 /// The integration behind a slug. An unknown slug and a known tool the
@@ -136,14 +177,28 @@ pub(crate) fn connect_tool(platform: &impl Platform, slug: &str) -> Result<Statu
     // tool on Gate with nothing recorded to put it back (AG-1118).
     gate_connect_core::provider::unless_exiting(|| integ.connect(&input))
         .map_err(|e| format!("{e:#}"))?;
-    Ok(status_for(integ.as_ref()))
+    Ok(status_for(platform, integ.as_ref()))
 }
 
 /// Put one tool back on its own settings.
+///
+/// Not when its config cannot be read. Disconnecting rewrites that file, and a
+/// file Gate cannot read is not one it should rewrite blind: the off is
+/// recorded, so the switch says what the person asked for, and the refusal is
+/// returned so the row says the change did not land (AG-1120).
 pub(crate) fn disconnect_tool(platform: &impl Platform, slug: &str) -> Result<StatusDto, String> {
     let integ = find_integration(platform, slug)?;
+    if let Err(e) = integ.status() {
+        platform
+            .record_tool_intent(slug, false)
+            .map_err(|w| format!("{w:#}"))?;
+        return Err(format!(
+            "Gate couldn't read {}'s configuration, so it left it unchanged: {e:#}",
+            integ.display_name()
+        ));
+    }
     integ.disconnect().map_err(|e| format!("{e:#}"))?;
-    Ok(status_for(integ.as_ref()))
+    Ok(status_for(platform, integ.as_ref()))
 }
 
 /// This install's per-tool model choices, with what each tool's own config
@@ -1683,8 +1738,86 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert!(matches!(
             &tools[0].status,
-            StatusDto::Error { message } if message == "reading the config: permission denied"
+            StatusDto::Error { message, intended: false }
+                if message == "reading the config: permission denied"
         ));
+    }
+
+    /// A read that answers records what the switch says, and a later read that
+    /// fails carries that answer: a connected tool whose config turns
+    /// unreadable keeps its switch on rather than rendering off (AG-1120).
+    #[test]
+    fn an_unreadable_status_carries_the_switch_from_the_last_read() {
+        let platform = FakePlatform {
+            tools: vec![FakeTool {
+                status: Ok(Status::Connected),
+                ..FakeTool::new(ToolId::OpenCode)
+            }],
+            ..Default::default()
+        };
+        list_tools(&platform);
+        assert_eq!(
+            platform
+                .tool_intent
+                .lock()
+                .unwrap()
+                .get("opencode")
+                .copied(),
+            Some(true)
+        );
+
+        let platform = FakePlatform {
+            tools: vec![FakeTool {
+                status: Err("permission denied".into()),
+                ..FakeTool::new(ToolId::OpenCode)
+            }],
+            tool_intent: std::sync::Mutex::new(BTreeMap::from([("opencode".to_string(), true)])),
+            ..Default::default()
+        };
+        assert!(matches!(
+            &list_tools(&platform)[0].status,
+            StatusDto::Error { intended: true, .. }
+        ));
+        // The failed read changed nothing it recorded.
+        assert_eq!(
+            platform
+                .tool_intent
+                .lock()
+                .unwrap()
+                .get("opencode")
+                .copied(),
+            Some(true)
+        );
+    }
+
+    /// The other direction: a tool switched off reads off, drift counts as on,
+    /// and a tool that is not installed records nothing.
+    #[test]
+    fn a_status_read_records_the_switch_it_implies() {
+        for (status, expected) in [
+            (Status::Detected, Some(false)),
+            (Status::Drifted("moved".into()), Some(true)),
+            (Status::Overridden("env".into()), Some(true)),
+            (Status::NotInstalled, None),
+        ] {
+            let platform = FakePlatform {
+                tools: vec![FakeTool {
+                    status: Ok(status),
+                    ..FakeTool::new(ToolId::OpenCode)
+                }],
+                ..Default::default()
+            };
+            assert!(tool_status(&platform, "opencode").is_ok());
+            assert_eq!(
+                platform
+                    .tool_intent
+                    .lock()
+                    .unwrap()
+                    .get("opencode")
+                    .copied(),
+                expected
+            );
+        }
     }
 
     /// Not installed drops out of the map; installed but silent stays as null;
@@ -2959,6 +3092,42 @@ mod tests {
         assert!(matches!(
             disconnect_tool(&platform, "codex"),
             Err(e) if e == "integration missing from registry"
+        ));
+    }
+
+    /// Turning off a tool whose config cannot be read records the off and
+    /// refuses to rewrite the file, saying why (AG-1120).
+    #[test]
+    fn disconnect_tool_records_the_off_and_leaves_an_unreadable_config_alone() {
+        let platform = FakePlatform {
+            tools: vec![FakeTool {
+                status: Err("permission denied".into()),
+                ..FakeTool::new(ToolId::OpenCode)
+            }],
+            tool_intent: std::sync::Mutex::new(BTreeMap::from([("opencode".to_string(), true)])),
+            ..Default::default()
+        };
+        assert!(matches!(
+            disconnect_tool(&platform, "opencode"),
+            Err(e) if e == "Gate couldn't read Fake Tool's configuration, so it left it \
+                unchanged: reading the config: permission denied"
+        ));
+        assert!(platform.calls().is_empty(), "the config was not rewritten");
+        assert_eq!(
+            platform
+                .tool_intent
+                .lock()
+                .unwrap()
+                .get("opencode")
+                .copied(),
+            Some(false)
+        );
+        assert!(matches!(
+            &list_tools(&platform)[0].status,
+            StatusDto::Error {
+                intended: false,
+                ..
+            }
         ));
     }
 

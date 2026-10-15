@@ -76,6 +76,7 @@ import {
 } from "./lib/groups";
 import {
   CHECKING_DETAIL,
+  READ_FAILED_DETAIL,
   partlyProtectedCopy,
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
@@ -1714,29 +1715,37 @@ export function NewUiApp() {
     () =>
       tools
         .filter((t) => t.status.kind !== "not_installed" && !isSettingsManaged(t.slug))
-        .map((t) => ({
-          slug: t.slug,
-          name: t.name,
-          status: verdictStatus(verdicts.get(t.slug), {
-            // Only a failed turn-OFF: the tool is still routed and the click
-            // did not land. A failed turn-on leaves a tool that was never
-            // routed, so the sweep's own reading (Not routed) is the true one;
-            // the pane's alert says the write failed.
-            writeFailed: routing.writeFailures.get(t.slug) === false,
-            // Routed and inspected are different questions; the sweep answers
-            // only the first. See `verdictStatus`. AG-932.
-            coverage: t.coverage,
-          }),
+        .map((t) => {
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
-          on:
+          const on =
             t.status.kind === "connected" ||
             t.status.kind === "drifted" ||
-            t.status.kind === "overridden",
-          logo: brandMarkFor(t.slug),
-          busy: routingBusy,
-          hint: hintForMember(t.slug),
-        })),
+            t.status.kind === "overridden" ||
+            (t.status.kind === "error" && t.status.intended);
+          return {
+            slug: t.slug,
+            name: t.name,
+            status: verdictStatus(verdicts.get(t.slug), {
+              // Only a failed turn-OFF: the tool is still routed and the click
+              // did not land. A failed turn-on leaves a tool that was never
+              // routed, so the sweep's own reading (Not routed) is the true one;
+              // the pane's alert says the write failed.
+              writeFailed: routing.writeFailures.get(t.slug) === false,
+              // Routed and inspected are different questions; the sweep answers
+              // only the first. See `verdictStatus`. AG-932.
+              coverage: t.coverage,
+              // A switched-off row reads Not routed with or without a verdict.
+              on,
+              // An unreadable config outranks the sweep. AG-1120.
+              readFailed: t.status.kind === "error",
+            }),
+            on,
+            logo: brandMarkFor(t.slug),
+            busy: routingBusy,
+            hint: hintForMember(t.slug),
+          };
+        }),
     [tools, verdicts, routing.writeFailures, routingBusy],
   );
 
@@ -2835,6 +2844,8 @@ export function NewUiApp() {
       detail === REASON_DETAIL.configuration_changed
     )
       return undefined;
+    // The "could not be checked" card names the read error and the retry.
+    if (paneNotice?.id.startsWith("error:") && detail === READ_FAILED_DETAIL) return undefined;
     // Partly protected is the one reason with a fix this pane owns: some of the
     // app's surfaces are switched off under a switch that reads on. The app
     // switch cannot be the fix: this card exists because the switch reads On,
