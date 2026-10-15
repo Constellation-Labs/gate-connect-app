@@ -619,13 +619,15 @@ impl<O: DesktopOps> DesktopManager<O> {
                     crate::proxy::relay::load_persisted_port()
                 },
                 // Only this user may spend the credential. Windows resolves a
-                // loopback peer's user from its process token; macOS resolves
-                // no loopback peer, so it can't gate (the forwarder in front
-                // would launder a non-owner into an owner connection anyway,
-                // so the two have to be gated together there).
+                // loopback peer's user from its process token, macOS from the
+                // kernel's TCP socket list. The forwarder in front gates on
+                // the same answer, so it cannot launder a non-owner through.
                 #[cfg(windows)]
                 owner_uid: Some(crate::proxy::engine::PeerOwner),
-                #[cfg(not(windows))]
+                // SAFETY: geteuid never fails.
+                #[cfg(target_os = "macos")]
+                owner_uid: Some(unsafe { libc::geteuid() }),
+                #[cfg(not(any(windows, target_os = "macos")))]
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate
                 // traffic still flows through it while routing is on.

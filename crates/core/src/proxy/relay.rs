@@ -257,8 +257,8 @@ struct RelayState {
     /// credential: the relay's analogue of the MITM port's blind tunnel.
     intercept: watch::Receiver<bool>,
     /// The user allowed to spend the host's Gate credential, or `None` to allow
-    /// any loopback peer. Set only where peers are resolvable (Linux and
-    /// Windows); mirrors [`super::engine::EngineConfig::owner_uid`]. See
+    /// any loopback peer. Set wherever peers are resolvable (all three
+    /// platforms); mirrors [`super::engine::EngineConfig::owner_uid`]. See
     /// [`RelayState::peer_allowed`].
     owner_uid: Option<PeerOwner>,
 }
@@ -486,14 +486,11 @@ pub fn serve() -> Result<()> {
         let listener =
             TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
         // Only the user who launched `proxy relay` may spend its credential.
-        // Gated on Linux and Windows (see `engine::peer_is_owner`); macOS
-        // resolves no loopback peer, so it can't gate.
-        #[cfg(target_os = "linux")]
-        let owner_uid = Some(unsafe { libc::geteuid() });
+        // See `engine::peer_is_owner` for how each platform resolves a peer.
+        #[cfg(unix)]
+        let owner_uid: Option<PeerOwner> = Some(unsafe { libc::geteuid() });
         #[cfg(windows)]
         let owner_uid = Some(PeerOwner);
-        #[cfg(target_os = "macos")]
-        let owner_uid: Option<PeerOwner> = None;
         let state = Arc::new(RelayState::new(
             &gateway,
             key_rx,

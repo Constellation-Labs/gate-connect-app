@@ -21,21 +21,21 @@
 //! sent direct is recorded once in [`DIRECT_LOG`], with the reason, so "why is
 //! this tool not on Gate" has an answer on disk.
 //!
-//! Windows only. macOS resolves no loopback peer (the accepted gap in the
-//! security notes), and Linux does not run the forwarder, so both treat every
-//! peer as the owner's, which is what they did before this existed. The
-//! resolution itself is `gate_connect_paths::peer`, shared with the engine
-//! and relay behind this hop, which gate on the same answer.
+//! Windows and macOS. Linux does not run the forwarder, so it treats every
+//! peer as the owner's. The resolution itself is `gate_connect_paths::peer`,
+//! shared with the engine and relay behind this hop, which gate on the same
+//! answer: on macOS the forwarder fronts both public ports, so gating the
+//! engine without it would launder a non-owner into the owner's connection.
 
 use gate_connect_paths::peer::{verdict, Verdict};
 
 /// The file under the proxy directory that records peers sent direct.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub const DIRECT_LOG: &str = "forwarder-direct.log";
 
 /// Past this size the log starts over, so a machine full of other accounts'
 /// traffic cannot grow it without bound.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const DIRECT_LOG_LIMIT: u64 = 64 * 1024;
 
 /// Whether an accepted connection is the owner's, resolved off the async
@@ -58,7 +58,7 @@ pub async fn owner_connected(client: &tokio::net::TcpStream) -> bool {
 /// Append one line to [`DIRECT_LOG`] for a peer sent direct, once per process
 /// for the life of this forwarder. Best effort: a log that cannot be written
 /// never changes where the traffic goes.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn record(pid: Option<u32>, why: &str, port: u16) {
     use std::io::Write;
     use std::sync::Mutex;
@@ -99,7 +99,7 @@ fn record(pid: Option<u32>, why: &str, port: u16) {
     );
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn record(_pid: Option<u32>, _why: &str, _port: u16) {}
 
 #[cfg(test)]

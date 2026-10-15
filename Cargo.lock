@@ -1680,6 +1680,7 @@ dependencies = [
  "anyhow",
  "dirs 5.0.1",
  "hmac",
+ "libc",
  "rand 0.8.6",
  "sha2",
  "socket2",

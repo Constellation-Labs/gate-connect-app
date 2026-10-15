@@ -99,8 +99,8 @@ pub struct EngineConfig {
     /// from any other local user is blind-tunnelled. The loopback listener is
     /// plain TCP and reachable by every local user, so this stops a *different*
     /// account from spending the owner's Gate key through the proxy. Linux sets
-    /// the daemon's own UID, Windows this process's own user ([`PeerOwner`]);
-    /// macOS passes `None`, since it resolves no loopback peer.
+    /// the daemon's own UID, macOS the app's, Windows this process's own user
+    /// ([`PeerOwner`]).
     pub owner_uid: Option<PeerOwner>,
     /// The user's pre-existing upstream proxy , used as the
     /// PAC fallback so non-Gate traffic keeps flowing through it instead of
@@ -972,15 +972,25 @@ pub struct PeerOwner;
 /// owner. Shared with the relay (`super::relay`), which gates its accept loop
 /// the same way the MITM path gates interception.
 ///
-/// Blocking, like the `/proc/net/tcp` read it does on Linux: on Windows it
-/// reads the TCP table and the peer process's token.
-#[cfg(unix)]
+/// Blocking, like the `/proc/net/tcp` read it does on Linux: on macOS it reads
+/// the kernel's TCP socket list, on Windows the TCP table and the peer
+/// process's token.
+#[cfg(target_os = "linux")]
 pub(crate) fn peer_is_owner(
     client: std::net::SocketAddr,
     _listener: std::net::SocketAddr,
     owner: PeerOwner,
 ) -> bool {
     peer_uid_for(client) == Some(owner)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn peer_is_owner(
+    client: std::net::SocketAddr,
+    listener: std::net::SocketAddr,
+    owner: PeerOwner,
+) -> bool {
+    gate_connect_paths::peer::peer_uid(client, listener) == Some(owner)
 }
 
 #[cfg(windows)]
@@ -994,8 +1004,8 @@ pub(crate) fn peer_is_owner(
 
 /// Resolve the local UID that owns the socket whose *local* address is `addr`
 /// (i.e. the connecting peer's socket) by scanning the kernel's TCP table.
-/// Linux-only; macOS never sets `owner_uid`, so this just reports "unknown"
-/// there, and Windows resolves users by SID instead ([`peer_is_owner`]).
+/// Linux-only; macOS and Windows resolve peers through
+/// `gate_connect_paths::peer` instead ([`peer_is_owner`]).
 /// Returns `None` if the socket isn't found or can't be parsed.
 #[cfg(target_os = "linux")]
 pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
@@ -1030,11 +1040,6 @@ pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
             return uid.parse::<u32>().ok();
         }
     }
-    None
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-pub(crate) fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
     None
 }
 
@@ -4301,10 +4306,27 @@ mod tests {
         // A port nothing owns resolves to None (fails closed).
         let unused = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         assert_eq!(peer_uid_for(unused), None);
-        // The gate the engine and relay ask: the owner passes, anyone else
-        // does not.
+    }
+
+    /// The gate the engine and relay ask, against a real loopback connection:
+    /// the owner (this test process) passes, any other UID does not, and a
+    /// socket nobody holds fails closed. On macOS this is what proves the
+    /// socket-list parse reads the right UID - a wrong struct layout fails the
+    /// first assertion rather than passing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn peer_is_owner_resolves_own_loopback_connection() {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let server_addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(server_addr).expect("connect loopback");
+        let _accepted = listener.accept().expect("accept loopback");
+        let peer = client.local_addr().unwrap();
+        // SAFETY: geteuid never fails.
+        let me = unsafe { libc::geteuid() };
         assert!(peer_is_owner(peer, server_addr, me));
         assert!(!peer_is_owner(peer, server_addr, u32::MAX));
+        let unused = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         assert!(!peer_is_owner(unused, server_addr, me));
     }
 

@@ -497,13 +497,13 @@ async fn relay_refuses_rebound_host_and_cross_site_origin() {
 /// can't match our connection, the relay drops the socket before serving, so
 /// the client sees a closed connection and nothing reaches the gateway. Only a
 /// UID can be made not to match from inside the test, so the refusal is tested
-/// on Linux; Windows' negative half is `gate_connect_paths::peer`'s.
-#[cfg(target_os = "linux")]
+/// on unix; Windows' negative half is `gate_connect_paths::peer`'s.
+#[cfg(unix)]
 #[tokio::test]
 async fn relay_refuses_non_owner_peer() {
     let gateway = start_mock_gateway().await;
-    // u32::MAX can never be our real UID, so `peer_uid_for` (our own loopback
-    // connection) resolves to a different value and the peer is refused. An
+    // u32::MAX can never be our real UID, so our own loopback connection
+    // resolves to a different value and the peer is refused. An
     // unresolvable UID (None) also fails closed, so either way this is refused.
     let engine = boot_engine_owned(
         gateway.base_url.clone(),
@@ -536,13 +536,12 @@ async fn relay_refuses_non_owner_peer() {
 }
 
 /// The other half of the gate: a connection from the owner itself - this test
-/// process - is served. Linux names the owner by UID and Windows by this
+/// process - is served. Unix names the owner by UID and Windows by this
 /// process's own user, so this is what proves each platform's peer resolution
 /// finds our own connection rather than failing closed on every peer.
-#[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn relay_serves_the_owner_peer() {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     // SAFETY: geteuid never fails.
     let owner = unsafe { libc::geteuid() };
     #[cfg(windows)]
