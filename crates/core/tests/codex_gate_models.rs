@@ -555,3 +555,50 @@ fn a_profile_with_its_own_model_is_reported_as_an_override() {
         other => panic!("expected an override, got {other:?}"),
     }
 }
+
+/// A `config.toml` that holds only the user's comments has no keys, and
+/// disconnect used to read that as nothing of theirs left and delete the file
+/// (AG-1127).
+#[test]
+fn disconnect_keeps_a_config_that_holds_only_comments() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, _stub) = setup();
+    let codex = find(ToolId::Codex).unwrap();
+    let notes = "# notes for later\n# model = \"gpt-5.6-sol\"\n";
+    fs::write(env::codex_config_toml_path().unwrap(), notes).unwrap();
+
+    codex.disconnect().unwrap();
+
+    assert_eq!(config(), notes);
+}
+
+/// The catalog goes only once the config that names it is written: a failed
+/// write used to leave `model_catalog_json` pointing at a deleted file
+/// (AG-1127).
+#[cfg(unix)]
+#[test]
+fn a_failed_disconnect_write_keeps_the_catalog_the_config_names() {
+    use std::os::unix::fs::PermissionsExt;
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, stub) = setup();
+    let codex = find(ToolId::Codex).unwrap();
+    choose_gate(&[LUNA]);
+    codex.connect(&input(&stub)).unwrap();
+    assert!(catalog_file().exists());
+
+    let dir = env::codex_config_toml_path().unwrap();
+    let dir = dir.parent().unwrap();
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let result = codex.disconnect();
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(result.is_err(), "the config write cannot land");
+    assert_eq!(
+        doc()["model_catalog_json"].as_str(),
+        Some(catalog_file().display().to_string().as_str())
+    );
+    assert!(catalog_file().exists(), "the file the config names is kept");
+
+    codex.disconnect().unwrap();
+    assert!(!catalog_file().exists());
+}

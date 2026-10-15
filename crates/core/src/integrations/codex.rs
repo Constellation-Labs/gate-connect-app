@@ -364,7 +364,8 @@ impl Integration for Codex {
                 block.insert("requires_openai_auth", value(true));
             }
         }
-        write_doc(&path, &doc)
+        write_doc(&path, &doc)?;
+        remove_catalog()
     }
 
     fn gate_model_state(&self) -> Result<GateModelState> {
@@ -743,6 +744,9 @@ impl Integration for Codex {
         }
 
         write_doc(&path, &doc)?;
+        if gate_models.is_none() {
+            remove_catalog()?;
+        }
 
         // What the user has to know, and the only tool in the registry where
         // it is about conversations rather than processes. See the module docs
@@ -839,13 +843,16 @@ impl Integration for Codex {
         // Write the restored config before removing the helper script: a
         // failed write must not leave config.toml pointing `[auth] command`
         // at a script that no longer exists.
-        if doc.as_table().is_empty() {
+        // A document with no keys can still hold the user's comments, which
+        // render; only one that renders as nothing is removed.
+        if doc.as_table().is_empty() && doc.to_string().trim().is_empty() {
             // Nothing of the user's - and no stub to preserve - is left;
             // remove the file rather than leave an empty one behind.
             crate::config_changes::remove_with_view(&path, routing_view)?;
         } else {
             write_doc(&path, &doc)?;
         }
+        remove_catalog()?;
 
         // Remove the legacy auth-helper script if an older Gate Connect
         // version left one behind - keep "zero residue" on disconnect.
@@ -1443,6 +1450,14 @@ fn revert_gate_models(doc: &mut DocumentMut) -> Result<()> {
             m.remove(key);
         }
     }
+    Ok(())
+}
+
+/// Delete Gate's model catalog. Called only once the config that stops naming
+/// it is on disk: deleting it first left `config.toml` pointing at a missing
+/// file whenever that write failed.
+fn remove_catalog() -> Result<()> {
+    let ours_catalog = catalog_path()?;
     match fs::remove_file(&ours_catalog) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

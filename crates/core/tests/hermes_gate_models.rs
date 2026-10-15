@@ -577,3 +577,31 @@ fn no_proxy_and_coverage_follow_a_gate_models_switch() {
     hermes.connect(&input()).unwrap();
     assert!(names_lan("NO_PROXY") && names_lan("no_proxy"));
 }
+
+/// A Hermes install with no `config.yaml` yet: connect creates the file for the
+/// tool header and Gate models, and disconnect has to remove it again rather
+/// than leave an empty file Hermes never had (AG-1127).
+#[test]
+fn a_config_gate_created_is_removed_on_disconnect() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = setup("");
+    let path = env::hermes_config_path().unwrap();
+    let hermes = find(ToolId::Hermes).unwrap();
+    for gate_models in [false, true] {
+        fs::remove_file(&path).unwrap();
+        if gate_models {
+            choose_gate(&[LUNA]);
+        } else {
+            choose_tool();
+        }
+        hermes.connect(&input()).unwrap();
+        assert!(path.exists(), "connect writes the header");
+        hermes.disconnect().unwrap();
+        assert!(
+            !path.exists(),
+            "gate models {gate_models}: left {:?}",
+            fs::read_to_string(&path).ok()
+        );
+        write_config("");
+    }
+}
