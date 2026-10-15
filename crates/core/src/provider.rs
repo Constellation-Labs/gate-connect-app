@@ -373,7 +373,7 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
-    enable_inner(slug, &[], Request::ByName).map(|(_, state)| state)
+    unless_exiting(|| enable_inner(slug, &[], Request::ByName).map(|(_, state)| state))
 }
 
 /// Who asked, which is the only thing that separates the two callers below.
@@ -932,8 +932,8 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
 /// Set by the exit sweep ([`snapshot_and_disable_everything_for_exit`]) while it
 /// holds [`MASTER_FLOW_LOCK`], and never cleared: once this process has started
 /// taking Gate out of every tool, nothing in it may put Gate back. Read under
-/// the same lock by [`restore_all`], [`restore_one`] and [`reconcile_enabled`],
-/// so a check either lands before the sweep (and the sweep undoes what it did)
+/// the same lock by [`restore_all`], [`restore_one`], [`reconcile_enabled`],
+/// [`reapply_tool_config`], [`enable`] and [`unless_exiting`], so a check either lands before the sweep (and the sweep undoes what it did)
 /// or after it (and does nothing).
 ///
 /// The race it closes is the startup thread's (AG-1118). `routing::enable`
@@ -951,6 +951,20 @@ static EXITING: AtomicBool = AtomicBool::new(false);
 /// it only with [`MASTER_FLOW_LOCK`] held.
 fn exiting() -> bool {
     EXITING.load(Ordering::Acquire)
+}
+
+/// Run a connect the user asked for under [`MASTER_FLOW_LOCK`], refusing once
+/// the exit sweep has started (see [`EXITING`]). For the connects that do not
+/// go through this module's own guarded flows: a tool switched on from its
+/// pane, a billing-mode change rewriting Codex. Without the lock one could
+/// land mid-sweep or after it, and the app would exit with a tool pointed at
+/// Gate and nothing recorded to put it back.
+pub fn unless_exiting<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _guard = master_flow_guard();
+    if exiting() {
+        anyhow::bail!("Gate Connect is quitting; not routing anything through Gate");
+    }
+    f()
 }
 
 /// How long a quit waits for another routing operation before giving up on its
@@ -1804,6 +1818,9 @@ pub fn leave_gate_models(slug: &str) -> Result<()> {
 /// reverting the same file.
 pub fn reapply_tool_config(slug: &str) -> Result<bool> {
     let _guard = master_flow_guard();
+    if exiting() {
+        anyhow::bail!("Gate Connect is quitting; not routing anything through Gate");
+    }
     let Some(integ) = crate::registry::ToolId::from_slug(slug).and_then(crate::registry::find)
     else {
         anyhow::bail!("unknown tool {slug:?}");
@@ -1856,7 +1873,8 @@ pub fn reapply_tool_config(slug: &str) -> Result<bool> {
 pub fn restore_one(slug: &str) -> Result<()> {
     let _guard = master_flow_guard();
     if exiting() {
-        return Ok(()); // the exit sweep has run; see [`EXITING`]
+        // A retry the user asked for, so it says why it did nothing.
+        anyhow::bail!("Gate Connect is quitting; not routing anything through Gate");
     }
     let providers = load_snapshot(PROVIDER_SNAPSHOT)?;
     if providers.iter().any(|s| s == slug) {

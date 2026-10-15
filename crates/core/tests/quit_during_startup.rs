@@ -8,6 +8,8 @@
 //! tools pointed at a drained forwarder. The startup `reconcile_enabled` could
 //! do the same, and held no lock at all.
 //!
+//! The connects the user asks for are held to the same rule, and refuse.
+//!
 //! In its own test binary, because the exit sweep's mark is process-wide and
 //! never cleared: any later test in the same process would see every restore
 //! refuse. Same env-isolation pattern as `reconcile_enabled`.
@@ -133,7 +135,8 @@ fn nothing_reconnects_a_tool_once_the_exit_sweep_has_run() {
         Status::Connected,
         "a restore after the exit sweep must not reconnect the tool"
     );
-    provider::restore_one("anthropic").unwrap();
+    // A retry from the recovery list is the user's, so it refuses out loud.
+    provider::restore_one("anthropic").expect_err("a retry after the exit sweep must refuse");
     assert_ne!(claude_status(), Status::Connected);
     // And the record survives for the next launch, which is the one that
     // restores from it.
@@ -149,4 +152,20 @@ fn nothing_reconnects_a_tool_once_the_exit_sweep_has_run() {
         Status::Detected,
         "a reconcile after the exit sweep must not connect the tool"
     );
+
+    // And the connects the user asks for: a provider switched on, a tool
+    // switched on from its pane (which the app runs through `unless_exiting`),
+    // and a model change rewriting a tool's config.
+    provider::enable("anthropic").expect_err("a provider enable after the exit sweep must refuse");
+    let mut ran = false;
+    provider::unless_exiting(|| {
+        ran = true;
+        Ok(())
+    })
+    .expect_err("a tool connect after the exit sweep must refuse");
+    assert!(!ran, "the connect itself must not run");
+    provider::reapply_tool_config("claude-code")
+        .expect_err("a config rewrite after the exit sweep must refuse");
+    assert_eq!(claude_status(), Status::Detected);
+    assert_eq!(provider::pending_restore().unwrap(), owed);
 }
