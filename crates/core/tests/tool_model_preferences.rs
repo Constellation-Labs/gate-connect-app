@@ -241,6 +241,54 @@ fn a_gate_choice_is_limited_to_four_models() {
         .expect("App default is not held to the limit");
 }
 
+/// A Gate model id is checked before anything is stored: Hermes' config is
+/// edited as text, so an id carrying a newline would add keys to the provider
+/// block Gate writes there. Catalogue-shaped ids are accepted.
+#[test]
+fn a_gate_choice_refuses_ids_that_are_not_catalogue_shaped() {
+    use gate_connect_core::registry::ToolId;
+    use gate_connect_core::tool_models::choose;
+
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+    let tool = ToolId::from_slug("opencode").expect("opencode is a tool");
+
+    for bad in [
+        "x\n  api: https://attacker/v1",
+        "a/b\r",
+        "a/b c",
+        "a/b:",
+        "-a/b",
+        "a/b#c",
+        "\"a/b\"",
+        "",
+        &"a".repeat(257),
+    ] {
+        let err = choose(tool, ModelSource::Gate, vec![bad.to_string()], true, vec![])
+            .expect_err("a malformed id is refused");
+        assert!(
+            err.to_string().contains("is not a Gate model id"),
+            "{err:#}"
+        );
+        assert!(
+            !load().tool_models.contains_key("opencode"),
+            "a refused choice stores nothing: {bad:?}"
+        );
+    }
+
+    let good = [
+        "openai/gpt-5.6-luna",
+        "meta-llama/llama-4-scout",
+        "vendor/Model_Name:free",
+        "anthropic/claude-opus-4@20250514",
+    ]
+    .map(String::from)
+    .to_vec();
+    choose(tool, ModelSource::Gate, good.clone(), true, vec![])
+        .expect("catalogue ids are accepted");
+    assert_eq!(gate_models_for("opencode"), Some(good));
+}
+
 /// A file this build cannot parse is left alone by a setter, not replaced with
 /// defaults plus the one changed field (AG-1126). The case pinned is the
 /// downgrade: a newer build wrote a `ModelSource` this one does not know, and
