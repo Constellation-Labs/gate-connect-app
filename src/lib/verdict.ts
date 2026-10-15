@@ -64,10 +64,17 @@ export const REASON_DETAIL: Record<VerdictReason, string> = {
  * file is the exact claim AG-562 rules out ("a switch or saved configuration
  * does not produce On"), so an unanswered row says it is still checking instead.
  * That costs a moment of amber on load, which is the honest trade.
+ *
+ * Unless the switch is off. "Not routed" is the switch's half of the vocabulary,
+ * not the sweep's (principle 3: switch off reads grey "Not routed"), so it needs
+ * no verdict to be true, and "Checking" on a row the user just turned off reads
+ * as a fault. `on` is the row's switch, which callers derive from intent; only
+ * an explicit `false` counts, so a caller that does not pass it keeps the
+ * conservative reading. AG-1120.
  */
 export function verdictStatus(
   verdict: Verdict | undefined,
-  opts: { writeFailed?: boolean; coverage?: UpstreamCoverage | null } = {},
+  opts: { writeFailed?: boolean; coverage?: UpstreamCoverage | null; on?: boolean } = {},
 ): AppStatus {
   // Outranks the sweep. The sweep describes the state on disk, which after a
   // failed write is the state from *before* the user acted - true, and not the
@@ -75,7 +82,11 @@ export function verdictStatus(
   // land. Callers pass it only for a failed turn-off: a tool whose turn-on
   // failed was never routed, and "Not protected" would claim it had been.
   if (opts.writeFailed) return { kind: "not-protected", detail: WRITE_FAILED_DETAIL };
-  if (!verdict) return { kind: "not-protected", detail: CHECKING_DETAIL };
+  if (!verdict) {
+    return opts.on === false
+      ? { kind: "not-routed" }
+      : { kind: "not-protected", detail: CHECKING_DETAIL };
+  }
   switch (verdict.state) {
     case "on": {
       // Routed, and Gate can see it - unless the provider it routes TO is one
