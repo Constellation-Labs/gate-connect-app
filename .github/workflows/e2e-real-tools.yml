@@ -93,7 +93,11 @@ jobs:
         os: [ubuntu-22.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # No credentials left in .git/config: nothing below needs git auth, and
+      # this job runs third-party install code that could read them (AG-1139).
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Linux deps
         if: matrix.os == 'ubuntu-22.04'

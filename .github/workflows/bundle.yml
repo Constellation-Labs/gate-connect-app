@@ -58,7 +58,11 @@ jobs:
             args: '-- --locked'
     runs-on: ${{ matrix.platform }}
     steps:
+      # No credentials left in .git/config: nothing below needs git auth, and
+      # this job runs third-party install code that could read them (AG-1139).
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install Linux deps
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -118,7 +122,7 @@ jobs:
           printf '%s' "$APPLE_API_KEY_P8" | openssl base64 -d -A > "$RUNNER_TEMP/apple-api-key.p8"
       - name: Build, sign & release
         if: inputs.release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2 (v0 as of 2026-10-15)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -186,7 +190,7 @@ jobs:
       # hands the rest to cargo. No tagName, so tauri-action uploads nothing.
       - name: Build (unsigned)
         if: ${{ !inputs.release }}
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2 (v0 as of 2026-10-15)
         with:
           args: --config ${{ github.workspace }}/src-tauri/tauri.unsigned.conf.json ${{ (matrix.platform == 'macos-latest' && !inputs.macos_universal) && '--target aarch64-apple-darwin -- --locked' || matrix.args }}
       # Tauri's AppImage bundler pulls libwayland-client/cursor/egl/server
