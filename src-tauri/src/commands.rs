@@ -1433,7 +1433,11 @@ pub(crate) fn exit(platform: &(impl Platform + App)) {
     // runs before the exit; by the time this runs the process is
     // going away and a notification would be a promise we cannot
     // keep.
-    if !platform.updater_relaunching() && platform.claim_quit_teardown() {
+    // An updater relaunch is the mark *and* the restart it promised: the mark
+    // alone is a quit that landed between `install()` and the restart
+    // (`exit_requested`).
+    let relaunching = platform.updater_relaunching() && platform.restart_requested();
+    if !relaunching && platform.claim_quit_teardown() {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             platform.disconnect_tools_for_quit()
         })) {
@@ -1468,11 +1472,31 @@ pub(crate) fn exit(platform: &(impl Platform + App)) {
     // strand it. An updater-driven relaunch is exempt - the app
     // comes right back, so the pending opt-out stays armed and
     // routing is restored exactly as the user left it.
-    if !platform.updater_relaunching() {
+    if !relaunching {
         platform.complete_pending_autostart_disable();
     }
     // Exit reverts the *system proxy* only. The routing intent is
     // not touched here, and must not be: see the doc above.
+}
+
+/// What `RunEvent::ExitRequested` does, on macOS and Windows: note that this
+/// exit is a restart, so `exit` can tell the updater's relaunch from a quit.
+///
+/// The updater mark goes on before `install()` and the restart comes after it,
+/// so a quit in between (Cmd+Q, the tray's Quit, a logout) used to exit with
+/// the mark set: `exit` skipped the sweep and the deferred opt-out, and no
+/// relaunch came to redo either, leaving tools on Gate's settings while the
+/// app was closed. The restart is the one exit that arrives as
+/// `RESTART_EXIT_CODE`, because `tauri-plugin-process`'s relaunch is
+/// `request_restart`. Cmd+Q and a logout raise no `ExitRequested` at all on
+/// macOS (they reach `RunEvent::Exit` straight from `applicationWillTerminate`),
+/// which is why the restart is noted rather than every other exit clearing
+/// the mark.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn exit_requested(platform: &impl Platform, code: Option<i32>) {
+    if code == Some(tauri::RESTART_EXIT_CODE) {
+        platform.note_restart_requested();
+    }
 }
 
 // ---- Windows ----
@@ -3774,8 +3798,9 @@ mod tests {
         );
     }
 
-    /// The teardown runs once per process, and never for an updater relaunch,
-    /// which also keeps a pending launch-at-login opt-out armed.
+    /// The teardown runs once per process, and never for an updater relaunch
+    /// (the mark and the restart), which also keeps a pending launch-at-login
+    /// opt-out armed.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn exit_tears_down_once_and_not_for_an_updater_relaunch() {
@@ -3796,6 +3821,7 @@ mod tests {
 
         let platform = FakePlatform {
             updater_relaunching: std::sync::Mutex::new(Some(true)),
+            restart_requested: std::sync::Mutex::new(true),
             ..signed_in()
         };
         exit(&platform);
@@ -3810,6 +3836,58 @@ mod tests {
         assert!(
             !*platform.quit_claimed.lock().unwrap(),
             "an updater relaunch leaves the teardown unclaimed"
+        );
+    }
+
+    /// The updater mark without the restart is a quit that landed between
+    /// `install()` and the relaunch: it sweeps and completes the opt-out like
+    /// any other. Only the updater's own restart code notes a restart.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn an_updater_mark_without_the_restart_is_a_quit() {
+        for (code, restart) in [
+            (Some(tauri::RESTART_EXIT_CODE), true),
+            (Some(0), false),
+            (None, false),
+        ] {
+            let platform = FakePlatform::default();
+            exit_requested(&platform, code);
+            assert_eq!(
+                *platform.restart_requested.lock().unwrap(),
+                restart,
+                "{code:?}"
+            );
+        }
+
+        let platform = FakePlatform {
+            quit_claimed: std::sync::Mutex::new(true),
+            updater_relaunching: std::sync::Mutex::new(Some(true)),
+            ..signed_in()
+        };
+        exit(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "record_clean_exit",
+                "disable_engine_quietly",
+                "forget_engine_relay_port",
+                "complete_pending_autostart_disable",
+            ]
+        );
+        let platform = FakePlatform {
+            updater_relaunching: std::sync::Mutex::new(Some(true)),
+            ..signed_in()
+        };
+        exit(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "disconnect_tools_for_quit",
+                "record_clean_exit",
+                "disable_engine_quietly",
+                "forget_engine_relay_port",
+                "complete_pending_autostart_disable",
+            ]
         );
     }
 
