@@ -1415,6 +1415,7 @@ pub(crate) mod fake {
         pub auto_enabled: Mutex<BTreeMap<String, Vec<String>>>,
         pub milestones: Mutex<HashSet<String>>,
         pub updater_relaunching: Mutex<Option<bool>>,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         pub restart_requested: Mutex<bool>,
         pub popover_pinned: Mutex<Option<bool>>,
         /// What `preferences()` answers.
