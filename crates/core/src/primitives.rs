@@ -506,7 +506,7 @@ pub fn install_id_cached() -> Option<&'static str> {
 /// [`install_id`] were macOS-only: Windows has no such device, so the id could
 /// not exist on two of the three platforms Gate ships to. `rand` is already a
 /// dependency - `oauth` mints the PKCE verifier with it.
-fn simple_uuid_v4() -> Result<String> {
+pub(crate) fn simple_uuid_v4() -> Result<String> {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
