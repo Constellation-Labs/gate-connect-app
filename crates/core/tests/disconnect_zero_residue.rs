@@ -763,6 +763,66 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     );
 }
 
+/// The same round trip on Gate models: Gate's own provider and the `model`
+/// naming it come out with the rest, and the user's default comes back.
+#[test]
+fn opencode_on_gate_models_disconnect_leaves_no_gate_residue() {
+    use gate_connect_core::preferences::{self, ModelSource};
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    preferences::reset_cache_for_tests();
+    seed_relay_port(9977);
+    let _relay = bind_seeded_port(9977);
+    seed_routing_intent();
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    let original = r#"{
+  "model": "openrouter/z-ai/glm-5.2",
+  "provider": {
+    "openrouter": { "options": { "apiKey": "user-openrouter-key" } }
+  }
+}
+"#;
+    fs::write(&cfg, original).unwrap();
+    preferences::set_tool_model(
+        "opencode",
+        ModelSource::Gate,
+        vec!["openai/gpt-5.6-luna".into()],
+        true,
+        vec![],
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    let connected = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        connected.contains("http://127.0.0.1:9977/__gate/t/opencode/gate/v1"),
+        "Gate's provider is on the Gate models route: {connected}"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::Connected));
+
+    integ.disconnect().unwrap();
+    preferences::reset_cache_for_tests();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    let before: serde_json::Value = serde_json::from_str(original).unwrap();
+    assert_eq!(
+        after, before,
+        "nothing of Gate's survives, nothing of the user's is lost"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("opencode-state.json")
+            .exists(),
+        "sidecar must be removed"
+    );
+}
+
 #[test]
 fn openclaw_disconnect_leaves_no_gate_residue() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());

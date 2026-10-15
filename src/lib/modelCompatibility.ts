@@ -91,6 +91,9 @@ const NEEDS: Record<string, ToolNeeds> = {
   // Hermes is an agent and sends ordinary tool definitions on its turns, so a
   // model with no tool use cannot drive it.
   hermes: { tools: true, freeformTools: false },
+  // OpenCode is an agent too, and reaches Gate models through the AI SDK's
+  // OpenAI-compatible package, which sends function tools only.
+  opencode: { tools: true, freeformTools: false },
 };
 
 export function needsOf(slug: string | null | undefined): ToolNeeds {

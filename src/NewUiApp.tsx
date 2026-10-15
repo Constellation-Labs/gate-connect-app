@@ -55,7 +55,7 @@ import { allSettled, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
-import { classifyError, isRoutingOffRefusal } from "./lib/errors";
+import { classifyError, connectRefusalHint, isRoutingOffRefusal } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
@@ -3739,7 +3739,13 @@ export function NewUiApp() {
               {/* First: the write the user just asked for did not happen, and
                 * the app is left where it was. The single-app alert
                 * (`1426:35788`), its switch showing that state; toggling it
-                * tries the same write again. */}
+                * tries the same write again.
+                *
+                * No switch when the tool refused for a reason only the user
+                * can change outside Gate (no provider signed in, settings of
+                * their own): the retry would fail identically, so it read as a
+                * switch that does nothing. The body says what to change, and
+                * the pane's own switch tries again once they have. */}
               {paneWriteError && (
                 <AlertBanner
                   key={`write:${paneWriteError.slug}`}
@@ -3749,8 +3755,11 @@ export function NewUiApp() {
                   on={!paneWriteError.routed}
                   switchLabel={`Try ${toolName(paneWriteError.slug) ?? "this app"} again`}
                   busy={routingBusy}
-                  onToggle={() =>
-                    void routeApp(paneWriteError.slug, paneWriteError.routed)
+                  onToggle={
+                    paneWriteError.routed &&
+                    connectRefusalHint(paneWriteError.error.raw) !== null
+                      ? undefined
+                      : () => void routeApp(paneWriteError.slug, paneWriteError.routed)
                   }
                   onDismiss={() =>
                     setToolWriteErrors((prev) => {
