@@ -1105,9 +1105,6 @@ impl QuitTeardown {
     ///   that is the advice; a restart fixes nothing here. The sentence names
     ///   no billing: a Codex connected on pay-as-you-go stays in that shape,
     ///   drifted, after the account moves to BYOK, and stops all the same.
-    /// - **OpenCode on the providers Gate added: open sessions stop.** Their key
-    ///   is a placeholder only the pay-as-you-go relay makes good, and the quit
-    ///   removes them, so OpenCode has none of those models until Gate is back.
     /// - **Everything else sends its own key**, which the engine was swapping
     ///   for Gate's. With the engine gone it goes straight to the provider under
     ///   the user's own account, open sessions and new ones alike. Said only on
@@ -1131,19 +1128,11 @@ impl QuitTeardown {
                 if plural(&gate_models) { "were" } else { "was" }
             ));
         }
-        // Codex and OpenCode rely on Gate's credential in different shapes, so
-        // each has a sentence of its own.
+        // Only Codex can rely on Gate's credential; the sentence is its own.
         if no_login.iter().any(|t| t.id == ToolId::Codex) {
             sentences.push(
                 "Codex's open conversations stop working until you reopen Gate Connect; start \
                  a new one to use your own OpenAI login."
-                    .to_string(),
-            );
-        }
-        if no_login.iter().any(|t| t.id == ToolId::OpenCode) {
-            sentences.push(
-                "OpenCode's pay-as-you-go models came from Gate, so open sessions on them stop \
-                 working until you reopen Gate Connect."
                     .to_string(),
             );
         }
@@ -2043,30 +2032,6 @@ mod tests {
                 "Codex now uses your own provider account, {OWN_KEY_TAIL}"
             ))
         );
-    }
-
-    /// An OpenCode on the providers Gate added for pay-as-you-go is told its
-    /// sessions stop, on any billing, beside Codex's sentence rather than in it.
-    /// Before it had a sentence it was said nothing at all.
-    #[test]
-    fn opencode_on_gate_added_providers_is_told_its_sessions_stop() {
-        let note = quit(vec![tool(ToolId::OpenCode, "OpenCode", false, true)])
-            .note(|| panic!("billing read"));
-        assert_eq!(
-            note.as_deref(),
-            Some(
-                "OpenCode's pay-as-you-go models came from Gate, so open sessions on them stop \
-                 working until you reopen Gate Connect."
-            )
-        );
-        let both = quit(vec![
-            tool(ToolId::Codex, "Codex", false, true),
-            tool(ToolId::OpenCode, "OpenCode", false, true),
-        ])
-        .note(|| panic!("billing read"))
-        .unwrap();
-        assert!(both.starts_with("Codex's open conversations stop working"));
-        assert!(both.ends_with("open sessions on them stop working until you reopen Gate Connect."));
     }
 
     /// Own-key tools are said only on pay-as-you-go, Claude Code alone by its

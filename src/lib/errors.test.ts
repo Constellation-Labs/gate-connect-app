@@ -407,22 +407,6 @@ describe("a connect an integration refused for a reason the user can fix", () =>
     }
   });
 
-  it("reads the same remedy in a reconcile's refusal", () => {
-    // The re-apply after a billing-mode switch reports here, which is where an
-    // OpenCode with no provider of its own goes off under BYOK.
-    const c = classifyError(
-      "Sign in to a provider in OpenCode first, or put it on Gate models, then turn this on again.",
-      "provider_reconcile",
-    );
-    expect(c.title).toBe("Couldn’t refresh tool configs");
-    expect(c.hint).toBe(
-      "Sign in to a provider in OpenCode first, or choose Gate models for it, then try again.",
-    );
-    expect(
-      classifyError("expected value at line 1 column 1", "provider_reconcile").hint,
-    ).toMatch(/^Try again\b/);
-  });
-
   it("leaves every other action's copy alone", () => {
     expect(
       classifyError("Sign in to a provider in OpenCode first, or put it on Gate models, then turn this on again.", "sign_out")

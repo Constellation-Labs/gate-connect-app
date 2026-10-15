@@ -8,8 +8,8 @@
 //! - the shape Gate writes, beside the providers Gate routes;
 //! - App default and disconnect leave `opencode.json` exactly as the same steps
 //!   would have without Gate models, down to a file that did not exist;
-//! - an OpenCode on Gate models needs no provider of the user's and gets no
-//!   pay-as-you-go seeds;
+//! - an OpenCode on Gate models needs no provider of the user's, and one with
+//!   neither is refused, on either billing mode;
 //! - a default the user moves off the set is OpenCode's choice, and a pick from
 //!   the set is not drift and survives a reconnect.
 //!
@@ -280,10 +280,9 @@ fn the_object_form_of_model_comes_back_as_written() {
 }
 
 /// A fresh OpenCode Desktop names no provider. On Gate models it needs none:
-/// the Gate provider is the whole config, on either billing mode, and the
-/// pay-as-you-go seeds stay out because Gate's provider already does their job.
+/// the Gate provider is the whole config, on either billing mode.
 #[test]
-fn gate_models_need_no_provider_of_the_users_and_bring_no_seeds() {
+fn gate_models_need_no_provider_of_the_users() {
     for mode in [BillingMode::Byok, BillingMode::Payg] {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _home = setup(None, mode);
@@ -295,10 +294,6 @@ fn gate_models_need_no_provider_of_the_users_and_bring_no_seeds() {
         let providers: Vec<&String> = j["provider"].as_object().unwrap().keys().collect();
         assert_eq!(providers, ["gate-connect"], "{mode:?}: {j}");
         assert_eq!(j["model"], format!("gate-connect/{OPUS}"));
-        assert!(
-            !opencode.relies_on_gate_credential(),
-            "{mode:?}: no PAYG seed with a placeholder key"
-        );
 
         opencode.disconnect().unwrap();
         assert!(
@@ -309,26 +304,23 @@ fn gate_models_need_no_provider_of_the_users_and_bring_no_seeds() {
     }
 }
 
-/// Seeds an earlier pay-as-you-go connect added come out when the user puts
-/// OpenCode on Gate models, and come back when they leave them.
+/// Off Gate models, an OpenCode with no provider of the user's has nothing to
+/// route on either billing mode: pay-as-you-go adds no providers of Gate's own.
+/// Connect refuses with the remedy, and writes nothing.
 #[test]
-fn gate_models_replace_the_payg_seeds_and_leaving_them_brings_the_seeds_back() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = setup(None, BillingMode::Payg);
-    let opencode = find(ToolId::OpenCode).unwrap();
-    opencode.connect(&input(BillingMode::Payg)).unwrap();
-    let seeded = json();
-    assert!(seeded["provider"].get("anthropic").is_some());
-
-    choose_gate(&[LUNA]);
-    opencode.connect(&input(BillingMode::Payg)).unwrap();
-    let j = json();
-    assert!(j["provider"].get("anthropic").is_none(), "{j}");
-    assert!(j["provider"].get("openai").is_none(), "{j}");
-
-    choose_tool();
-    opencode.connect(&input(BillingMode::Payg)).unwrap();
-    assert_eq!(json(), seeded);
+fn no_provider_and_no_gate_models_is_refused_on_either_billing_mode() {
+    for mode in [BillingMode::Byok, BillingMode::Payg] {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _home = setup(None, mode);
+        let opencode = find(ToolId::OpenCode).unwrap();
+        let err = opencode.connect(&input(mode)).unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("Sign in to a provider in OpenCode first"),
+            "{mode:?}: {err:#}"
+        );
+        assert!(!config_path().exists(), "{mode:?}");
+        assert!(!sidecar().exists(), "{mode:?}");
+    }
 }
 
 /// BYOK with nothing of the user's and Gate models just left: connect refuses,

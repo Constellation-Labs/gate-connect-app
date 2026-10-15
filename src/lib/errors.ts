@@ -469,16 +469,9 @@ export function classifyError(
   // supported OpenCode providers found to route through Gate. Run ...". The
   // body says what to do rather than "Try again", which hid the instruction
   // behind Details (staging QA, 2026-09-30). The title stays the generic one.
-  // A reconcile is a connect too: the re-apply after a billing-mode switch
-  // reports its refusal there, and it is where an OpenCode with no provider of
-  // its own goes off under BYOK.
-  if (context === "connect" || context === "provider_reconcile") {
+  if (context === "connect") {
     const hint = connectRefusalHint(raw);
-    if (hint) {
-      const title =
-        context === "connect" ? "Couldn’t connect this tool" : "Couldn’t refresh tool configs";
-      return { title, hint, raw };
-    }
+    if (hint) return { title: "Couldn’t connect this tool", hint, raw };
   }
 
   // Fallback - tell the user *what* failed at least.

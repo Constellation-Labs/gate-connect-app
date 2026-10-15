@@ -401,9 +401,8 @@ pub trait Integration: Send + Sync {
     /// to the provider under it. Read by the quit sweep while the config still
     /// names Gate.
     ///
-    /// Only Codex on pay-as-you-go, and the providers OpenCode's connect added
-    /// for pay-as-you-go: every other tool always sends its own key, which the
-    /// engine swaps for Gate's.
+    /// Only Codex on pay-as-you-go: every other tool always sends its own key,
+    /// which the engine swaps for Gate's.
     fn relies_on_gate_credential(&self) -> bool {
         false
     }

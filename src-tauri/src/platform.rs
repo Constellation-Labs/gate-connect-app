@@ -2475,8 +2475,6 @@ pub(crate) mod fake {
         pub status: Result<Status, String>,
         /// The message `connect` and `disconnect` fail with.
         pub write_fails: Option<String>,
-        /// What `config_is_managed` answers.
-        pub managed: bool,
         /// Where `connect` and `disconnect` are recorded. The fake platform
         /// hands each tool its own journal.
         pub journal: Journal,
@@ -2490,7 +2488,6 @@ pub(crate) mod fake {
                 binaries: &[],
                 status: Ok(Status::Detected),
                 write_fails: None,
-                managed: false,
                 journal: Journal::default(),
             }
         }
@@ -2564,9 +2561,6 @@ pub(crate) mod fake {
         }
         fn hidden_in_ui(&self) -> bool {
             self.hidden
-        }
-        fn config_is_managed(&self) -> anyhow::Result<bool> {
-            Ok(self.managed)
         }
     }
 }
