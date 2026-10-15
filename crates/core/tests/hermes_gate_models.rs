@@ -378,6 +378,51 @@ fn a_refused_config_on_first_connect_leaves_nothing_behind() {
     assert_eq!(config(), ORIGINAL);
 }
 
+/// With no `model:` at all, the tool header opens it and Gate models then
+/// write into it. Disconnect has to take all of that back, and keep a key the
+/// user added under the block in the meantime (AG-1123).
+#[test]
+fn a_model_block_gate_opened_is_removed_but_the_users_keys_stay() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let none = "terminal:\n  backend: local\n_config_version: 45\n";
+    {
+        let _home = setup(none);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        assert_eq!(yaml()["model"]["default"], LUNA);
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), none, "Gate models then disconnect");
+    }
+    {
+        let _home = setup(none);
+        let hermes = find(ToolId::Hermes).unwrap();
+        hermes.connect(&input()).unwrap();
+        write_config(&config().replace("model:\n", "model:\n  max_turns: 90\n"));
+        hermes.disconnect().unwrap();
+        assert_eq!(
+            config(),
+            format!("{none}model:\n  max_turns: 90\n"),
+            "the user's key keeps the block Gate opened"
+        );
+    }
+}
+
+/// A comment on the `model:` line is still a block opener: Gate models apply
+/// and come back out (AG-1123).
+#[test]
+fn a_commented_model_opener_is_edited_and_restored() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let commented = ORIGINAL.replace("model:\n", "model:  # which upstream\n");
+    let _home = setup(&commented);
+    let hermes = find(ToolId::Hermes).unwrap();
+    choose_gate(&[LUNA]);
+    hermes.connect(&input()).unwrap();
+    assert_eq!(yaml()["model"]["default"], LUNA);
+    hermes.disconnect().unwrap();
+    assert_eq!(config(), commented);
+}
+
 /// A fresh install's `model: ""` must come back after more than one connect:
 /// the second connect writes the tool header into the block Gate models
 /// opened, and disconnect used to restore the model before removing the

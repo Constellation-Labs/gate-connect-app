@@ -624,6 +624,12 @@ impl Integration for Hermes {
         // predates the header or one whose write was refused.
         if let Some(created) = state.header_created.take() {
             remove_tool_header(created)?;
+            // The header opened `model:`, and whatever else is still in it
+            // (Gate models, or the user's own keys) kept it there. Record that
+            // it was absent, so the tidy below removes it once it is empty.
+            if created.parent && state.model_shape_before_gate_models.is_none() {
+                state.model_shape_before_gate_models = Some(yaml_block::ParentShape::Absent);
+            }
             save_state(&state)?;
         }
         // Then Hermes' own model, while the sidecar still says what it was.

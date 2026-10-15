@@ -53,6 +53,40 @@ pub(crate) enum Refusal {
     /// editing the first would change nothing Hermes reads - refused rather
     /// than guessed at.
     DuplicateKey,
+    /// The file opens with a byte order mark. The first line would not match
+    /// its own key, so an edit appends a second `<parent>:` that wins.
+    ByteOrderMark,
+    /// The document is a sequence, not a mapping: there is no top level to
+    /// add a key to.
+    NotAMapping,
+}
+
+/// The whole-document shapes no edit here can be made into.
+fn check_document(body: &str) -> Result<(), Refusal> {
+    if body.starts_with('\u{feff}') {
+        return Err(Refusal::ByteOrderMark);
+    }
+    let first = body.lines().find(|l| !is_filler(l));
+    if first.is_some_and(is_sequence_item) {
+        return Err(Refusal::NotAMapping);
+    }
+    Ok(())
+}
+
+/// `- item` (or a bare `-`), at any indent. `---` is a document marker, not one.
+fn is_sequence_item(line: &str) -> bool {
+    let rest = line.trim_start_matches(' ');
+    rest == "-" || rest.starts_with("- ")
+}
+
+/// Does the key opened at `at` hold a sequence written at its own indent
+/// (`model:\n- a`)? YAML allows it, and [`block_extent`] reads it as an empty
+/// block, so an insert there would split the sequence from its key.
+fn sequence_under(lines: &[&str], at: usize, indent: usize) -> bool {
+    lines[at + 1..]
+        .iter()
+        .find(|l| !is_filler(l))
+        .is_some_and(|l| split_indent(l).0 == indent && is_sequence_item(l))
 }
 
 /// Is `line` the block opener `name:` at exactly `indent` spaces?
@@ -110,6 +144,7 @@ pub(crate) fn set_nested(
     key: &str,
     value: &str,
 ) -> Result<(String, Edit), Refusal> {
+    check_document(body)?;
     let lines: Vec<&str> = body.lines().collect();
     let trailing_newline = body.is_empty() || body.ends_with('\n');
     let eol = eol_of(body);
@@ -152,6 +187,9 @@ pub(crate) fn set_nested(
         ));
     };
 
+    if sequence_under(&lines, parent_open, 0) {
+        return Err(Refusal::ParentIsNotABlock);
+    }
     let (parent_end, parent_child_indent) = block_extent(&lines, parent_open, 0);
     let indent = parent_child_indent.unwrap_or(2);
 
@@ -159,6 +197,9 @@ pub(crate) fn set_nested(
         .iter()
         .position(|l| opens_block(l, child, indent) == Some(true))
         .map(|p| parent_open + 1 + p);
+    if child_open.is_some_and(|at| sequence_under(&lines, at, indent)) {
+        return Err(Refusal::ChildIsNotABlock);
+    }
     if child_open.is_none()
         && lines[parent_open + 1..parent_end]
             .iter()
@@ -202,8 +243,12 @@ pub(crate) fn set_nested(
         };
         let current = rest.trim();
         // A value we cannot read back is one we must not overwrite: `&anchor`,
-        // `|` and `>` blocks, and flow collections all continue past this line.
-        if current.starts_with(['&', '*', '|', '>', '[', '{']) {
+        // `|` and `>` blocks, flow collections and a sequence at the key's own
+        // indent all continue past this line.
+        if current.starts_with(['&', '*', '|', '>', '[', '{'])
+            || (strip_comment(current).is_empty()
+                && sequence_under(&lines, child_open + 1 + i, key_indent))
+        {
             return Err(Refusal::ValueNotPlain);
         }
         if current.trim_matches(['"', '\'']) == value {
@@ -255,23 +300,32 @@ pub(crate) fn remove_nested(
     let (child_end, child_child_indent) = block_extent(&lines, child_open, indent);
     let key_indent = child_child_indent.unwrap_or(indent * 2);
 
-    // Widest scaffolding first, so the narrower cases cannot strand a block we
-    // opened. `created` is the record of what was ours; anything else here was
-    // the user's before we arrived and stays.
-    let drop = if created.parent {
-        parent_open..parent_end
-    } else if created.child {
-        child_open..child_end
-    } else {
-        let Some(at) = lines[child_open + 1..child_end].iter().position(|l| {
+    // Our line, then each opener `created` says was ours, but only once it
+    // holds nothing else: a key the user added under scaffolding we opened is
+    // theirs, and it keeps the block it sits in.
+    let mut drop: Vec<usize> = lines[child_open + 1..child_end]
+        .iter()
+        .position(|l| {
             let (lead, rest) = split_indent(l);
             lead == key_indent && rest.strip_prefix(key).is_some_and(|r| r.starts_with(':'))
-        }) else {
-            return body.to_string();
-        };
-        let at = child_open + 1 + at;
-        at..at + 1
+        })
+        .map(|at| child_open + 1 + at)
+        .into_iter()
+        .collect();
+    let holds_more = |range: std::ops::Range<usize>, drop: &[usize]| {
+        range
+            .clone()
+            .any(|i| !is_filler(lines[i]) && !drop.contains(&i))
     };
+    if created.child && !holds_more(child_open + 1..child_end, &drop) {
+        drop.push(child_open);
+    }
+    if created.parent && !holds_more(parent_open + 1..parent_end, &drop) {
+        drop.push(parent_open);
+    }
+    if drop.is_empty() {
+        return body.to_string();
+    }
 
     let kept: Vec<String> = lines
         .iter()
@@ -303,6 +357,7 @@ const EMPTY_INLINE: &[&str] = &["{}", "\"\"", "''", "~", "null"];
 /// The shape of `<parent>` in `body`, or a refusal for an inline value this
 /// module will not edit into (`model: {a: 1}`, `model: gpt-4o`).
 pub(crate) fn parent_shape(body: &str, parent: &str) -> Result<ParentShape, Refusal> {
+    check_document(body)?;
     let top_level = body
         .lines()
         .filter(|l| {
@@ -316,7 +371,8 @@ pub(crate) fn parent_shape(body: &str, parent: &str) -> Result<ParentShape, Refu
     if top_level > 1 {
         return Err(Refusal::DuplicateKey);
     }
-    for line in body.lines() {
+    let lines: Vec<&str> = body.lines().collect();
+    for (at, line) in lines.iter().enumerate() {
         let (lead, rest) = split_indent(line);
         if lead != 0 {
             continue;
@@ -326,6 +382,9 @@ pub(crate) fn parent_shape(body: &str, parent: &str) -> Result<ParentShape, Refu
         };
         let value = strip_comment(after.trim());
         if value.is_empty() {
+            if sequence_under(&lines, at, 0) {
+                return Err(Refusal::ParentIsNotABlock);
+            }
             return Ok(ParentShape::Block);
         }
         if EMPTY_INLINE.contains(&value) {
@@ -336,10 +395,14 @@ pub(crate) fn parent_shape(body: &str, parent: &str) -> Result<ParentShape, Refu
     Ok(ParentShape::Absent)
 }
 
-/// A plain scalar with any trailing ` # comment` removed.
+/// A plain scalar with any trailing ` # comment` removed. A trimmed value that
+/// starts with `#` is all comment: `key:  # note` holds nothing.
 fn strip_comment(value: &str) -> &str {
     if value.starts_with(['"', '\'']) {
         return value;
+    }
+    if value.starts_with('#') {
+        return "";
     }
     match value.find(" #") {
         Some(i) => value[..i].trim_end(),
@@ -412,6 +475,7 @@ pub(crate) fn has_child(body: &str, parent: &str, key: &str) -> bool {
 
 /// `<parent>.<key>` as a plain scalar, or `None` when it is not set.
 pub(crate) fn get_child(body: &str, parent: &str, key: &str) -> Result<Option<String>, Refusal> {
+    check_document(body)?;
     let lines: Vec<&str> = body.lines().collect();
     let Some(open) = lines
         .iter()
@@ -428,8 +492,9 @@ pub(crate) fn get_child(body: &str, parent: &str, key: &str) -> Result<Option<St
     };
     let (_, rest) = split_indent(lines[at]);
     let raw = rest[key.len() + 1..].trim();
-    if raw.is_empty() {
-        // `key:` with a block under it: not a scalar.
+    if strip_comment(raw).is_empty() {
+        // `key:`, perhaps with a comment: a block under it, or a null, and
+        // neither is a scalar to read back.
         return Err(Refusal::ValueNotPlain);
     }
     plain_value(raw).map(Some)
@@ -463,7 +528,7 @@ pub(crate) fn set_child(
     if let Some(at) = at {
         let (_, rest) = split_indent(view[at]);
         let raw = rest[key.len() + 1..].trim();
-        if raw.is_empty() {
+        if strip_comment(raw).is_empty() {
             return Err(Refusal::ValueNotPlain);
         }
         plain_value(raw)?;
@@ -512,6 +577,9 @@ pub(crate) fn set_block(
         return Err(Refusal::DuplicateKey);
     }
     let (at, _, indent) = find_child(&view, open, key);
+    if at.is_some_and(|at| sequence_under(&view, at, indent)) {
+        return Err(Refusal::ValueNotPlain);
+    }
     // The existing subtree: the key line and everything indented past it.
     let span = at.map(|at| {
         let (end, _) = block_extent(&view, at, indent);
@@ -954,5 +1022,128 @@ model:
         let nested = "model:\n  extra_headers:\n    k: old  # keep\n";
         let (after, _) = set_nested(nested, "model", "extra_headers", "k", "new").unwrap();
         assert_eq!(after, "model:\n  extra_headers:\n    k: new  # keep\n");
+    }
+
+    /// Scaffolding Gate opened is Gate's only while it holds nothing else: a
+    /// key the user added under it since stays, and so does the block it is in.
+    #[test]
+    fn user_keys_under_our_scaffolding_survive_removal() {
+        let all = Created {
+            parent: true,
+            child: true,
+        };
+        let (after, edit) = set("tools: {}\n").unwrap();
+        assert_eq!(edit, Edit::Inserted(all));
+
+        let own_model_key = after.replace("model:\n", "model:\n  default: a/b\n");
+        assert_eq!(
+            remove_nested(&own_model_key, "model", "extra_headers", KEY, all),
+            "tools: {}\nmodel:\n  default: a/b\n"
+        );
+
+        let own_header = after.replace(
+            "    x-gate-tool: hermes\n",
+            "    x-gate-tool: hermes\n    X-Mine: \"1\"\n",
+        );
+        assert_eq!(
+            remove_nested(&own_header, "model", "extra_headers", KEY, all),
+            "tools: {}\nmodel:\n  extra_headers:\n    X-Mine: \"1\"\n"
+        );
+
+        let child_only = Created {
+            parent: false,
+            child: true,
+        };
+        let before = "model:\n  provider: auto\n";
+        let (after, _) = set(before).unwrap();
+        let own_header = after.replace(
+            "    x-gate-tool: hermes\n",
+            "    x-gate-tool: hermes\n    X-Mine: \"1\"\n",
+        );
+        assert_eq!(
+            remove_nested(&own_header, "model", "extra_headers", KEY, child_only),
+            "model:\n  extra_headers:\n    X-Mine: \"1\"\n  provider: auto\n"
+        );
+    }
+
+    /// `model:  # note` is a block opener like `model:`; reading it as an inline
+    /// value refused every Gate models edit, connect and disconnect alike.
+    #[test]
+    fn a_commented_opener_is_a_block() {
+        let before = "model:  # which upstream\n  default: a/b\n";
+        assert_eq!(parent_shape(before, "model"), Ok(ParentShape::Block));
+        assert_eq!(
+            set_child(before, "model", "default", Some("c/d")).unwrap(),
+            "model:  # which upstream\n  default: c/d\n"
+        );
+        assert_eq!(
+            set_block(before, "model", "extra", Some(&["k: v".to_string()])).unwrap(),
+            "model:  # which upstream\n  extra:\n    k: v\n  default: a/b\n"
+        );
+    }
+
+    /// `default:  # later` is a null, not the string `# later`: refused like a
+    /// bare `default:`, rather than snapshotted as the comment and written back.
+    #[test]
+    fn a_comment_after_an_empty_value_is_not_the_value() {
+        let before = "model:\n  default:  # later\n";
+        assert_eq!(
+            get_child(before, "model", "default"),
+            Err(Refusal::ValueNotPlain)
+        );
+        assert_eq!(
+            set_child(before, "model", "default", Some("a/b")),
+            Err(Refusal::ValueNotPlain)
+        );
+    }
+
+    /// A BOM hides line 0's key, and a sequence has no key to add: either edit
+    /// would leave a document that reads differently, so both are refused.
+    #[test]
+    fn a_bom_or_a_sequence_is_refused() {
+        let bom = "\u{feff}model:\n  default: a/b\n";
+        assert_eq!(set(bom).unwrap_err(), Refusal::ByteOrderMark);
+        assert_eq!(parent_shape(bom, "model"), Err(Refusal::ByteOrderMark));
+        assert_eq!(
+            set_child(bom, "model", "default", Some("c/d")),
+            Err(Refusal::ByteOrderMark)
+        );
+        assert_eq!(
+            get_child(bom, "model", "default"),
+            Err(Refusal::ByteOrderMark)
+        );
+
+        let top = "# list\n- a\n- b\n";
+        assert_eq!(set(top).unwrap_err(), Refusal::NotAMapping);
+        assert_eq!(parent_shape(top, "model"), Err(Refusal::NotAMapping));
+
+        // A sequence at its key's own indent is the key's value, not an
+        // empty block followed by something else.
+        let compact = "model:\n- a\nother: 1\n";
+        assert_eq!(set(compact).unwrap_err(), Refusal::ParentIsNotABlock);
+        assert_eq!(
+            parent_shape(compact, "model"),
+            Err(Refusal::ParentIsNotABlock)
+        );
+        assert_eq!(
+            set("model:\n  extra_headers:\n  - a\n").unwrap_err(),
+            Refusal::ChildIsNotABlock
+        );
+        assert_eq!(
+            set("model:\n  extra_headers:\n    x-gate-tool:\n    - a\n").unwrap_err(),
+            Refusal::ValueNotPlain
+        );
+        assert_eq!(
+            set_block(
+                "providers:\n  gate-connect:\n  - a\n",
+                "providers",
+                "gate-connect",
+                None
+            ),
+            Err(Refusal::ValueNotPlain)
+        );
+
+        // A document marker is not a sequence item.
+        assert!(set("---\nmodel:\n  provider: auto\n").is_ok());
     }
 }
