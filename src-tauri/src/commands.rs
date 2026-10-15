@@ -360,7 +360,13 @@ pub(crate) fn get_account_key_prefix(platform: &impl Platform) -> Result<Option<
 
 /// The IPC-boundary checks on a gateway base URL, shared by `save_account`
 /// and `switch_gateway`.
-fn check_base_url(base_url: &str) -> Result<(), String> {
+///
+/// A release build also holds the URL to [`gateway_allowed`] (AG-1137): the
+/// window only ever offers the listed gateways, so anything else arriving here
+/// came from somewhere other than the UI. A debug build skips that, so
+/// `pnpm app:local` can still point the app at any gateway, the way the
+/// http://localhost exception in [`crate::base_url_scheme_ok`] is debug-only.
+fn check_base_url(platform: &impl Platform, base_url: &str) -> Result<(), String> {
     if base_url.len() > 2048 {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
@@ -371,7 +377,41 @@ fn check_base_url(base_url: &str) -> Result<(), String> {
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
     }
+    if !cfg!(debug_assertions) {
+        let current = platform.account_base_url().map_err(|e| format!("{e:#}"))?;
+        if !gateway_allowed(&parsed, current.as_deref()) {
+            return Err("base url is not one of this build's gateways".into());
+        }
+    }
     Ok(())
+}
+
+/// Whether a release build accepts `parsed` as the account's gateway: one of
+/// the hosted gateways `GATEWAY_SERVERS` in `src/lib/config.ts` can list, or
+/// the gateway already on disk, compared by origin as `isListedGateway` does.
+///
+/// Staging and dev pass in a stable release too, whose window lists production
+/// alone: the backend cannot tell a pre-release from a stable one, and both are
+/// Gate's own hosts. The gateway on disk is not a change - replacing the key
+/// re-sends the current URL - and it keeps an account the CLI pointed at a
+/// self-hosted gateway usable from the window.
+fn gateway_allowed(parsed: &url::Url, current: Option<&str>) -> bool {
+    use gate_connect_core::account::{
+        DEV_GATEWAY_HOST, PRODUCTION_GATEWAY_HOST, STAGING_GATEWAY_HOST,
+    };
+    let listed = [
+        PRODUCTION_GATEWAY_HOST,
+        STAGING_GATEWAY_HOST,
+        DEV_GATEWAY_HOST,
+    ]
+    .iter()
+    .any(|host| {
+        url::Url::parse(&format!("https://{host}")).is_ok_and(|u| u.origin() == parsed.origin())
+    });
+    listed
+        || current
+            .and_then(|c| url::Url::parse(c).ok())
+            .is_some_and(|c| c.origin() == parsed.origin())
 }
 
 /// Store the gateway, and a pasted key when one is given.
@@ -380,7 +420,7 @@ pub(crate) fn save_account(
     base_url: &str,
     api_key: Option<&str>,
 ) -> Result<(), String> {
-    check_base_url(base_url)?;
+    check_base_url(platform, base_url)?;
     let key = api_key.map(str::trim).filter(|s| !s.is_empty());
     if let Some(k) = key {
         crate::validate_api_key(k, "sk-")?;
@@ -447,7 +487,7 @@ pub(crate) fn clear_account(platform: &impl Platform) -> Result<(), String> {
 /// account: the engine pins the gateway URL at start, so one left up would
 /// keep rewriting traffic to the old environment under the new one's token.
 pub(crate) fn switch_gateway(platform: &impl Platform, base_url: &str) -> Result<(), String> {
-    check_base_url(base_url)?;
+    check_base_url(platform, base_url)?;
     platform
         .disconnect_all_managed()
         .map_err(|e| format!("{e:#}"))?;
@@ -2091,6 +2131,35 @@ mod tests {
             switch_gateway(&platform, "not a url"),
             Err(e) if e.starts_with("invalid base url: ")
         ));
+    }
+
+    /// AG-1137. What a release build accepts as a gateway: the hosted three by
+    /// origin, or the one already on disk, and nothing else.
+    #[test]
+    fn a_release_build_accepts_only_the_listed_or_current_gateway() {
+        let ok = |url: &str, current: Option<&str>| {
+            gateway_allowed(&url::Url::parse(url).unwrap(), current)
+        };
+        for url in [
+            "https://gateway.constellationgate.ai",
+            "https://Gateway.constellationgate.ai/",
+            "https://gateway.constellationgate.ai:443",
+            "https://gateway-staging.constellationgate.ai",
+            "https://gateway-dev.constellationgate.ai",
+        ] {
+            assert!(ok(url, None), "{url}");
+        }
+        for url in [
+            "https://gate.example.com",
+            "https://gateway.constellationgate.ai.example.com",
+            "https://gateway.constellationgate.ai:8443",
+            "http://gateway.constellationgate.ai",
+            "https://evil.gateway.constellationgate.ai",
+        ] {
+            assert!(!ok(url, None), "{url}");
+            assert!(!ok(url, Some("https://other.example.com")), "{url}");
+        }
+        assert!(ok("https://gate.example.com/", Some(GATEWAY)));
     }
 
     /// A pasted key is trimmed, selects the API-key path, and replaces

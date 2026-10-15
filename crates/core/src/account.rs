@@ -147,6 +147,12 @@ pub fn load_base_url() -> Result<Option<String>> {
     Ok(read_account_file()?.map(|f| f.gateway_base_url))
 }
 
+/// The production gateway host. With [`STAGING_GATEWAY_HOST`] and
+/// [`DEV_GATEWAY_HOST`] it is the whole of `GATEWAY_SERVERS` in
+/// `src/lib/config.ts` outside a dev build, which is the list the desktop app's
+/// release build holds a gateway change to (AG-1137). Keep in sync with it.
+pub const PRODUCTION_GATEWAY_HOST: &str = "gateway.constellationgate.ai";
+
 /// The gateway host that marks the **staging** environment, which has its own
 /// Cognito pool (see [`crate::oauth::OAuthConfig::for_gateway`]). Every host
 /// other than this and [`DEV_GATEWAY_HOST`] (production, self-hosted, unknown,
@@ -306,8 +312,8 @@ fn write_account_file(file: &AccountFile) -> Result<()> {
 }
 
 /// Dev-mode environment switch: point the account at a different gateway and
-/// forget the current Gate key so the user must enter an environment-appropriate
-/// one. Managed tools are disconnected by the command layer first (same as
+/// forget the current Gate key and OAuth session so the user must sign in to the
+/// new environment. Managed tools are disconnected by the command layer first (same as
 /// [`clear`]), since their config embeds the old gateway+key.
 pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     // Audit the repoint *before* anything is written, so the record lands at
@@ -325,6 +331,11 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
+                                          // And the OAuth bundle (AG-1137). Its token was issued by the old
+                                          // environment's pool, and kept it would be injected on every request to the
+                                          // new gateway, a host that has no business holding it. A delete, not a
+                                          // read, and the file write below moves the bundle's `get_cached` witness.
+    crate::oauth::clear()?;
     let file = read_account_file()?;
     let auth_mode = file.as_ref().map(|f| f.auth_mode).unwrap_or_default();
     // The billing mode is not environment-specific - it says who pays, not
