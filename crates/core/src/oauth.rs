@@ -662,8 +662,9 @@ pub fn current() -> Result<Option<OAuthTokens>> {
     // hour.
     //
     // The witness moves on exactly what must not be served stale: login
-    // rewrites `account.json` and sign-out removes it, in this process or in
-    // the CLI. What it deliberately does not catch is another process
+    // rewrites `account.json` with a fresh stamp after storing the bundle
+    // (`account::stamp_sign_in`), even when it changes nothing else, and
+    // sign-out removes it, in this process or in the CLI. What it deliberately does not catch is another process
     // *refreshing* the bundle, because that one is harmless here - `ensure_fresh`
     // re-tests the expiry of whatever comes back, so a bundle that ages out is
     // refreshed rather than served, and Cognito does not rotate refresh tokens
@@ -1309,8 +1310,20 @@ impl LoopbackListener {
         }
     }
 
-    /// Parse one connection. `Ok(Some(code))` on a valid callback,
-    /// `Ok(None)` for an unrelated path, `Err` on an OAuth error / bad state.
+    /// Parse one connection. `Ok(Some(code))` on a valid callback, `Ok(None)`
+    /// for anything that is not this attempt's redirect, `Err` only when the
+    /// redirect that carries our `state` reports a failure.
+    ///
+    /// **Only a request carrying the expected `state` can end the wait.** The
+    /// listener is on loopback, so any web page the user has open can reach it
+    /// with a no-cors `fetch("http://127.0.0.1:<port>/callback?error=x")`. When
+    /// an `error`, a missing `state` or a wrong one was terminal, that one
+    /// request aborted a sign-in the user was halfway through. The `state` is
+    /// the only thing a page cannot know, so it is the gate: everything without
+    /// it is answered and ignored, and the wait carries on until the real
+    /// redirect, a cancel or the deadline. The identity provider echoes `state`
+    /// on its error redirects as well (RFC 6749 4.1.2.1), so a genuine refusal
+    /// still ends the login at once.
     fn handle_callback(
         &self,
         mut stream: std::net::TcpStream,
@@ -1342,14 +1355,22 @@ impl LoopbackListener {
             .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("");
-        let url = reqwest::Url::parse(&format!("http://localhost{target}"))
-            .context("parsing loopback callback URL")?;
-        if url.path() != "/callback" {
+        let Some(url) = reqwest::Url::parse(&format!("http://localhost{target}"))
+            .ok()
+            .filter(|url| url.path() == "/callback")
+        else {
             let _ = write_http(&mut stream, "404 Not Found", "");
             return Ok(None);
-        }
+        };
 
         let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        if params.get("state").map(String::as_str) != Some(expected_state) {
+            // Not this attempt's redirect: a stale tab, or a page probing the
+            // port. Answered so the requester is not left hanging, never
+            // terminal (see above).
+            let _ = write_http(&mut stream, "400 Bad Request", ERROR_HTML);
+            return Ok(None);
+        }
         if let Some(err) = params.get("error") {
             let _ = write_http(&mut stream, "200 OK", ERROR_HTML);
             let desc = params
@@ -1357,13 +1378,6 @@ impl LoopbackListener {
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
             bail!("authorization failed ({err}){desc}");
-        }
-        let state = params
-            .get("state")
-            .context("callback missing state parameter")?;
-        if state != expected_state {
-            let _ = write_http(&mut stream, "200 OK", ERROR_HTML);
-            bail!("state mismatch on OAuth callback - possible CSRF, aborting");
         }
         let code = params
             .get("code")
@@ -1446,6 +1460,9 @@ where
     let tokens = complete_login(cfg, &code, &req.verifier, listener.redirect_uri())?;
     store(&tokens)?;
     advance_sign_in_epoch();
+    // After the store, so a reader in another process cannot cache the old
+    // bundle under the moved witness. See `account::stamp_sign_in`.
+    crate::account::stamp_sign_in()?;
     Ok(tokens)
 }
 
@@ -1588,6 +1605,90 @@ mod tests {
             !err.to_string().contains("stopped from Gate Connect"),
             "a finished attempt's cancel reached a later one: {err}"
         );
+    }
+
+    /// Send one request line to a bound listener and return the response's
+    /// status line, the way a browser tab or a probing page would hit it.
+    fn hit_callback(listener: &LoopbackListener, target: &str) -> String {
+        use std::io::{Read, Write};
+        let port: u16 = listener
+            .redirect_uri()
+            .trim_start_matches("http://localhost:")
+            .trim_end_matches("/callback")
+            .parse()
+            .expect("redirect URI carries the bound port");
+        let mut stream =
+            std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+        write!(stream, "GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response.lines().next().unwrap_or_default().to_string()
+    }
+
+    /// A local web page can reach the loopback callback with a no-cors fetch,
+    /// and used to end a sign-in in progress with one request carrying `error`
+    /// or a wrong `state` (AG-1140). None of those may be terminal: the wait has
+    /// to outlast every one of them and still take the real redirect.
+    #[test]
+    fn requests_without_the_expected_state_do_not_end_the_wait() {
+        let _serial = one_login_at_a_time();
+        let listener = LoopbackListener::bind(&[0]).unwrap();
+        let cancel = CancelScope::new();
+
+        std::thread::scope(|s| {
+            let sender = s.spawn(|| {
+                for forged in [
+                    "/callback?error=access_denied",
+                    "/callback?error=access_denied&state=guessed",
+                    "/callback?code=forged",
+                    "/callback?code=forged&state=guessed",
+                    "/callback?code=forged&state=",
+                ] {
+                    assert_eq!(
+                        hit_callback(&listener, forged),
+                        "HTTP/1.1 400 Bad Request",
+                        "{forged}"
+                    );
+                }
+                assert_eq!(
+                    hit_callback(&listener, "/callback?code=real&state=expected"),
+                    "HTTP/1.1 200 OK"
+                );
+            });
+            let code = listener
+                .wait_for_code("expected", std::time::Duration::from_secs(5), &cancel)
+                .expect("only the real redirect ends the wait");
+            assert_eq!(code, "real");
+            sender.join().unwrap();
+        });
+    }
+
+    /// The other half: an error redirect that DOES carry our `state` is the
+    /// identity provider refusing the sign-in, and still ends it at once rather
+    /// than leaving the user waiting out the deadline.
+    #[test]
+    fn an_error_carrying_the_expected_state_ends_the_wait() {
+        let _serial = one_login_at_a_time();
+        let listener = LoopbackListener::bind(&[0]).unwrap();
+        let cancel = CancelScope::new();
+
+        std::thread::scope(|s| {
+            let sender = s.spawn(|| {
+                hit_callback(
+                    &listener,
+                    "/callback?error=access_denied&error_description=nope&state=expected",
+                )
+            });
+            let err = listener
+                .wait_for_code("expected", std::time::Duration::from_secs(5), &cancel)
+                .expect_err("a real refusal is terminal");
+            assert!(
+                err.to_string()
+                    .contains("authorization failed (access_denied): nope"),
+                "got: {err}"
+            );
+            assert_eq!(sender.join().unwrap(), "HTTP/1.1 200 OK");
+        });
     }
 
     #[test]

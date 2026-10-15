@@ -216,9 +216,9 @@ fn a_gate_choice_is_limited_to_four_models() {
 
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _tmp = TempHome::set();
-    // OpenCode stores a choice but has no Gate models config to write, so this
+    // OpenClaw stores a choice but has no Gate models config to write, so this
     // exercises the limit without touching a tool's files.
-    let tool = ToolId::from_slug("opencode").expect("opencode is a tool");
+    let tool = ToolId::from_slug("openclaw").expect("openclaw is a tool");
     let ids = |n: usize| {
         (0..n)
             .map(|i| format!("vendor/model-{i}"))
@@ -230,13 +230,61 @@ fn a_gate_choice_is_limited_to_four_models() {
         .expect_err("five Gate models are refused");
     assert!(err.to_string().contains("at most 4"), "{err:#}");
     assert!(
-        !load().tool_models.contains_key("opencode"),
+        !load().tool_models.contains_key("openclaw"),
         "a refused choice stores nothing"
     );
 
     choose(tool, ModelSource::Gate, ids(4), true, vec![]).expect("four are accepted");
-    assert_eq!(gate_models_for("opencode").map(|s| s.len()), Some(4));
+    assert_eq!(gate_models_for("openclaw").map(|s| s.len()), Some(4));
 
     choose(tool, ModelSource::Tool, ids(6), false, vec![])
         .expect("App default is not held to the limit");
+}
+
+/// A file this build cannot parse is left alone by a setter, not replaced with
+/// defaults plus the one changed field (AG-1126). The case pinned is the
+/// downgrade: a newer build wrote a `ModelSource` this one does not know, and
+/// the first toggle used to wipe the paid-use acknowledgement, every model
+/// choice and the auto-enabled domains along with it. Readers still get the
+/// defaults, so Settings opens.
+#[test]
+fn a_setter_does_not_overwrite_a_file_it_cannot_parse() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let path = env::app_support_dir().unwrap().join("preferences.json");
+    let newer = r#"{
+        "device_name": "Work laptop",
+        "gate_model_paid_ack_unix": 1700000000,
+        "tool_models": {"codex": {"source": "from_a_newer_build", "model_ids": ["a/b"]}},
+        "auto_enabled_domains": {"codex": ["chatgpt.com"]}
+    }"#;
+    std::fs::write(&path, newer).unwrap();
+
+    assert!(gate_connect_core::preferences::set_notifications(false).is_err());
+    assert!(gate_connect_core::preferences::set_device_name("Other").is_err());
+    assert!(gate_connect_core::preferences::record_auto_enabled_domains("codex", vec![]).is_err());
+    assert!(set_tool_model(
+        "claude-code",
+        ModelSource::Gate,
+        vec!["a/b".into()],
+        true,
+        vec![]
+    )
+    .is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+
+    assert_eq!(
+        load(),
+        gate_connect_core::preferences::Preferences::default()
+    );
+}
+
+/// The other half: no file at all is the first run, not a broken file, and a
+/// setter there creates it as before.
+#[test]
+fn a_setter_creates_a_missing_file() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    gate_connect_core::preferences::set_notifications(false).expect("first run save");
+    assert!(!load().notifications);
 }

@@ -1613,10 +1613,16 @@ fn poll_restore_after_repair<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// the frontend after the update download completes, right before it kicks
 /// off the install (not around the whole download: a quit while the download
 /// is still running is a genuine user exit and must complete the opt-out as
-/// usual); reset if the install fails. If the relaunch itself fails after a
-/// successful install the flag stays set, which at worst defers the opt-out
-/// completion to the next safe point.
+/// usual); reset if the install fails. The mark alone does not make an exit a
+/// relaunch: `RESTART_REQUESTED` has to agree, so a quit between a
+/// successful install and the relaunch is treated as the user quit it is.
 static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the coming exit is a restart: set by the `ExitRequested` that
+/// carries `RESTART_EXIT_CODE`, which only `request_restart` sends. See
+/// `commands::exit_requested`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the startup auto-enable brought the engine back on a *different*
 /// loopback port than the previous session persisted (including "nothing
@@ -3338,6 +3344,10 @@ const CODEX_IDLE_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(
 struct CodexIdleRefresh {
     /// Why it is owed: the trigger, for the log line.
     owed: Option<&'static str>,
+    /// When the latest owe landed. The cap counts from here, so a change made
+    /// just before a long wait runs out gets a full wait of its own rather
+    /// than being dropped with the old one.
+    since: Option<std::time::Instant>,
     worker: bool,
 }
 
@@ -3345,6 +3355,7 @@ struct CodexIdleRefresh {
 static CODEX_IDLE_REFRESH: std::sync::Mutex<CodexIdleRefresh> =
     std::sync::Mutex::new(CodexIdleRefresh {
         owed: None,
+        since: None,
         worker: false,
     });
 
@@ -3395,13 +3406,15 @@ fn refresh_codex_daemon_when_idle(why: &'static str) {
 fn owe_codex_refresh(state: &std::sync::Mutex<CodexIdleRefresh>, why: &'static str) -> bool {
     let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
     st.owed = Some(why);
+    st.since = Some(std::time::Instant::now());
     !std::mem::replace(&mut st.worker, true)
 }
 
 /// The worker: refresh as soon as no session is open, checking first and then
-/// every `poll`, until nothing is owed or `cap` has passed. A refresh owed
-/// again while one runs is made after it. Generic over the session check and
-/// the refresh so the hand-off can be tested without processes.
+/// every `poll`, until nothing is owed or `cap` has passed since the latest
+/// owe. A refresh owed again while one runs is made after it. Generic over the
+/// session check and the refresh so the hand-off can be tested without
+/// processes.
 fn wait_for_codex_idle(
     state: &std::sync::Mutex<CodexIdleRefresh>,
     sessions_open: impl Fn() -> bool,
@@ -3409,12 +3422,12 @@ fn wait_for_codex_idle(
     poll: std::time::Duration,
     cap: std::time::Duration,
 ) {
-    let started = std::time::Instant::now();
     loop {
         let why = {
             let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+            let expired = st.since.is_some_and(|since| since.elapsed() >= cap);
             match st.owed {
-                Some(why) if started.elapsed() < cap => why,
+                Some(why) if !expired => why,
                 Some(why) => {
                     eprintln!("[gate] {why}: Codex stayed open, gave up waiting to refresh its app server");
                     *st = CodexIdleRefresh::default();
@@ -6089,6 +6102,13 @@ pub fn run() {
             // proxy reverted, a deferred launch-at-login opt-out finished, and
             // the routing intent left alone. The body and its reasons are
             // `commands::exit`, where a test pins all four.
+            //
+            // Before that, a restart is noted, so the updater's relaunch can
+            // be told from a quit (`commands::exit_requested`).
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if let tauri::RunEvent::ExitRequested { code, .. } = &event {
+                commands::exit_requested(&TauriPlatform, *code);
+            }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
                 commands::exit(&TauriApp {
@@ -6502,6 +6522,31 @@ mod tests {
                 owe_codex_refresh(&state, "next change"),
                 "a later owe starts a new worker"
             );
+        }
+
+        #[test]
+        fn a_fresh_owe_gets_a_full_wait_of_its_own() {
+            let cap = Duration::from_millis(400);
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let start = std::time::Instant::now();
+            let reowed = std::sync::atomic::AtomicBool::new(false);
+            let refreshed = Mutex::new(Vec::new());
+            wait_for_codex_idle(
+                &state,
+                || {
+                    let t = start.elapsed();
+                    if t >= Duration::from_millis(200) && !reowed.swap(true, Ordering::SeqCst) {
+                        assert!(!owe_codex_refresh(&state, "routing on"));
+                    }
+                    // Open past the first owe's cap, closed inside the second's.
+                    t < Duration::from_millis(500)
+                },
+                |why| refreshed.lock().unwrap().push(why),
+                POLL,
+                cap,
+            );
+            assert_eq!(*refreshed.lock().unwrap(), vec!["routing on"]);
         }
     }
 

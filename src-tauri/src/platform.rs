@@ -144,6 +144,14 @@ pub(crate) trait Platform:
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn updater_relaunching(&self) -> bool;
 
+    /// Note that this exit is a restart (`RESTART_EXIT_CODE`).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn note_restart_requested(&self);
+
+    /// Whether this exit is a restart.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn restart_requested(&self) -> bool;
+
     /// Record that this process reached a clean exit, which clears the
     /// crash-restart streak.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -765,6 +773,16 @@ impl<T: Tauri> Platform for T {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn updater_relaunching(&self) -> bool {
         crate::UPDATER_RELAUNCHING.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn note_restart_requested(&self) {
+        crate::RESTART_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn restart_requested(&self) -> bool {
+        crate::RESTART_REQUESTED.load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1397,6 +1415,8 @@ pub(crate) mod fake {
         pub auto_enabled: Mutex<BTreeMap<String, Vec<String>>>,
         pub milestones: Mutex<HashSet<String>>,
         pub updater_relaunching: Mutex<Option<bool>>,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        pub restart_requested: Mutex<bool>,
         pub popover_pinned: Mutex<Option<bool>>,
         /// What `preferences()` answers.
         pub prefs: Preferences,
@@ -1769,6 +1789,16 @@ pub(crate) mod fake {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         fn updater_relaunching(&self) -> bool {
             self.updater_relaunching.lock().unwrap().unwrap_or(false)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn note_restart_requested(&self) {
+            *self.restart_requested.lock().unwrap() = true;
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn restart_requested(&self) -> bool {
+            *self.restart_requested.lock().unwrap()
         }
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]

@@ -7,7 +7,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gate_connect_core::{account, keychain, oauth::OAuthConfig};
+use gate_connect_core::oauth::{self, OAuthConfig, OAuthTokens};
+use gate_connect_core::{account, keychain};
 
 /// Point `app_support_dir()` at a fresh temp dir for the duration of a test, so
 /// `account.json` resolves there on every OS. Uses the `GATE_CONNECT_TEST_HOME`
@@ -105,4 +106,26 @@ fn resolves_pool_from_gateway_host() {
         OAuthConfig::from_build_env().is_none(),
         "a dev gateway without dev config must not fall through to the prod pool"
     );
+
+    // A switch forgets the OAuth session along with the key (AG-1137). An
+    // unknown host resolves to the production pool, so a production bundle
+    // kept across the switch would pass the client check and be injected on
+    // every request to that host.
+    account::switch_gateway("https://gateway.constellationgate.ai").unwrap();
+    oauth::store(&OAuthTokens {
+        access_token: "prod-access".to_string(),
+        refresh_token: "prod-refresh".to_string(),
+        id_token: None,
+        expires_at_unix: 4_102_444_800,
+        client_id: "prod-client".to_string(),
+    })
+    .unwrap();
+    account::set_auth_mode(account::AuthMode::OAuth).unwrap();
+    assert_eq!(oauth::access_token_for_injection(), "prod-access");
+    account::switch_gateway("https://gate.example.com").unwrap();
+    assert!(
+        oauth::current().unwrap().is_none(),
+        "the old gateway's session must not survive a switch"
+    );
+    assert_eq!(oauth::access_token_for_injection(), "");
 }
