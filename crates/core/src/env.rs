@@ -418,6 +418,44 @@ pub fn opencode_config_dir() -> Result<PathBuf> {
     Ok(home()?.join(".config/opencode"))
 }
 
+/// Where an installed OpenCode leaves a binary on Windows, before it has ever
+/// run. The config dir alone is not enough there: OpenCode Desktop creates
+/// `~\.config\opencode` on first launch, not on install, and none of these
+/// installers puts `opencode` anywhere fixed like `/usr/local/bin`.
+/// - OpenCode Desktop: `%LOCALAPPDATA%\Programs\@opencodedesktop\OpenCode.exe`
+/// - npm global: `%APPDATA%\npm\opencode.cmd`
+/// - scoop: `%SCOOP%\shims\opencode.exe`, default `~\scoop`
+///
+/// Under `GATE_CONNECT_TEST_HOME` the Known Folders are taken as the usual
+/// layout beneath it and `SCOOP` is ignored, so a test is not decided by
+/// whatever this machine happens to have installed.
+#[cfg(windows)]
+pub fn opencode_cli_candidates() -> Result<Vec<PathBuf>> {
+    let (local, roaming, scoop) = match test_home_override() {
+        Some(h) => (
+            h.join("AppData").join("Local"),
+            h.join("AppData").join("Roaming"),
+            h.join("scoop"),
+        ),
+        None => (
+            dirs::data_local_dir().context("could not resolve %LOCALAPPDATA%")?,
+            dirs::data_dir().context("could not resolve %APPDATA%")?,
+            match env_path("SCOOP") {
+                Some(s) => s,
+                None => home()?.join("scoop"),
+            },
+        ),
+    };
+    Ok(vec![
+        local
+            .join("Programs")
+            .join("@opencodedesktop")
+            .join("OpenCode.exe"),
+        roaming.join("npm").join("opencode.cmd"),
+        scoop.join("shims").join("opencode.exe"),
+    ])
+}
+
 /// OpenCode's user config file, `opencode.json` inside
 /// [`opencode_config_dir`]. `OPENCODE_CONFIG` (a full file path) overrides it,
 /// matching OpenCode's own precedence.
