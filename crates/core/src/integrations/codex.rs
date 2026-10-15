@@ -1126,6 +1126,12 @@ fn is_managed_daemon_command(cmd: &[std::ffi::OsString]) -> bool {
             && rest.get(1).is_some_and(|a| *a == "pid-update-loop"))
 }
 
+/// Is a process owned by this user? An owner that cannot be read, on either
+/// side, is not a match: the process is skipped rather than trusted.
+fn same_owner<T: PartialEq>(owner: Option<&T>, me: Option<&T>) -> bool {
+    owner.zip(me).is_some_and(|(owner, me)| owner == me)
+}
+
 /// Whether Codex's managed app-server daemon loaded a config other than the one
 /// in place now, without restarting it. The test
 /// [`refresh_app_server_daemon`] applies, for a caller deciding whether a
@@ -1150,13 +1156,22 @@ fn daemon_state() -> DaemonState {
         ProcessRefreshKind::nothing()
             .without_tasks()
             .with_exe(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet),
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+            .with_user(UpdateKind::OnlyIfNotSet),
     );
+    // Only our own user's daemon: its executable is what a refresh runs, so
+    // another account's process must never supply it (AG-1136).
+    let me = sysinfo::get_current_pid()
+        .ok()
+        .and_then(|pid| sys.process(pid))
+        .and_then(|p| p.user_id());
     let daemon: Vec<(std::path::PathBuf, u64)> = sys
         .processes()
         .values()
         .filter(|p| {
-            is_codex_name(&p.name().to_string_lossy()) && is_managed_daemon_command(p.cmd())
+            same_owner(p.user_id(), me)
+                && is_codex_name(&p.name().to_string_lossy())
+                && is_managed_daemon_command(p.cmd())
         })
         .filter_map(|p| Some((p.exe()?.to_path_buf(), p.start_time())))
         .collect();
@@ -1632,6 +1647,17 @@ mod tests {
         ])));
         assert!(is_codex_name("codex") && is_codex_name("codex.exe") && is_codex_name("Codex.EXE"));
         assert!(!is_codex_name("codex-helper"));
+    }
+
+    /// AG-1136: the refresh runs the daemon's executable, so only a process
+    /// this user owns may supply it, and an unreadable owner is skipped.
+    #[test]
+    fn only_our_own_users_daemon_is_considered() {
+        assert!(same_owner(Some(&501u32), Some(&501u32)));
+        assert!(!same_owner(Some(&0u32), Some(&501u32)));
+        assert!(!same_owner(None, Some(&501u32)));
+        assert!(!same_owner(Some(&501u32), None));
+        assert!(!same_owner::<u32>(None, None));
     }
 
     /// AG-674's disagreement case for Codex. Our provider block and pointer are
