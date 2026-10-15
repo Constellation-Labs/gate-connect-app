@@ -732,7 +732,6 @@ impl Integration for OpenCode {
         let mut skipped_off_catalog: Vec<&str> = Vec::new();
         let mut applied = 0;
         for target in &targets {
-            let provider_map = ensure_object(&mut settings, "provider");
             let Some(resolved) = crate::proxy::resolve_endpoint(target.endpoint) else {
                 // No catalog domain covers this upstream, so the relay would
                 // 403 every request. Leaving the config alone is strictly
@@ -740,6 +739,10 @@ impl Integration for OpenCode {
                 skipped_off_catalog.push(target.id);
                 continue;
             };
+            // Only now: a `provider` map made for a target that was skipped
+            // would reach the disk on the refusal below as one the user never
+            // wrote.
+            let provider_map = ensure_object(&mut settings, "provider");
             let base_url = resolved.relay_base_url(relay_base_url, ToolId::OpenCode);
             apply_override(provider_map, &mut state, target, &base_url);
             if seeding {
@@ -749,6 +752,20 @@ impl Integration for OpenCode {
         }
 
         if applied == 0 && gate_ids.is_none() {
+            // Nothing was written above, so only what `unseed` and the Gate
+            // models revert took out needs to reach the disk.
+            if changed {
+                save_settings_and_state(&settings, &state)?;
+            }
+            // The seeds are Gate's choice, not providers the user configured,
+            // so the refusal is the one for an OpenCode with none of its own.
+            if seeding {
+                anyhow::bail!(
+                    "Sign in to a provider in OpenCode first, or put it on Gate models, then turn \
+                     this on again. Gate has no upstream domain for the providers it would add ({}).",
+                    skipped_off_catalog.join(", ")
+                );
+            }
             anyhow::bail!(
                 "None of the configured OpenCode providers can route through Gate yet ({}). Gate has no upstream domain for them.",
                 skipped_off_catalog.join(", ")
@@ -1159,6 +1176,13 @@ fn mark_seeded(provider_map: &mut Map<String, Value>, state: &mut State, provide
 /// Take out every provider an earlier `connect` added itself, file and sidecar
 /// both, and say whether there were any. A seed never existed before Gate wrote
 /// it, so restoring it removes it.
+///
+/// Compare-and-restore, as [`revert_gate_models`] does for `model`: a seed is
+/// Gate's to remove only while its key is still [`PAYG_PLACEHOLDER_API_KEY`].
+/// One whose key the user has replaced is theirs now, block and all, and stays
+/// as an ordinary routed provider. Its new snapshot says the block and its
+/// options existed and held no `baseURL` or `headers` of the user's, so a
+/// disconnect takes out only what Gate wrote into it.
 fn unseed(settings: &mut Map<String, Value>, state: &mut State) -> bool {
     let seeded: Vec<String> = state
         .providers
@@ -1169,18 +1193,43 @@ fn unseed(settings: &mut Map<String, Value>, state: &mut State) -> bool {
     if seeded.is_empty() {
         return false;
     }
+    let (ours, adopted): (Vec<String>, Vec<String>) = seeded.into_iter().partition(|id| {
+        settings.get("provider").and_then(|p| p.get(id)).is_none()
+            || has_placeholder_key(settings, id)
+    });
     if let Some(provider_map) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
-        for id in &seeded {
+        for id in &ours {
             restore_provider(provider_map, id, &state.providers[id]);
         }
         if provider_map.is_empty() {
             settings.remove("provider");
         }
     }
-    for id in seeded {
+    for id in ours {
         state.providers.remove(&id);
     }
+    for id in adopted {
+        state.providers.insert(
+            id,
+            ProviderSnapshot {
+                provider_existed: true,
+                options_existed: true,
+                ..ProviderSnapshot::default()
+            },
+        );
+    }
     true
+}
+
+/// Does `provider.<id>.options.apiKey` still hold [`PAYG_PLACEHOLDER_API_KEY`]?
+fn has_placeholder_key(settings: &Map<String, Value>, provider_id: &str) -> bool {
+    settings
+        .get("provider")
+        .and_then(|v| v.get(provider_id))
+        .and_then(|b| b.get("options"))
+        .and_then(|o| o.get("apiKey"))
+        .and_then(|v| v.as_str())
+        == Some(PAYG_PLACEHOLDER_API_KEY)
 }
 
 /// Write what [`unseed`] or [`revert_gate_models`] left, the way `disconnect`
@@ -1402,15 +1451,7 @@ fn placeholder_providers(settings: &Map<String, Value>, state: &State) -> Vec<St
         .providers
         .iter()
         .filter(|(_, s)| s.placeholder_key)
-        .filter(|(id, _)| {
-            settings
-                .get("provider")
-                .and_then(|v| v.get(id.as_str()))
-                .and_then(|b| b.get("options"))
-                .and_then(|o| o.get("apiKey"))
-                .and_then(|v| v.as_str())
-                == Some(PAYG_PLACEHOLDER_API_KEY)
-        })
+        .filter(|(id, _)| has_placeholder_key(settings, id))
         .map(|(id, _)| id.clone())
         .collect()
 }
@@ -2188,6 +2229,46 @@ mod tests {
         let (mut settings, mut state) = seed(crate::account::BillingMode::Payg);
         assert!(unseed(&mut settings, &mut state));
         assert!(settings.is_empty());
+    }
+
+    /// A seed whose placeholder the user replaced with a key of their own is
+    /// theirs: `unseed` keeps the block and the key, and from then on it is an
+    /// ordinary routed provider, so a disconnect takes out only Gate's
+    /// `baseURL`. A seed still on the placeholder comes out as before.
+    #[test]
+    fn unseed_keeps_a_seed_the_user_gave_a_key() {
+        let (mut settings, mut state) = seed(crate::account::BillingMode::Payg);
+        settings["provider"]["anthropic"]["options"]["apiKey"] = json!("sk-ant-user");
+        settings["provider"]["anthropic"]["models"] = json!({ "claude-x": {} });
+
+        assert!(unseed(&mut settings, &mut state));
+        assert_eq!(
+            settings["provider"]["anthropic"]["options"]["apiKey"],
+            json!("sk-ant-user")
+        );
+        assert_eq!(
+            settings["provider"]["anthropic"]["models"],
+            json!({ "claude-x": {} })
+        );
+        assert!(settings["provider"].get("openai").is_none());
+
+        let snapshot = &state.providers["anthropic"];
+        assert!(!snapshot.seeded && !snapshot.placeholder_key);
+        assert!(!state.providers.contains_key("openai"));
+        assert!(
+            !unseed(&mut settings, &mut state),
+            "adopted, it is no longer a seed"
+        );
+
+        let provider_map = settings["provider"].as_object_mut().unwrap();
+        restore_provider(provider_map, "anthropic", &state.providers["anthropic"]);
+        assert_eq!(
+            Value::Object(settings),
+            json!({ "provider": { "anthropic": {
+                "options": { "apiKey": "sk-ant-user" },
+                "models": { "claude-x": {} }
+            } } })
+        );
     }
 
     /// With nothing seeded, `unseed` touches nothing, including a provider Gate

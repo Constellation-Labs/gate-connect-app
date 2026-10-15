@@ -511,6 +511,12 @@ pub(crate) fn set_billing_mode(platform: &impl Platform, payg: bool) -> Result<(
 /// depends on the mode. Each is asked differently: Codex has to read Connected,
 /// while OpenCode reads Drifted after a switch to BYOK by design - its PAYG
 /// providers are the drift - so it is re-applied whenever Gate manages it.
+///
+/// A failure is reported to the windows, not only logged. The re-apply after a
+/// switch to BYOK is where an OpenCode with no provider of its own goes off: its
+/// connect removes the PAYG providers and refuses, the row drops to Detected,
+/// and without a report nothing would say why. The raw refusal is what is
+/// reported, so the window reads its remedy the way it does for a connect.
 fn reapply_for_mode(platform: &impl Platform, mode: BillingMode) {
     let Ok(Some(account)) = platform.account() else {
         return;
@@ -535,6 +541,7 @@ fn reapply_for_mode(platform: &impl Platform, mode: BillingMode) {
                 "re-applying {} for the new billing mode failed: {e:#}",
                 integ.display_name()
             );
+            platform.report_backend_error("provider_reconcile", format!("{e:#}"));
         }
     }
 }
@@ -2493,6 +2500,11 @@ mod tests {
         };
         assert_eq!(set_billing_mode(&platform, true), Ok(()));
         assert_eq!(*platform.billing_mode.lock().unwrap(), BillingMode::Payg);
+        // Reported, so a window can say why the tool went off.
+        assert_eq!(
+            platform.calls().last().map(String::as_str),
+            Some("report_backend_error provider_reconcile: connect codex: read-only")
+        );
         assert_eq!(
             set_billing_mode(&failing("set_billing_mode"), true),
             Err("set_billing_mode: refused".into())
