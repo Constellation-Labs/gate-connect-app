@@ -135,10 +135,10 @@ export function AppPane({
    *
    *  Omitting it and `onChooseModel` together is a third thing again: the card
    *  is withheld entirely. A tool whose config Gate cannot write a model into
-   *  gets that - OpenCode, OpenClaw, the environment channel and the chat
-   *  domains; `GATE_MODEL_TOOLS` in `lib/toolModels` is the list that does get
-   *  it. Hermes is multi-provider on the rail and still gets the card, because
-   *  its config holds a provider entry Gate writes the chosen set into. Per the
+   *  gets that - OpenClaw, the environment channel and the chat domains;
+   *  `GATE_MODEL_TOOLS` in `lib/toolModels` is the list that does get it.
+   *  Hermes and OpenCode are multi-provider on the rail and still get the card,
+   *  because each config holds a provider entry Gate writes the chosen set into. Per the
    *  house rule the Settings pane states: an omitted handler omits its control.
    *  No `onChooseModel`, no card. */
   modelChoice?: ModelChoice | null;

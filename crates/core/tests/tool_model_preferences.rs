@@ -216,9 +216,9 @@ fn a_gate_choice_is_limited_to_four_models() {
 
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _tmp = TempHome::set();
-    // OpenCode stores a choice but has no Gate models config to write, so this
+    // OpenClaw stores a choice but has no Gate models config to write, so this
     // exercises the limit without touching a tool's files.
-    let tool = ToolId::from_slug("opencode").expect("opencode is a tool");
+    let tool = ToolId::from_slug("openclaw").expect("openclaw is a tool");
     let ids = |n: usize| {
         (0..n)
             .map(|i| format!("vendor/model-{i}"))
@@ -230,12 +230,12 @@ fn a_gate_choice_is_limited_to_four_models() {
         .expect_err("five Gate models are refused");
     assert!(err.to_string().contains("at most 4"), "{err:#}");
     assert!(
-        !load().tool_models.contains_key("opencode"),
+        !load().tool_models.contains_key("openclaw"),
         "a refused choice stores nothing"
     );
 
     choose(tool, ModelSource::Gate, ids(4), true, vec![]).expect("four are accepted");
-    assert_eq!(gate_models_for("opencode").map(|s| s.len()), Some(4));
+    assert_eq!(gate_models_for("openclaw").map(|s| s.len()), Some(4));
 
     choose(tool, ModelSource::Tool, ids(6), false, vec![])
         .expect("App default is not held to the limit");

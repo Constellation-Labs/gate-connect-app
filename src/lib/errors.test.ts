@@ -354,11 +354,21 @@ describe("classifyError: a loopback port held by another process (AG-960)", () =
 
 describe("a connect an integration refused for a reason the user can fix", () => {
   it("keeps the title and says what to do, in the window's words", () => {
-    const raw = "Sign in to a provider in OpenCode first, then turn this on again.";
+    const raw = "Sign in to a provider in OpenCode first, or put it on Gate models, then turn this on again.";
     const c = classifyError(raw, "connect");
     expect(c.title).toBe("Couldn’t connect this tool");
-    expect(c.hint).toBe("Sign in to a provider in OpenCode first, then try again.");
+    expect(c.hint).toBe("Sign in to a provider in OpenCode first, or choose Gate models for it, then try again.");
     expect(c.raw).toBe(raw);
+  });
+
+  it("says how to clear a gate-connect provider of the user's own", () => {
+    const c = classifyError(
+      'opencode.json already has a provider named "gate-connect" that Gate did not write. Rename it in opencode.json, then choose Gate models again.',
+      "connect",
+    );
+    expect(c.hint).toBe(
+      "OpenCode already has a provider named gate-connect. Rename it in opencode.json, then choose Gate models again.",
+    );
   });
 
   it("names the providers a local-endpoint refusal names", () => {
@@ -399,7 +409,7 @@ describe("a connect an integration refused for a reason the user can fix", () =>
 
   it("leaves every other action's copy alone", () => {
     expect(
-      classifyError("Sign in to a provider in OpenCode first, then turn this on again.", "sign_out")
+      classifyError("Sign in to a provider in OpenCode first, or put it on Gate models, then turn this on again.", "sign_out")
         .hint,
     ).toMatch(/^Try again\b/);
   });
