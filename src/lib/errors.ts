@@ -528,9 +528,12 @@ export function classifyError(
  */
 const CONNECT_REFUSALS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
   [
-    /^No supported OpenCode providers found to route through Gate\b/,
-    () =>
-      "OpenCode has no provider Gate can route. Run opencode auth login, then try again.",
+    /^Sign in to a provider in OpenCode first\b/,
+    () => "Sign in to a provider in OpenCode first, then try again.",
+  ],
+  [
+    /^Every OpenCode provider Gate could route points at a local endpoint \(([^)]*)\)/,
+    (m) => `OpenCode’s providers all point at a local endpoint (${m[1]}), so Gate leaves them alone.`,
   ],
   [
     /^None of the configured OpenCode providers can route through Gate yet \(([^)]*)\)/,

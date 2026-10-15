@@ -808,7 +808,7 @@ fn opencode_leaves_a_users_own_local_endpoint_alone() {
         })
         .expect_err("a local endpoint we never wrote is not ours to repoint");
     assert!(
-        err.to_string().contains("No supported OpenCode providers"),
+        err.to_string().contains("points at a local endpoint (anthropic)"),
         "unexpected error: {err}"
     );
     assert_eq!(
