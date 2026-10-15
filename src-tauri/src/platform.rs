@@ -301,8 +301,20 @@ pub(crate) trait Proxy {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn record_verdict_sweep(
         &self,
-        results: &[(String, gate_connect_core::routing_health::RoutingVerdict)],
+        results: &[(
+            String,
+            gate_connect_core::routing_health::RoutingVerdict,
+            gate_connect_core::routing_health::Evidence,
+        )],
     );
+
+    /// How the local proxy addresses a tool's config names are doing: the
+    /// forwarder, for a proxy-routed tool. `Unknown` when none is loopback.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_local_proxy(
+        &self,
+        addresses: &[String],
+    ) -> gate_connect_core::routing_health::RouteHealth;
 
     /// Revert the system proxy without a prompt, leaving the CA trusted.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -948,9 +960,21 @@ impl<T: Tauri> Proxy for T {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn record_verdict_sweep(
         &self,
-        results: &[(String, gate_connect_core::routing_health::RoutingVerdict)],
+        results: &[(
+            String,
+            gate_connect_core::routing_health::RoutingVerdict,
+            gate_connect_core::routing_health::Evidence,
+        )],
     ) {
         gate_connect_core::verdict_log::record_sweep(results);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn probe_local_proxy(
+        &self,
+        addresses: &[String],
+    ) -> gate_connect_core::routing_health::RouteHealth {
+        gate_connect_core::proxy::local_proxy_route(addresses)
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1456,6 +1480,8 @@ pub(crate) mod fake {
         pub route: Option<gate_connect_core::routing_health::RouteHealth>,
         /// What the session probe answers. Unknown while `None`.
         pub session_health: Option<gate_connect_core::routing_health::SessionHealth>,
+        /// What the local proxy probe answers. Unknown while `None`.
+        pub local_proxy: Option<gate_connect_core::routing_health::RouteHealth>,
         pub verdict_hold: Mutex<gate_connect_core::routing_health::VerdictHold>,
 
         // ---- Exit ----
@@ -1974,13 +2000,27 @@ pub(crate) mod fake {
         }
 
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        fn probe_local_proxy(
+            &self,
+            addresses: &[String],
+        ) -> gate_connect_core::routing_health::RouteHealth {
+            self.record(format!("probe_local_proxy {}", addresses.join(" ")));
+            self.local_proxy
+                .unwrap_or(gate_connect_core::routing_health::RouteHealth::Unknown)
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         fn record_verdict_sweep(
             &self,
-            results: &[(String, gate_connect_core::routing_health::RoutingVerdict)],
+            results: &[(
+                String,
+                gate_connect_core::routing_health::RoutingVerdict,
+                gate_connect_core::routing_health::Evidence,
+            )],
         ) {
             let results: Vec<_> = results
                 .iter()
-                .map(|(slug, verdict)| format!("{slug}={}", verdict.as_str()))
+                .map(|(slug, verdict, _)| format!("{slug}={}", verdict.as_str()))
                 .collect();
             self.record(format!("record_verdict_sweep {}", results.join(" ")));
         }
@@ -2478,6 +2518,9 @@ pub(crate) mod fake {
         /// Where `connect` and `disconnect` are recorded. The fake platform
         /// hands each tool its own journal.
         pub journal: Journal,
+        pub mechanism: Mechanism,
+        /// What `configured_addresses` answers.
+        pub addresses: Vec<String>,
     }
 
     impl FakeTool {
@@ -2489,6 +2532,8 @@ pub(crate) mod fake {
                 status: Ok(Status::Detected),
                 write_fails: None,
                 journal: Journal::default(),
+                mechanism: Mechanism::Relay,
+                addresses: Vec::new(),
             }
         }
     }
@@ -2525,10 +2570,10 @@ pub(crate) mod fake {
             "https://fake.example.com"
         }
         fn mechanism(&self) -> Mechanism {
-            Mechanism::Relay
+            self.mechanism
         }
         fn configured_addresses(&self) -> anyhow::Result<Vec<String>> {
-            Ok(Vec::new())
+            Ok(self.addresses.clone())
         }
         fn watch_paths(&self) -> Vec<PathBuf> {
             Vec::new()

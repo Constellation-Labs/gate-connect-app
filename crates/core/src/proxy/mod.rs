@@ -1326,6 +1326,32 @@ pub fn address_health(configured: &str) -> AddressHealth {
     }
 }
 
+/// The verdict's reading of the local proxy addresses a tool's config names.
+///
+/// `Unreachable` when any of them is [`AddressHealth::Dead`] or
+/// [`AddressHealth::Parked`]: either way the tool's traffic is not reaching
+/// Gate through it. `Unknown` when none is a loopback address of ours, which
+/// decides nothing. AG-1096: without this the only trace of a forwarder that
+/// stopped answering was a tool reading "Config drifted".
+pub fn local_proxy_route(addresses: &[String]) -> crate::routing_health::RouteHealth {
+    use crate::routing_health::RouteHealth;
+    let ours: Vec<&String> = addresses
+        .iter()
+        .filter(|a| loopback_port_of(a).is_some())
+        .collect();
+    if ours.is_empty() {
+        return RouteHealth::Unknown;
+    }
+    if ours
+        .iter()
+        .all(|a| address_health(a) == AddressHealth::Routing)
+    {
+        RouteHealth::Reachable
+    } else {
+        RouteHealth::Unreachable
+    }
+}
+
 /// The port of a `127.0.0.1` proxy address of ours, if that is what `url` is.
 ///
 /// Userinfo is stripped before the host is read, which is not a nicety: Claude

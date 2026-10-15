@@ -1237,6 +1237,33 @@ export interface Diagnostics {
   /** The OS proxy setting (PAC on macOS/Windows, the drop-in on Linux), read
    * back live: the channel that routes GUI apps rather than CLI tools. */
   system_proxy: string | null;
+  /** What the routing checks found per tool, from the verdict log: the latest
+   *  check, the readings behind it, and the last changes. Optional because an
+   *  older backend sends none. Words and timestamps only. */
+  checks?: VerdictCheck[];
+}
+
+/** The readings one routing check was computed from, as words. */
+export interface CheckEvidence {
+  config: string;
+  relay: string;
+  local_proxy: string;
+  session: string;
+  reopen_pending: boolean;
+}
+
+/** One tool's entry in the verdict log. */
+export interface VerdictCheck {
+  slug: string;
+  state: string;
+  reason: string | null;
+  /** Unix seconds; 0 when the clock could not be read. */
+  at_unix: number;
+  verified_state: string | null;
+  verified_unix: number;
+  evidence: CheckEvidence | null;
+  /** The last verdict changes, oldest first. */
+  recent: { at_unix: number; state: string; reason: string | null; evidence: CheckEvidence | null }[];
 }
 
 /** One snapshot for the diagnostics panel. Best-effort throughout: never

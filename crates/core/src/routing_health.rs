@@ -95,6 +95,15 @@ pub struct Evidence {
     /// A tool process is running that started before the last routing change,
     /// so it is still using whatever settings it loaded then.
     pub reopen_pending: bool,
+    /// The local address this tool's own config names: the forwarder for
+    /// proxy-routed tools. `Unreachable` when nothing answers there, or it
+    /// answers without Gate routing behind it. `Unknown` when the tool names no
+    /// such address or it was not probed, which decides nothing.
+    ///
+    /// Separate from `route`, which is the relay alone: a dead forwarder made
+    /// a proxy-routed tool's `status()` report drift, and the row then read
+    /// "Config drifted" over a file that was exactly right (AG-1096).
+    pub local_proxy: RouteHealth,
 }
 
 /// Why a tool is not verifiably routing. Closed set: these are the six reasons
@@ -249,6 +258,13 @@ pub fn verdict_for(ev: &Evidence) -> RoutingVerdict {
     if ev.config == ConfigState::Overridden {
         return RoutingVerdict::NeedsAttention(Reason::ConfigurationOverridden);
     }
+    // Ahead of drift, because it is what the drift is made of: a tool whose
+    // proxy names a forwarder that does not answer reports its config as
+    // drifted, and the repair that sends someone to is the one thing already
+    // right. The file is fine; Gate is not answering on it.
+    if ev.config == ConfigState::Drifted && ev.local_proxy == RouteHealth::Unreachable {
+        return RoutingVerdict::NeedsAttention(Reason::ConnectionProblem);
+    }
     if ev.config == ConfigState::Drifted {
         return RoutingVerdict::NeedsAttention(Reason::ConfigurationChanged);
     }
@@ -375,6 +391,34 @@ mod tests {
             route: RouteHealth::Reachable,
             session: SessionHealth::Valid,
             reopen_pending: false,
+            local_proxy: RouteHealth::Reachable,
+        }
+    }
+
+    /// AG-1096: drift caused by a forwarder that is not answering is a
+    /// connection problem, not a changed config.
+    #[test]
+    fn drift_over_a_dead_forwarder_is_a_connection_problem() {
+        let ev = Evidence {
+            config: ConfigState::Drifted,
+            local_proxy: RouteHealth::Unreachable,
+            ..healthy()
+        };
+        assert_eq!(
+            verdict_for(&ev),
+            RoutingVerdict::NeedsAttention(Reason::ConnectionProblem)
+        );
+        for local_proxy in [RouteHealth::Reachable, RouteHealth::Unknown] {
+            let ev = Evidence {
+                config: ConfigState::Drifted,
+                local_proxy,
+                ..healthy()
+            };
+            assert_eq!(
+                verdict_for(&ev),
+                RoutingVerdict::NeedsAttention(Reason::ConfigurationChanged),
+                "a forwarder that answers, or none named, leaves drift as drift"
+            );
         }
     }
 
@@ -400,6 +444,7 @@ mod tests {
             route: RouteHealth::Unreachable,
             session: SessionHealth::Rejected,
             reopen_pending: true,
+            local_proxy: RouteHealth::Unreachable,
         };
         assert_eq!(verdict_for(&ev), RoutingVerdict::NotInstalled);
     }
