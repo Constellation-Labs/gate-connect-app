@@ -423,6 +423,50 @@ fn a_commented_model_opener_is_edited_and_restored() {
     assert_eq!(config(), commented);
 }
 
+/// Disconnecting something already disconnected must not fail: a Gate key
+/// the user emptied is theirs now and its line stays, and a second disconnect,
+/// or one after the file was removed, has nothing to do (AG-1123).
+#[test]
+fn disconnect_succeeds_on_a_config_already_taken_back() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let _home = setup(ORIGINAL);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        let emptied = config().replace(&format!("  default: {LUNA}\n"), "  default:  # later\n");
+        assert_ne!(emptied, config());
+        write_config(&emptied);
+        hermes.disconnect().unwrap();
+        let after = config();
+        assert!(after.contains("  default:  # later\n"), "{after}");
+        assert!(!after.contains("gate-connect"), "{after}");
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), after, "a second disconnect changes nothing");
+    }
+    {
+        let _home = setup(ORIGINAL);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        hermes.disconnect().unwrap();
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), ORIGINAL, "disconnect twice");
+    }
+    {
+        let _home = setup(ORIGINAL);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        fs::remove_file(env::hermes_config_path().unwrap()).unwrap();
+        hermes.disconnect().unwrap();
+        assert!(
+            !env::hermes_config_path().unwrap().exists(),
+            "a removed config is not written back"
+        );
+    }
+}
+
 /// A fresh install's `model: ""` must come back after more than one connect:
 /// the second connect writes the tool header into the block Gate models
 /// opened, and disconnect used to restore the model before removing the

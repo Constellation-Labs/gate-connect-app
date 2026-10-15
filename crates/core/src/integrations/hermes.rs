@@ -1452,9 +1452,14 @@ fn revert_gate_models(state: &mut State) -> Result<()> {
     let Some(gm) = state.gate_models.clone() else {
         return Ok(());
     };
+    // No file is nothing of Gate's left to take back, and restoring Hermes'
+    // values into a new one would write a config the user removed.
+    if !crate::env::hermes_config_path()?.exists() {
+        state.gate_models = None;
+        return Ok(());
+    }
     let before = read_config_body()?;
     let mut body = before.clone();
-    let current = |body: &str, key: &str| yaml_block::get_child(body, "model", key).ok().flatten();
     let still_ours = |key: &str, value: Option<&str>| match key {
         "provider" => value.is_some_and(is_gate_provider),
         "default" => value.is_none_or(|v| gm.written.iter().any(|w| w == v)),
@@ -1465,7 +1470,12 @@ fn revert_gate_models(state: &mut State) -> Result<()> {
         _ => false,
     };
     for key in MODEL_KEYS {
-        let now = current(&body, key);
+        // A value that cannot be read back (`default:` emptied, perhaps with a
+        // comment) is not one Gate wrote: the user changed it, and that line
+        // stays. Refusing here failed disconnect on a key already taken back.
+        let Ok(now) = yaml_block::get_child(&body, "model", key) else {
+            continue;
+        };
         if !still_ours(key, now.as_deref()) {
             continue;
         }
@@ -1486,8 +1496,12 @@ fn revert_gate_models(state: &mut State) -> Result<()> {
     {
         state.model_shape_before_gate_models = Some(gm.model_shape.clone());
     }
-    body = yaml_block::set_block(&body, "providers", GATE_PROVIDER, None)
-        .map_err(|e| refused("providers", e))?;
+    // Already gone is already reverted: only an entry still there is edited,
+    // so a `providers:` reshaped since cannot fail a revert with nothing to do.
+    if yaml_block::has_child(&body, "providers", GATE_PROVIDER) {
+        body = yaml_block::set_block(&body, "providers", GATE_PROVIDER, None)
+            .map_err(|e| refused("providers", e))?;
+    }
     body = yaml_block::tidy_parent(&body, "providers", &gm.providers_shape);
     if body != before {
         write_config(&crate::env::hermes_config_path()?, &body)?;
