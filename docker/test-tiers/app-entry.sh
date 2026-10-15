@@ -36,4 +36,7 @@ timeout -k 10 "$LIMIT" xvfb-run -a -s "-screen 0 1440x900x24" dbus-run-session -
 if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
   echo "app e2e (linux) timed out after ${LIMIT}s; the last ::group:: above is the step it was in" >&2
 fi
+# The app writes its data 0600 as this container's user, which is not the
+# host's. Everything here is mock data, so let the host read it.
+chmod -R a+rX "$OUT" 2>/dev/null || true
 exit "$rc"
