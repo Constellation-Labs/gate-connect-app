@@ -55,10 +55,11 @@
 //! provider) are not in our well-known list and stay untouched.
 //!
 //! An OpenCode that names no provider at all - a fresh Desktop install, which
-//! sends Zen's free models anonymously - gets providers added instead: Zen
-//! itself, and on a pay-as-you-go account Anthropic and OpenAI billed through
-//! Gate. See `seed_providers`. The sidecar marks them, and every connect takes
-//! them back out before deciding again.
+//! sends Zen's free models anonymously - gets Anthropic and OpenAI added on a
+//! pay-as-you-go account, billed through Gate, and is refused under BYOK. Zen's
+//! free tier is never added: it refuses traffic routed through Gate. See
+//! `seed_providers`. The sidecar marks what was added, and every connect takes
+//! it back out before deciding again.
 //!
 //! State tracking: OpenCode's JSON schema is strict
 //! (`additionalProperties: false`), so we can't stash markers inside
@@ -221,12 +222,6 @@ struct ProviderSnapshot {
     #[serde(default)]
     placeholder_key: bool,
 }
-
-/// The provider a fresh OpenCode already uses. It runs OpenCode Zen's free
-/// models with no login and writes nothing `connect` reads, so with no provider
-/// of its own named, this is the one to route. OpenCode supplies Zen's anonymous
-/// credential itself, so only the `baseURL` is written.
-const ZERO_CONFIG_PROVIDER: &str = "opencode";
 
 /// What a pay-as-you-go account adds to an OpenCode that names no provider:
 /// the PAYG-eligible upstreams, billed through Gate. OpenRouter is eligible
@@ -537,16 +532,25 @@ impl Integration for OpenCode {
         // choice below sees only what the user has. Left in, they would read as
         // the user's: a login made since would keep them beside it, and a
         // switch to BYOK would keep a placeholder key it cannot send.
-        unseed(&mut settings, &mut state);
+        let unseeded = unseed(&mut settings, &mut state);
 
         // Figure out which well-known providers to route through Gate:
         // anything the user has either pre-configured in opencode.json OR
-        // logged into via `opencode auth login`. Failing that, the ones a
-        // fresh OpenCode uses - see `seed_providers`.
+        // logged into via `opencode auth login`. Failing that, the ones Gate
+        // can bill for - see `seed_providers`.
         let mut candidates = known_providers_in(&settings, &auth);
         let seeding = candidates.is_empty();
         if seeding {
             candidates = seed_providers(input.billing_mode);
+        }
+        if candidates.is_empty() {
+            // BYOK with nothing of the user's: no key to route. What `unseed`
+            // took out still has to reach the disk, or a switch from PAYG
+            // would leave its placeholder keys going upstream.
+            if unseeded {
+                save_unseeded(&settings, &state)?;
+            }
+            anyhow::bail!("Sign in to a provider in OpenCode first, then turn this on again.");
         }
 
         // Local-protection guard: if a candidate has an existing
@@ -597,7 +601,7 @@ impl Integration for OpenCode {
             .collect();
 
         // Only reachable when every provider the user has points at a local
-        // endpoint: with none at all, `seed_providers` supplied some.
+        // endpoint: with none at all, connect has already returned above.
         if targets.is_empty() {
             anyhow::bail!(
                 "Every OpenCode provider Gate could route points at a local endpoint ({}), so there is nothing to route.",
@@ -994,31 +998,33 @@ fn known_providers_in(
         .collect()
 }
 
-/// What `connect` routes for an OpenCode that names no provider of its own.
+/// What `connect` routes for an OpenCode that names no provider of its own:
+/// [`PAYG_SEED_PROVIDERS`] on pay-as-you-go, so the user has real models
+/// without bringing a key - the case PAYG exists for - and nothing under BYOK,
+/// where there is no key to route.
 ///
-/// A fresh OpenCode Desktop has neither file `known_providers_in` reads and
-/// still answers: it sends Zen's free models anonymously. That is
-/// [`ZERO_CONFIG_PROVIDER`], in either billing mode. Pay-as-you-go adds
-/// [`PAYG_SEED_PROVIDERS`], which Gate pays for, so the user has real models
-/// without bringing a key - the case PAYG exists for.
+/// **Not OpenCode Zen**, though a fresh OpenCode Desktop uses it with no login.
+/// Routed through Gate, its anonymous free tier answers "OpenCode's free tier
+/// can only be used from within OpenCode" (measured on Desktop 2.0.29), so
+/// adding it breaks a setup that worked. A Zen the user has signed in to is
+/// theirs and is routed as before.
 fn seed_providers(mode: crate::account::BillingMode) -> Vec<&'static KnownProvider> {
-    let payg = mode == crate::account::BillingMode::Payg;
+    if mode != crate::account::BillingMode::Payg {
+        return Vec::new();
+    }
     KNOWN_PROVIDERS
         .iter()
-        .filter(|p| p.id == ZERO_CONFIG_PROVIDER || (payg && PAYG_SEED_PROVIDERS.contains(&p.id)))
+        .filter(|p| PAYG_SEED_PROVIDERS.contains(&p.id))
         .collect()
 }
 
 /// Record `provider_id`, just written by [`apply_override`], as one `connect`
-/// added itself, and give a PAYG seed the key OpenCode needs to list it.
+/// added itself, and give it the key OpenCode needs to list it.
 fn mark_seeded(provider_map: &mut Map<String, Value>, state: &mut State, provider_id: &str) {
     let Some(snapshot) = state.providers.get_mut(provider_id) else {
         return;
     };
     snapshot.seeded = true;
-    if !PAYG_SEED_PROVIDERS.contains(&provider_id) {
-        return;
-    }
     snapshot.placeholder_key = true;
     if let Some(options) = provider_map
         .get_mut(provider_id)
@@ -1033,8 +1039,9 @@ fn mark_seeded(provider_map: &mut Map<String, Value>, state: &mut State, provide
 }
 
 /// Take out every provider an earlier `connect` added itself, file and sidecar
-/// both. A seed never existed before Gate wrote it, so restoring it removes it.
-fn unseed(settings: &mut Map<String, Value>, state: &mut State) {
+/// both, and say whether there were any. A seed never existed before Gate wrote
+/// it, so restoring it removes it.
+fn unseed(settings: &mut Map<String, Value>, state: &mut State) -> bool {
     let seeded: Vec<String> = state
         .providers
         .iter()
@@ -1042,7 +1049,7 @@ fn unseed(settings: &mut Map<String, Value>, state: &mut State) {
         .map(|(id, _)| id.clone())
         .collect();
     if seeded.is_empty() {
-        return;
+        return false;
     }
     if let Some(provider_map) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
         for id in &seeded {
@@ -1054,6 +1061,22 @@ fn unseed(settings: &mut Map<String, Value>, state: &mut State) {
     }
     for id in seeded {
         state.providers.remove(&id);
+    }
+    true
+}
+
+/// Write what [`unseed`] left when `connect` has nothing to route, the way
+/// `disconnect` does: a file or sidecar left empty is removed, not written.
+fn save_unseeded(settings: &Map<String, Value>, state: &State) -> Result<()> {
+    if settings.is_empty() {
+        crate::config_changes::remove(&env::opencode_config_path()?)?;
+    } else {
+        write_settings(settings)?;
+    }
+    if state.providers.is_empty() {
+        remove_state()
+    } else {
+        save_state(state)
     }
 }
 
@@ -1592,16 +1615,16 @@ mod tests {
         (settings, state)
     }
 
-    /// A fresh OpenCode routes the Zen it already uses in either mode, and
-    /// pay-as-you-go adds the providers Gate pays for. Every seed has to be a
-    /// provider `connect` knows how to route.
+    /// Pay-as-you-go adds the providers Gate pays for, and BYOK adds nothing:
+    /// not even the Zen a fresh OpenCode uses, whose free tier refuses traffic
+    /// routed through Gate. Every seed has to be one Gate can bill.
     #[test]
-    fn seeds_zen_always_and_gate_billed_providers_on_payg() {
+    fn seeds_gate_billed_providers_on_payg_and_nothing_on_byok() {
         use crate::account::BillingMode;
-        assert_eq!(ids(&seed_providers(BillingMode::Byok)), ["opencode"]);
+        assert!(seed_providers(BillingMode::Byok).is_empty());
         assert_eq!(
             ids(&seed_providers(BillingMode::Payg)),
-            ["anthropic", "openai", "opencode"]
+            ["anthropic", "openai"]
         );
         for id in PAYG_SEED_PROVIDERS {
             let p = KNOWN_PROVIDERS.iter().find(|p| p.id == *id).unwrap();
@@ -1613,36 +1636,33 @@ mod tests {
         }
     }
 
-    /// Only the PAYG seeds carry a key, and it is the placeholder. Zen gets
-    /// none, so OpenCode keeps sending its own anonymous one.
+    /// Each seed points at the relay and carries the placeholder key, and the
+    /// sidecar records it as added by Gate.
     #[test]
-    fn only_payg_seeds_carry_the_placeholder_key() {
+    fn payg_seeds_carry_the_placeholder_key() {
         let (settings, state) = seed(crate::account::BillingMode::Payg);
-        let p = &settings["provider"];
-        assert_eq!(
-            p["anthropic"]["options"]["apiKey"],
-            json!(PAYG_PLACEHOLDER_API_KEY)
-        );
-        assert_eq!(
-            p["openai"]["options"]["apiKey"],
-            json!(PAYG_PLACEHOLDER_API_KEY)
-        );
-        assert!(p["opencode"]["options"].get("apiKey").is_none());
-        assert_eq!(
-            p["opencode"]["options"]["baseURL"],
-            json!("http://127.0.0.1:9001/x")
-        );
+        for id in PAYG_SEED_PROVIDERS {
+            let options = &settings["provider"][*id]["options"];
+            assert_eq!(options["apiKey"], json!(PAYG_PLACEHOLDER_API_KEY));
+            assert_eq!(options["baseURL"], json!("http://127.0.0.1:9001/x"));
+        }
         assert!(state
             .providers
             .values()
-            .all(|s| s.seeded && !s.provider_existed));
+            .all(|s| s.seeded && s.placeholder_key && !s.provider_existed));
         assert_eq!(
             placeholder_providers(&settings, &state),
             ["anthropic", "openai"]
         );
+    }
 
-        let (byok, byok_state) = seed(crate::account::BillingMode::Byok);
-        assert!(placeholder_providers(&byok, &byok_state).is_empty());
+    /// A placeholder the user has since replaced with a key of their own is
+    /// not one Gate relies on.
+    #[test]
+    fn a_replaced_placeholder_is_not_relied_on() {
+        let (mut settings, state) = seed(crate::account::BillingMode::Payg);
+        settings["provider"]["anthropic"]["options"]["apiKey"] = json!("sk-ant-user");
+        assert_eq!(placeholder_providers(&settings, &state), ["openai"]);
     }
 
     /// `unseed` takes out exactly what seeding added, and leaves a provider the
@@ -1654,7 +1674,7 @@ mod tests {
             "llamacpp".into(),
             json!({ "options": { "baseURL": "http://localhost:8080" } }),
         );
-        unseed(&mut settings, &mut state);
+        assert!(unseed(&mut settings, &mut state));
         assert_eq!(
             Value::Object(settings),
             json!({ "provider": { "llamacpp": { "options": { "baseURL": "http://localhost:8080" } } } })
@@ -1662,8 +1682,8 @@ mod tests {
         assert!(state.providers.is_empty());
 
         // Nothing else left: the `provider` block goes too.
-        let (mut settings, mut state) = seed(crate::account::BillingMode::Byok);
-        unseed(&mut settings, &mut state);
+        let (mut settings, mut state) = seed(crate::account::BillingMode::Payg);
+        assert!(unseed(&mut settings, &mut state));
         assert!(settings.is_empty());
     }
 
@@ -1688,7 +1708,7 @@ mod tests {
             "http://127.0.0.1:9001/x",
         );
         let before = settings.clone();
-        unseed(&mut settings, &mut state);
+        assert!(!unseed(&mut settings, &mut state));
         assert_eq!(settings, before);
         assert!(state.providers.contains_key("anthropic"));
     }
