@@ -410,7 +410,7 @@ async fn the_route_needs_a_supported_tool_and_the_paid_use_acknowledgement() {
         .unwrap();
     // And a set for a tool with no Gate models support at all.
     preferences::set_tool_model(
-        "opencode",
+        "openclaw",
         ModelSource::Gate,
         vec![LUNA.into()],
         true,
@@ -426,7 +426,7 @@ async fn the_route_needs_a_supported_tool_and_the_paid_use_acknowledgement() {
     let client = reqwest::Client::new();
 
     let unsupported = client
-        .post(url(&engine, "/__gate/t/opencode/gate/v1/chat/completions"))
+        .post(url(&engine, "/__gate/t/openclaw/gate/v1/chat/completions"))
         .json(&serde_json::json!({ "model": LUNA, "messages": [] }))
         .send()
         .await

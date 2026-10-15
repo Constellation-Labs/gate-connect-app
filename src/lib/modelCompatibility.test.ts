@@ -25,13 +25,14 @@ describe("what each app needs", () => {
   it("knows no supported app needs freeform tools once Gate writes its catalog", () => {
     expect(needsOf("codex")).toEqual({ tools: true, freeformTools: false });
     expect(needsOf("claude-code")).toEqual({ tools: true, freeformTools: false });
+    expect(needsOf("opencode")).toEqual({ tools: true, freeformTools: false });
   });
 
   it("asks nothing of an app it has not studied", () => {
     // Claiming a tool needs something we never checked would hide every model
     // from it. Being wrong in this direction costs a failed request; being wrong
     // in the other costs the feature entirely.
-    expect(needsOf("opencode")).toEqual({ tools: false, freeformTools: false });
+    expect(needsOf("openclaw")).toEqual({ tools: false, freeformTools: false });
     expect(needsOf(null)).toEqual({ tools: false, freeformTools: false });
   });
 });

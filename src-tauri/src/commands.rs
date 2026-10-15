@@ -172,7 +172,11 @@ pub(crate) fn connect_tool(platform: &impl Platform, slug: &str) -> Result<Statu
         relay_base_url: platform.relay_base_url(),
         engine_proxy_url: platform.tool_proxy_url(),
     };
-    integ.connect(&input).map_err(|e| format!("{e:#}"))?;
+    // Under the routing lock, and refused once a quit has begun taking Gate
+    // out of every tool: a connect landing after that sweep would leave this
+    // tool on Gate with nothing recorded to put it back (AG-1118).
+    gate_connect_core::provider::unless_exiting(|| integ.connect(&input))
+        .map_err(|e| format!("{e:#}"))?;
     Ok(status_for(platform, integ.as_ref()))
 }
 
@@ -415,7 +419,13 @@ pub(crate) fn get_account_key_prefix(platform: &impl Platform) -> Result<Option<
 
 /// The IPC-boundary checks on a gateway base URL, shared by `save_account`
 /// and `switch_gateway`.
-fn check_base_url(base_url: &str) -> Result<(), String> {
+///
+/// A release build also holds the URL to [`gateway_allowed`] (AG-1137): the
+/// window only ever offers the listed gateways, so anything else arriving here
+/// came from somewhere other than the UI. A debug build skips that, so
+/// `pnpm app:local` can still point the app at any gateway, the way the
+/// http://localhost exception in [`crate::base_url_scheme_ok`] is debug-only.
+fn check_base_url(platform: &impl Platform, base_url: &str) -> Result<(), String> {
     if base_url.len() > 2048 {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
@@ -426,7 +436,41 @@ fn check_base_url(base_url: &str) -> Result<(), String> {
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
     }
+    if !cfg!(debug_assertions) {
+        let current = platform.account_base_url().map_err(|e| format!("{e:#}"))?;
+        if !gateway_allowed(&parsed, current.as_deref()) {
+            return Err("base url is not one of this build's gateways".into());
+        }
+    }
     Ok(())
+}
+
+/// Whether a release build accepts `parsed` as the account's gateway: one of
+/// the hosted gateways `GATEWAY_SERVERS` in `src/lib/config.ts` can list, or
+/// the gateway already on disk, compared by origin as `isListedGateway` does.
+///
+/// Staging and dev pass in a stable release too, whose window lists production
+/// alone: the backend cannot tell a pre-release from a stable one, and both are
+/// Gate's own hosts. The gateway on disk is not a change - replacing the key
+/// re-sends the current URL - and it keeps an account the CLI pointed at a
+/// self-hosted gateway usable from the window.
+fn gateway_allowed(parsed: &url::Url, current: Option<&str>) -> bool {
+    use gate_connect_core::account::{
+        DEV_GATEWAY_HOST, PRODUCTION_GATEWAY_HOST, STAGING_GATEWAY_HOST,
+    };
+    let listed = [
+        PRODUCTION_GATEWAY_HOST,
+        STAGING_GATEWAY_HOST,
+        DEV_GATEWAY_HOST,
+    ]
+    .iter()
+    .any(|host| {
+        url::Url::parse(&format!("https://{host}")).is_ok_and(|u| u.origin() == parsed.origin())
+    });
+    listed
+        || current
+            .and_then(|c| url::Url::parse(c).ok())
+            .is_some_and(|c| c.origin() == parsed.origin())
 }
 
 /// Store the gateway, and a pasted key when one is given.
@@ -435,7 +479,7 @@ pub(crate) fn save_account(
     base_url: &str,
     api_key: Option<&str>,
 ) -> Result<(), String> {
-    check_base_url(base_url)?;
+    check_base_url(platform, base_url)?;
     let key = api_key.map(str::trim).filter(|s| !s.is_empty());
     if let Some(k) = key {
         crate::validate_api_key(k, "sk-")?;
@@ -502,7 +546,7 @@ pub(crate) fn clear_account(platform: &impl Platform) -> Result<(), String> {
 /// account: the engine pins the gateway URL at start, so one left up would
 /// keep rewriting traffic to the old environment under the new one's token.
 pub(crate) fn switch_gateway(platform: &impl Platform, base_url: &str) -> Result<(), String> {
-    check_base_url(base_url)?;
+    check_base_url(platform, base_url)?;
     platform
         .disconnect_all_managed()
         .map_err(|e| format!("{e:#}"))?;
@@ -579,7 +623,8 @@ fn reapply_codex_for_mode(platform: &impl Platform, mode: BillingMode) {
         relay_base_url: platform.relay_base_url(),
         engine_proxy_url: platform.engine_proxy_url(),
     };
-    if let Err(e) = integ.connect(&input) {
+    // Guarded as `connect_tool` is, for the same reason.
+    if let Err(e) = gate_connect_core::provider::unless_exiting(|| integ.connect(&input)) {
         eprintln!("re-applying Codex for the new billing mode failed: {e:#}");
     }
 }
@@ -1488,7 +1533,11 @@ pub(crate) fn exit(platform: &(impl Platform + App)) {
     // runs before the exit; by the time this runs the process is
     // going away and a notification would be a promise we cannot
     // keep.
-    if !platform.updater_relaunching() && platform.claim_quit_teardown() {
+    // An updater relaunch is the mark *and* the restart it promised: the mark
+    // alone is a quit that landed between `install()` and the restart
+    // (`exit_requested`).
+    let relaunching = platform.updater_relaunching() && platform.restart_requested();
+    if !relaunching && platform.claim_quit_teardown() {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             platform.disconnect_tools_for_quit()
         })) {
@@ -1523,11 +1572,31 @@ pub(crate) fn exit(platform: &(impl Platform + App)) {
     // strand it. An updater-driven relaunch is exempt - the app
     // comes right back, so the pending opt-out stays armed and
     // routing is restored exactly as the user left it.
-    if !platform.updater_relaunching() {
+    if !relaunching {
         platform.complete_pending_autostart_disable();
     }
     // Exit reverts the *system proxy* only. The routing intent is
     // not touched here, and must not be: see the doc above.
+}
+
+/// What `RunEvent::ExitRequested` does, on macOS and Windows: note that this
+/// exit is a restart, so `exit` can tell the updater's relaunch from a quit.
+///
+/// The updater mark goes on before `install()` and the restart comes after it,
+/// so a quit in between (Cmd+Q, the tray's Quit, a logout) used to exit with
+/// the mark set: `exit` skipped the sweep and the deferred opt-out, and no
+/// relaunch came to redo either, leaving tools on Gate's settings while the
+/// app was closed. The restart is the one exit that arrives as
+/// `RESTART_EXIT_CODE`, because `tauri-plugin-process`'s relaunch is
+/// `request_restart`. Cmd+Q and a logout raise no `ExitRequested` at all on
+/// macOS (they reach `RunEvent::Exit` straight from `applicationWillTerminate`),
+/// which is why the restart is noted rather than every other exit clearing
+/// the mark.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn exit_requested(platform: &impl Platform, code: Option<i32>) {
+    if code == Some(tauri::RESTART_EXIT_CODE) {
+        platform.note_restart_requested();
+    }
 }
 
 // ---- Windows ----
@@ -2224,6 +2293,35 @@ mod tests {
             switch_gateway(&platform, "not a url"),
             Err(e) if e.starts_with("invalid base url: ")
         ));
+    }
+
+    /// AG-1137. What a release build accepts as a gateway: the hosted three by
+    /// origin, or the one already on disk, and nothing else.
+    #[test]
+    fn a_release_build_accepts_only_the_listed_or_current_gateway() {
+        let ok = |url: &str, current: Option<&str>| {
+            gateway_allowed(&url::Url::parse(url).unwrap(), current)
+        };
+        for url in [
+            "https://gateway.constellationgate.ai",
+            "https://Gateway.constellationgate.ai/",
+            "https://gateway.constellationgate.ai:443",
+            "https://gateway-staging.constellationgate.ai",
+            "https://gateway-dev.constellationgate.ai",
+        ] {
+            assert!(ok(url, None), "{url}");
+        }
+        for url in [
+            "https://gate.example.com",
+            "https://gateway.constellationgate.ai.example.com",
+            "https://gateway.constellationgate.ai:8443",
+            "http://gateway.constellationgate.ai",
+            "https://evil.gateway.constellationgate.ai",
+        ] {
+            assert!(!ok(url, None), "{url}");
+            assert!(!ok(url, Some("https://other.example.com")), "{url}");
+        }
+        assert!(ok("https://gate.example.com/", Some(GATEWAY)));
     }
 
     /// A pasted key is trimmed, selects the API-key path, and replaces
@@ -3943,8 +4041,9 @@ mod tests {
         );
     }
 
-    /// The teardown runs once per process, and never for an updater relaunch,
-    /// which also keeps a pending launch-at-login opt-out armed.
+    /// The teardown runs once per process, and never for an updater relaunch
+    /// (the mark and the restart), which also keeps a pending launch-at-login
+    /// opt-out armed.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn exit_tears_down_once_and_not_for_an_updater_relaunch() {
@@ -3965,6 +4064,7 @@ mod tests {
 
         let platform = FakePlatform {
             updater_relaunching: std::sync::Mutex::new(Some(true)),
+            restart_requested: std::sync::Mutex::new(true),
             ..signed_in()
         };
         exit(&platform);
@@ -3979,6 +4079,58 @@ mod tests {
         assert!(
             !*platform.quit_claimed.lock().unwrap(),
             "an updater relaunch leaves the teardown unclaimed"
+        );
+    }
+
+    /// The updater mark without the restart is a quit that landed between
+    /// `install()` and the relaunch: it sweeps and completes the opt-out like
+    /// any other. Only the updater's own restart code notes a restart.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn an_updater_mark_without_the_restart_is_a_quit() {
+        for (code, restart) in [
+            (Some(tauri::RESTART_EXIT_CODE), true),
+            (Some(0), false),
+            (None, false),
+        ] {
+            let platform = FakePlatform::default();
+            exit_requested(&platform, code);
+            assert_eq!(
+                *platform.restart_requested.lock().unwrap(),
+                restart,
+                "{code:?}"
+            );
+        }
+
+        let platform = FakePlatform {
+            quit_claimed: std::sync::Mutex::new(true),
+            updater_relaunching: std::sync::Mutex::new(Some(true)),
+            ..signed_in()
+        };
+        exit(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "record_clean_exit",
+                "disable_engine_quietly",
+                "forget_engine_relay_port",
+                "complete_pending_autostart_disable",
+            ]
+        );
+        let platform = FakePlatform {
+            updater_relaunching: std::sync::Mutex::new(Some(true)),
+            ..signed_in()
+        };
+        exit(&platform);
+        assert_eq!(
+            platform.calls(),
+            [
+                "disconnect_tools_for_quit",
+                "record_clean_exit",
+                "disable_engine_quietly",
+                "forget_engine_relay_port",
+                "complete_pending_autostart_disable",
+            ]
         );
     }
 

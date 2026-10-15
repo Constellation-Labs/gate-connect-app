@@ -86,6 +86,15 @@ struct AccountFile {
     org_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     org_name: Option<String>,
+    /// A fresh random value written on every sign-in, by [`save`] with a key
+    /// and by [`stamp_sign_in`] after an OAuth login, once the secret is stored.
+    /// Non-secret, and carries no meaning of its own: it exists so this file's
+    /// bytes move on every sign-in, which is what makes them a sound
+    /// [`keychain::get_cached`] witness. Without it, signing in again with the
+    /// same gateway, mode and org wrote identical bytes, `write_file` skipped
+    /// the write, and another process holding a cached read never looked again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential_stamp: Option<String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -114,14 +123,13 @@ pub fn load() -> Result<Option<Account>> {
     // Witnessed by `account.json` rather than read outright: on Linux the
     // proxy manager calls this every 30 seconds to re-push the intercept
     // config, and a plain read there costs the secret-store daemon ~8 KB a
-    // time, permanently. `save` writes the file and the key in one breath, so
-    // in practice an unchanged file means an unchanged key - including a key
-    // written by the CLI while the app is running, which is the case a bare
-    // cache would miss. Not a proof: the file records only the key's first 12
-    // characters, so a rotation that collides on those and changes nothing
-    // else would go unseen until the next in-process write. Pick a stronger
-    // witness if you reuse this pattern on a value whose file records less.
-    // See `keychain::get_cached`.
+    // time, permanently. `save` writes the key and then the file, with a fresh
+    // `credential_stamp`, so an unchanged file means an unchanged key -
+    // including a key written by the CLI while the app is running, which is
+    // the case a bare cache would miss. Key first, file second: a read landing
+    // between them sees the old witness and is corrected when the file moves,
+    // where the other order could cache the old key under the new witness for
+    // good. See `keychain::get_cached`.
     let api_key = match file.auth_mode {
         AuthMode::OAuth => String::new(),
         AuthMode::ApiKey => {
@@ -147,6 +155,12 @@ pub fn load_base_url() -> Result<Option<String>> {
     Ok(read_account_file()?.map(|f| f.gateway_base_url))
 }
 
+/// The production gateway host. With [`STAGING_GATEWAY_HOST`] and
+/// [`DEV_GATEWAY_HOST`] it is the whole of `GATEWAY_SERVERS` in
+/// `src/lib/config.ts` outside a dev build, which is the list the desktop app's
+/// release build holds a gateway change to (AG-1137). Keep in sync with it.
+pub const PRODUCTION_GATEWAY_HOST: &str = "gateway.constellationgate.ai";
+
 /// The gateway host that marks the **staging** environment, which has its own
 /// Cognito pool (see [`crate::oauth::OAuthConfig::for_gateway`]). Every host
 /// other than this and [`DEV_GATEWAY_HOST`] (production, self-hosted, unknown,
@@ -163,8 +177,10 @@ pub const DEV_GATEWAY_HOST: &str = "gateway-dev.constellationgate.ai";
 /// on-disk half of the account (gateway URL + key prefix) that both the UI
 /// state helpers and [`save`] read without touching the keychain.
 /// The bytes of `account.json`, or `""` when there is no account file, for use
-/// as a [`keychain::get_cached`] witness. Login rewrites this file (URL, then
-/// auth mode, then org) and sign-out removes it, so it moves on exactly the
+/// as a [`keychain::get_cached`] witness. Every sign-in rewrites this file with
+/// a fresh `credential_stamp` after storing its secret ([`save`] with a key,
+/// [`stamp_sign_in`] after an OAuth login), even one that changes nothing else,
+/// and sign-out removes it, so it moves on exactly the
 /// transitions a cached credential must not outlive - including ones made by
 /// the CLI in another process. A token refresh does not touch it, which is the
 /// case [`crate::oauth::current`] documents as safe to miss.
@@ -263,6 +279,20 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         .unwrap_or_default();
     let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
     let org_name = existing.as_ref().and_then(|f| f.org_name.clone());
+    // The key goes in before the file that witnesses it, and a new key always
+    // gets a new stamp, so the file moves even when the same key is pasted
+    // again. A reader in another process that lands between the two writes
+    // sees the old witness and is corrected by the second; in the other order
+    // it could cache the old key under the new witness, and nothing would
+    // ever move it again. See `keychain::get_cached`.
+    let credential_stamp = match api_key {
+        Some(key) => {
+            let user = env::current_user()?;
+            keychain::set(&service(), &user, key)?;
+            Some(primitives::simple_uuid_v4()?)
+        }
+        None => existing.as_ref().and_then(|f| f.credential_stamp.clone()),
+    };
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
@@ -270,12 +300,10 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         billing_mode,
         org_id,
         org_name,
+        credential_stamp,
     })?;
 
     if let Some(key) = api_key {
-        let user = env::current_user()?;
-        keychain::set(&service(), &user, key)?;
-
         // Best-effort audit of the rotation. `key` is passed as the caller's
         // already-in-hand credential, not as the bearer: in OAuth mode the
         // gateway wants the Cognito token, and `audit::credential` picks by mode.
@@ -306,8 +334,8 @@ fn write_account_file(file: &AccountFile) -> Result<()> {
 }
 
 /// Dev-mode environment switch: point the account at a different gateway and
-/// forget the current Gate key so the user must enter an environment-appropriate
-/// one. Managed tools are disconnected by the command layer first (same as
+/// forget the current Gate key and OAuth session so the user must sign in to the
+/// new environment. Managed tools are disconnected by the command layer first (same as
 /// [`clear`]), since their config embeds the old gateway+key.
 pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     // Audit the repoint *before* anything is written, so the record lands at
@@ -325,6 +353,11 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
+                                          // And the OAuth bundle (AG-1137). Its token was issued by the old
+                                          // environment's pool, and kept it would be injected on every request to the
+                                          // new gateway, a host that has no business holding it. A delete, not a
+                                          // read, and the file write below moves the bundle's `get_cached` witness.
+    crate::oauth::clear()?;
     let file = read_account_file()?;
     let auth_mode = file.as_ref().map(|f| f.auth_mode).unwrap_or_default();
     // The billing mode is not environment-specific - it says who pays, not
@@ -333,6 +366,7 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     // The stored prefix named the key we just deleted, so drop it too. The org
     // is environment-specific, so a gateway switch clears it - the user re-picks
     // against the new environment after re-authenticating.
+    let credential_stamp = file.as_ref().and_then(|f| f.credential_stamp.clone());
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix: None,
@@ -340,8 +374,25 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
         billing_mode,
         org_id: None,
         org_name: None,
+        credential_stamp,
     })?;
     Ok(())
+}
+
+/// Give `account.json` a fresh `credential_stamp`, so its bytes move on a
+/// sign-in that changes nothing else in it - the same gateway, mode and org as
+/// before. Called by [`crate::oauth::login`] once the new bundle is stored: the
+/// file is the [`keychain::get_cached`] witness for that bundle, and another
+/// process holding a cached read (the app, after `gate-connect login --oauth`)
+/// only looks again when it moves. Not on a token refresh, which
+/// [`crate::oauth::current`] documents as safe to miss. Nothing to do when no
+/// account file exists yet: the write that creates it moves the witness.
+pub(crate) fn stamp_sign_in() -> Result<()> {
+    let Some(mut file) = read_account_file()? else {
+        return Ok(());
+    };
+    file.credential_stamp = Some(primitives::simple_uuid_v4()?);
+    write_account_file(&file)
 }
 
 /// Persist the selected organization (OAuth mode). `org_id` is the UUID
@@ -508,6 +559,9 @@ pub fn clear() -> Result<()> {
     // A full disconnect forgets every credential, so any OAuth tokens go too -
     // nothing is left behind in the secret store .
     crate::oauth::clear()?;
+    // So is any pending restore: it names the tools the account being cleared
+    // had routed, and the next sign-in's routing-on would reconnect them.
+    crate::provider::discard_restore()?;
     // The held activity reading belongs to the org that just went away. Best
     // effort, and after the credentials on purpose: a cache file that will not
     // delete must not be the reason a disconnect reports failure, and without a

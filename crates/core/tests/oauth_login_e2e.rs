@@ -13,6 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use gate_connect_core::oauth::{self, OAuthConfig};
+use gate_connect_core::{account, env};
 
 /// Serve exactly one canned JSON response on a loopback token endpoint.
 fn spawn_token_mock(response_body: &'static str) -> String {
@@ -56,6 +57,10 @@ fn interactive_login_captures_redirect_and_persists_tokens() {
     let secrets = temp_secrets_dir();
     std::env::set_var("GATE_CONNECT_TEST_TOKEN_ENDPOINT", &token_endpoint);
     std::env::set_var("GATE_CONNECT_TEST_SECRETS", &secrets);
+    // `login` restamps `account.json`, so it has to live somewhere disposable
+    // rather than at the developer's real one.
+    let data = secrets.join("data");
+    env::set_app_support_dir_for_tests(Some(data.clone()));
 
     let cfg = OAuthConfig {
         hosted_domain: "unused.in.tests".to_string(),
@@ -82,7 +87,10 @@ fn interactive_login_captures_redirect_and_persists_tokens() {
         Ok(())
     };
 
+    // What `gate-connect login --oauth` does before the browser round-trip.
+    account::save("https://gateway.example.com", None).expect("seed account");
     let tokens = oauth::login(&cfg, &[0], open_url).expect("login flow");
+    account::set_auth_mode(account::AuthMode::OAuth).expect("oauth mode");
     assert_eq!(tokens.access_token, "at-live");
     assert_eq!(tokens.refresh_token, "rt-live");
 
@@ -97,8 +105,30 @@ fn interactive_login_captures_redirect_and_persists_tokens() {
     // it if a later build resolves a different client (pool switch / upgrade).
     assert_eq!(stored.client_id, "client123");
 
+    // Signing in again to the same gateway, in the same mode, changes nothing
+    // else in `account.json`, and it still has to move: it is the witness for
+    // the cached bundle read, and the app only looks again when it does. This
+    // is `gate-connect login --oauth` run twice, as the app sees it.
+    let witness = || std::fs::read_to_string(data.join("account.json")).expect("account.json");
+    let before = witness();
+    std::env::set_var(
+        "GATE_CONNECT_TEST_TOKEN_ENDPOINT",
+        spawn_token_mock(
+            r#"{"access_token":"at-again","refresh_token":"rt-again","id_token":"it-again","expires_in":3600,"token_type":"Bearer"}"#,
+        ),
+    );
+    oauth::login(&cfg, &[0], open_url).expect("second login");
+    account::set_auth_mode(account::AuthMode::OAuth).expect("oauth mode again");
+    assert_ne!(
+        witness(),
+        before,
+        "a repeated sign-in must still move account.json, or another process \
+         keeps serving the bundle it cached before it"
+    );
+
     // Clean up the seams and temp dir.
     oauth::clear().ok();
+    env::set_app_support_dir_for_tests(None);
     std::env::remove_var("GATE_CONNECT_TEST_TOKEN_ENDPOINT");
     std::env::remove_var("GATE_CONNECT_TEST_SECRETS");
     std::fs::remove_dir_all(&secrets).ok();
