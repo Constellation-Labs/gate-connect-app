@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
@@ -731,6 +732,12 @@ fn engine_up_if_needed(integ: &dyn registry::Integration) -> bool {
 /// [`reconcile_unmapped_tools`]; they have no provider flag to read as intent,
 /// so they are never auto-*connected*.
 pub fn reconcile_enabled() -> Result<()> {
+    // Held across the whole pass, as [`restore_all`] holds it, so the exit
+    // sweep cannot run between a status read here and the connect it decides.
+    let _guard = master_flow_guard();
+    if exiting() {
+        return Ok(()); // the exit sweep has run; see [`EXITING`]
+    }
     let Some(account) = account::load()? else {
         return Ok(()); // no gateway configured yet - nothing to point tools at
     };
@@ -920,6 +927,30 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
     MASTER_FLOW_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Set by the exit sweep ([`snapshot_and_disable_everything_for_exit`]) while it
+/// holds [`MASTER_FLOW_LOCK`], and never cleared: once this process has started
+/// taking Gate out of every tool, nothing in it may put Gate back. Read under
+/// the same lock by [`restore_all`], [`restore_one`] and [`reconcile_enabled`],
+/// so a check either lands before the sweep (and the sweep undoes what it did)
+/// or after it (and does nothing).
+///
+/// The race it closes is the startup thread's (AG-1118). `routing::enable`
+/// runs `restore_all`, then the engine start, then `restore_all` again, and
+/// takes the lock once per pass rather than across the sequence. A quit while
+/// the engine was starting swept every tool, and the second pass then
+/// reconnected them all and cleared the swept-tools snapshot, so the process
+/// exited with tools pointed at a drained forwarder and no record to undo it.
+/// `reconcile_enabled` held no lock at all and could do the same at any point
+/// of the sweep. A restore skipped here leaves both snapshots on disk, which
+/// is what the next launch restores from.
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the exit sweep has started in this process. See [`EXITING`]; read
+/// it only with [`MASTER_FLOW_LOCK`] held.
+fn exiting() -> bool {
+    EXITING.load(Ordering::Acquire)
 }
 
 /// How long a quit waits for another routing operation before giving up on its
@@ -1197,6 +1228,8 @@ fn snapshot_and_disable_everything_within(wait: std::time::Duration) -> Result<Q
              back on their own settings"
         );
     };
+    // Before the sweep, under the guard: see [`EXITING`].
+    EXITING.store(true, Ordering::Release);
     Ok(snapshot_and_disable_everything_locked())
 }
 
@@ -1522,6 +1555,9 @@ fn revert_stranded_configs(read: fn() -> crate::proxy::QuitAddresses) -> Result<
 /// from each other in a way a "this is the final pass" flag could not.
 pub fn restore_all() -> Result<()> {
     let _guard = master_flow_guard();
+    if exiting() {
+        return Ok(()); // the exit sweep has run; see [`EXITING`]
+    }
     // Members that were off before routing stopped stay off; the family around
     // them comes back. See [`RESTORE_SKIP_MEMBERS`].
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
@@ -1819,6 +1855,9 @@ pub fn reapply_tool_config(slug: &str) -> Result<bool> {
 /// an unchanged pending list.
 pub fn restore_one(slug: &str) -> Result<()> {
     let _guard = master_flow_guard();
+    if exiting() {
+        return Ok(()); // the exit sweep has run; see [`EXITING`]
+    }
     let providers = load_snapshot(PROVIDER_SNAPSHOT)?;
     if providers.iter().any(|s| s == slug) {
         return restore_one_provider(slug, providers);
