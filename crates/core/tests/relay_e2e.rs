@@ -158,7 +158,7 @@ fn boot_engine_owned(
     gateway_base_url: String,
     oauth_token: &str,
     org_id: &str,
-    owner_uid: Option<u32>,
+    owner_uid: Option<engine::PeerOwner>,
 ) -> engine::RunningEngine {
     boot_engine_full(
         gateway_base_url,
@@ -173,7 +173,7 @@ fn boot_engine_full(
     gateway_base_url: String,
     oauth_token: &str,
     org_id: &str,
-    owner_uid: Option<u32>,
+    owner_uid: Option<engine::PeerOwner>,
     billing_mode: BillingMode,
 ) -> engine::RunningEngine {
     boot_engine_with(
@@ -191,7 +191,7 @@ fn boot_engine_with(
     api_key: &str,
     oauth_token: &str,
     org_id: &str,
-    owner_uid: Option<u32>,
+    owner_uid: Option<engine::PeerOwner>,
     billing_mode: BillingMode,
 ) -> engine::RunningEngine {
     let (ca_cert_pem, ca_key_pem) = mint_ca();
@@ -495,14 +495,15 @@ async fn relay_refuses_rebound_host_and_cross_site_origin() {
 
 /// A non-owner peer can't spend the host credential: with an `owner_uid` that
 /// can't match our connection, the relay drops the socket before serving, so
-/// the client sees a closed connection and nothing reaches the gateway. UID
-/// resolution is Linux-only, so the gate is only enforced (and tested) there.
-#[cfg(target_os = "linux")]
+/// the client sees a closed connection and nothing reaches the gateway. Only a
+/// UID can be made not to match from inside the test, so the refusal is tested
+/// on unix; Windows' negative half is `gate_connect_paths::peer`'s.
+#[cfg(unix)]
 #[tokio::test]
 async fn relay_refuses_non_owner_peer() {
     let gateway = start_mock_gateway().await;
-    // u32::MAX can never be our real UID, so `peer_uid_for` (our own loopback
-    // connection) resolves to a different value and the peer is refused. An
+    // u32::MAX can never be our real UID, so our own loopback connection
+    // resolves to a different value and the peer is refused. An
     // unresolvable UID (None) also fails closed, so either way this is refused.
     let engine = boot_engine_owned(
         gateway.base_url.clone(),
@@ -532,6 +533,47 @@ async fn relay_refuses_non_owner_peer() {
         gateway.captured.lock().unwrap().is_empty(),
         "nothing may reach the gateway when the peer is refused"
     );
+}
+
+/// The other half of the gate: a connection from the owner itself - this test
+/// process - is served. Unix names the owner by UID and Windows by this
+/// process's own user, so this is what proves each platform's peer resolution
+/// finds our own connection rather than failing closed on every peer.
+#[tokio::test]
+async fn relay_serves_the_owner_peer() {
+    #[cfg(unix)]
+    // SAFETY: geteuid never fails.
+    let owner = unsafe { libc::geteuid() };
+    #[cfg(windows)]
+    let owner = engine::PeerOwner;
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine_owned(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+        Some(owner),
+    );
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("x-gate-upstream-url", "https://api.anthropic.com")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("the owner's request should be served");
+
+    engine.stop();
+
+    assert!(
+        resp.status().is_success(),
+        "relay returned {}",
+        resp.status()
+    );
+    assert_eq!(gateway.captured.lock().unwrap().len(), 1);
 }
 
 /// Flipping interception off (the Linux daemon with no GUI connected) turns

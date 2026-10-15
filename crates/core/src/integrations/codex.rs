@@ -364,7 +364,8 @@ impl Integration for Codex {
                 block.insert("requires_openai_auth", value(true));
             }
         }
-        write_doc(&path, &doc)
+        write_doc(&path, &doc)?;
+        remove_catalog()
     }
 
     fn gate_model_state(&self) -> Result<GateModelState> {
@@ -743,6 +744,9 @@ impl Integration for Codex {
         }
 
         write_doc(&path, &doc)?;
+        if gate_models.is_none() {
+            remove_catalog()?;
+        }
 
         // What the user has to know, and the only tool in the registry where
         // it is about conversations rather than processes. See the module docs
@@ -839,13 +843,16 @@ impl Integration for Codex {
         // Write the restored config before removing the helper script: a
         // failed write must not leave config.toml pointing `[auth] command`
         // at a script that no longer exists.
-        if doc.as_table().is_empty() {
+        // A document with no keys can still hold the user's comments, which
+        // render; only one that renders as nothing is removed.
+        if doc.as_table().is_empty() && doc.to_string().trim().is_empty() {
             // Nothing of the user's - and no stub to preserve - is left;
             // remove the file rather than leave an empty one behind.
             crate::config_changes::remove_with_view(&path, routing_view)?;
         } else {
             write_doc(&path, &doc)?;
         }
+        remove_catalog()?;
 
         // Remove the legacy auth-helper script if an older Gate Connect
         // version left one behind - keep "zero residue" on disconnect.
@@ -917,7 +924,8 @@ fn active_profile_override(doc: &DocumentMut, source: &str) -> Option<Override> 
 }
 
 fn read_doc(path: &Path) -> Result<DocumentMut> {
-    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let raw = crate::config_changes::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
     raw.parse::<DocumentMut>()
         .with_context(|| format!("parsing {} as TOML", path.display()))
 }
@@ -1126,6 +1134,12 @@ fn is_managed_daemon_command(cmd: &[std::ffi::OsString]) -> bool {
             && rest.get(1).is_some_and(|a| *a == "pid-update-loop"))
 }
 
+/// Is a process owned by this user? An owner that cannot be read, on either
+/// side, is not a match: the process is skipped rather than trusted.
+fn same_owner<T: PartialEq>(owner: Option<&T>, me: Option<&T>) -> bool {
+    owner.zip(me).is_some_and(|(owner, me)| owner == me)
+}
+
 /// Whether Codex's managed app-server daemon loaded a config other than the one
 /// in place now, without restarting it. The test
 /// [`refresh_app_server_daemon`] applies, for a caller deciding whether a
@@ -1150,13 +1164,22 @@ fn daemon_state() -> DaemonState {
         ProcessRefreshKind::nothing()
             .without_tasks()
             .with_exe(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet),
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+            .with_user(UpdateKind::OnlyIfNotSet),
     );
+    // Only our own user's daemon: its executable is what a refresh runs, so
+    // another account's process must never supply it (AG-1136).
+    let me = sysinfo::get_current_pid()
+        .ok()
+        .and_then(|pid| sys.process(pid))
+        .and_then(|p| p.user_id());
     let daemon: Vec<(std::path::PathBuf, u64)> = sys
         .processes()
         .values()
         .filter(|p| {
-            is_codex_name(&p.name().to_string_lossy()) && is_managed_daemon_command(p.cmd())
+            same_owner(p.user_id(), me)
+                && is_codex_name(&p.name().to_string_lossy())
+                && is_managed_daemon_command(p.cmd())
         })
         .filter_map(|p| Some((p.exe()?.to_path_buf(), p.start_time())))
         .collect();
@@ -1428,6 +1451,14 @@ fn revert_gate_models(doc: &mut DocumentMut) -> Result<()> {
             m.remove(key);
         }
     }
+    Ok(())
+}
+
+/// Delete Gate's model catalog. Called only once the config that stops naming
+/// it is on disk: deleting it first left `config.toml` pointing at a missing
+/// file whenever that write failed.
+fn remove_catalog() -> Result<()> {
+    let ours_catalog = catalog_path()?;
     match fs::remove_file(&ours_catalog) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1632,6 +1663,17 @@ mod tests {
         ])));
         assert!(is_codex_name("codex") && is_codex_name("codex.exe") && is_codex_name("Codex.EXE"));
         assert!(!is_codex_name("codex-helper"));
+    }
+
+    /// AG-1136: the refresh runs the daemon's executable, so only a process
+    /// this user owns may supply it, and an unreadable owner is skipped.
+    #[test]
+    fn only_our_own_users_daemon_is_considered() {
+        assert!(same_owner(Some(&501u32), Some(&501u32)));
+        assert!(!same_owner(Some(&0u32), Some(&501u32)));
+        assert!(!same_owner(None, Some(&501u32)));
+        assert!(!same_owner(Some(&501u32), None));
+        assert!(!same_owner::<u32>(None, None));
     }
 
     /// AG-674's disagreement case for Codex. Our provider block and pointer are

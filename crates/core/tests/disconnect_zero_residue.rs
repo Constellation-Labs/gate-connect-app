@@ -489,6 +489,86 @@ fn claude_code_reconnect_with_our_values_in_place_leaves_the_file_alone() {
     );
 }
 
+/// A connect and a disconnect hand the user's `settings.json` back as it was:
+/// the same bytes, keys in the user's order rather than sorted, and the
+/// file's own mode rather than Gate's 0600.
+///
+/// The keys are deliberately out of alphabetical order, so a sorted write
+/// shows up as different bytes. Claude Code then adds two settings of its own
+/// while connected, after Gate's marker: `Map::remove` fills the marker's gap
+/// with the last of them, so taking the marker out on disconnect would swap
+/// the pair.
+#[test]
+fn claude_code_connect_then_disconnect_keeps_the_users_key_order_and_mode() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original = r#"{
+  "permissions": {
+    "deny": [],
+    "allow": [
+      "Bash(ls)"
+    ]
+  },
+  "model": "opus",
+  "env": {
+    "FOO": "bar",
+    "ANTHROPIC_BETAS": "some-user-owned-beta"
+  },
+  "alwaysThinkingEnabled": true
+}
+"#;
+    fs::write(&settings, original).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+    let connected = fs::read_to_string(&settings).unwrap();
+    let positions: Vec<usize> = [
+        "\"permissions\"",
+        "\"model\"",
+        "\"env\"",
+        "\"alwaysThinkingEnabled\"",
+    ]
+    .iter()
+    .map(|key| connected.find(key).unwrap())
+    .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "connect must keep the user's key order:\n{connected}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "connect must keep the file's own mode");
+    }
+
+    let added = "  \"outputStyle\": \"Explanatory\",\n  \"cleanupPeriodDays\": 30\n}\n";
+    let tool_edited = format!("{},\n{added}", connected.strip_suffix("\n}\n").unwrap());
+    fs::write(&settings, &tool_edited).unwrap();
+
+    claude.disconnect().unwrap();
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        format!("{},\n{added}", original.strip_suffix("\n}\n").unwrap()),
+        "disconnect must hand the file back as the user and the tool wrote it"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "disconnect must keep the file's own mode");
+    }
+}
+
 /// No CA on disk, no write at all.
 ///
 /// The pair is what makes this integration work, so half of it is not a

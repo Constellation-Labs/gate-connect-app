@@ -383,6 +383,12 @@ fn servable(prefs: &Preferences, slug: &str) -> Option<Vec<String>> {
 /// to open Settings because a preferences file was hand-edited would be a worse
 /// failure than quietly showing the documented defaults. Nothing here is a
 /// credential, so there is no security consequence to the fallback.
+///
+/// **Readers only.** The setters go through [`load_for_write`] instead, because
+/// the fallback is only harmless while nothing saves it: a setter that loaded
+/// defaults here would write them back over every field it did not change,
+/// and the file now holds model choices, the paid-use acknowledgement and the
+/// domains Gate switched on (AG-1126).
 pub fn load() -> Preferences {
     let Ok(path) = config_path() else {
         return Preferences::default();
@@ -391,6 +397,33 @@ pub fn load() -> Preferences {
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
+}
+
+/// [`load`] for a read-modify-write: defaults only when there is no file yet.
+///
+/// A file that exists and cannot be read or parsed - a transient `EIO`, a
+/// typo, a variant a newer build wrote before a downgrade - is an error, so the
+/// setter fails and the file is left exactly as it was. Saving defaults over it
+/// would lose `tool_models`, `gate_model_paid_ack_unix`, the device name and
+/// `auto_enabled_domains`, and losing the last strands domains on with no
+/// record to turn them off. Failing is chosen over moving the file aside and
+/// writing anyway because the aside copy would be just as lost to every reader:
+/// the error keeps the data in force and tells the person something is wrong.
+fn load_for_write() -> Result<Preferences> {
+    let path = config_path()?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Preferences::default());
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "parsing {}; leaving it untouched rather than overwriting it with defaults",
+            path.display()
+        )
+    })
 }
 
 /// Write the preferences. 0644 - non-secret, and the CLI reads the same file.
@@ -433,7 +466,7 @@ pub fn reset_cache_for_tests() {
 /// only knows about one switch cannot clobber a field it has never heard of.
 pub fn set_notifications(enabled: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.notifications = enabled;
     save_locked(&prefs)
 }
@@ -445,7 +478,7 @@ pub fn set_notifications(enabled: bool) -> Result<()> {
 /// departure rather than accumulating.
 pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.signed_out_deliberately = deliberate;
     save_locked(&prefs)
 }
@@ -453,7 +486,7 @@ pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
 /// Turn the sound on those notifications on or off.
 pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.security_notification_sound = enabled;
     save_locked(&prefs)
 }
@@ -467,7 +500,7 @@ pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
 /// and treating it as unanswered would ask again on the next launch.
 pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.share_diagnostics = enabled;
     prefs.share_diagnostics_recorded = true;
     save_locked(&prefs)
@@ -486,7 +519,7 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
 /// not grow a row per tool that never needed one.
 pub fn record_auto_enabled_domains(tool: &str, domains: Vec<String>) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     if domains.is_empty() {
         prefs.auto_enabled_domains.remove(tool);
     } else {
@@ -540,7 +573,7 @@ pub fn set_tool_model(
     meta: Vec<(String, GateModelMeta)>,
 ) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.gate_model_meta.extend(meta);
     if source == ModelSource::Gate
         && acknowledge_paid_use
@@ -564,7 +597,7 @@ pub fn set_tool_model(
 /// spends nothing.
 pub fn fall_back_to_tool_model(slug: &str) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     let Some(choice) = prefs.tool_models.get_mut(slug) else {
         return Ok(());
     };
@@ -587,7 +620,7 @@ pub fn gate_model_meta(id: &str) -> Option<GateModelMeta> {
 /// machine, and it is the state a user reaches by deleting the text.
 pub fn set_device_name(name: &str) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.device_name = device_name_override(name);
     save_locked(&prefs)
 }

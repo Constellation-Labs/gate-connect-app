@@ -54,8 +54,13 @@ pub fn enable() -> Result<(ProxyState, Vec<Warning>)> {
     // engine that cannot bind), the forwarder is what keeps those tools
     // answering, direct, rather than pointed at nothing. Only logged: the
     // enable repeats this start and reports a failure its own way.
+    //
+    // Under the routing lock and refused once a quit's sweep has begun: that
+    // sweep drains the forwarder, and a startup enable reaching this line
+    // after it would start one again to outlive the app (AG-1118). The
+    // engine's own start below refuses on the exit's mark already.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    if let Err(e) = proxy::forwarder::ensure_running() {
+    if let Err(e) = provider::unless_exiting(proxy::forwarder::ensure_running) {
         eprintln!("gate proxy: starting the forwarder before the restore failed: {e:#}");
     }
     // Restore every provider that was on when routing was last turned off -

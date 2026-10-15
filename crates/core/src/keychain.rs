@@ -83,10 +83,23 @@ fn mem_key(service: &str, account: &str) -> String {
 /// (file-seam, in-memory, native OS store) live here.
 fn set_raw(service: &str, account: &str, value: &str) -> Result<()> {
     if let Some(dir) = test_secrets_dir() {
-        std::fs::create_dir_all(&dir)
+        // Owner-only, directory and files both: these are real secrets in
+        // plaintext (a staging key, the OAuth bundle), and `ci/dev-app.sh`'s
+        // `chmod 700` only covers the default directory, not one the seam is
+        // pointed at by hand. The directory mode applies only to the levels
+        // this creates. Windows keeps its default ACL.
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&dir)
             .with_context(|| format!("creating test secret store {}", dir.display()))?;
         let path = secret_file(&dir, service, account);
-        return std::fs::write(&path, value)
+        return crate::primitives::write_file(&path, value.as_bytes(), 0o600)
             .with_context(|| format!("writing test secret {}", path.display()));
     }
     {

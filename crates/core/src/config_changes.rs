@@ -62,7 +62,23 @@
 //! keeps is judged stale, which is what the single stamp said about it too.
 //!
 //! Keyed by the path as displayed, which is the form `config_location` returns.
+//!
+//! **A tool's own edit is not overwritten.** Gate edits a tool's file by
+//! reading it, changing its own keys and writing the whole file back, and the
+//! tool writes the same file whenever it likes: Claude Code on a permission
+//! grant or `/model`, Codex on a project trust answer. An edit that lands
+//! between Gate's read and its write was lost. Neither side can take a lock the
+//! other honours, so [`guarded`] narrows the window and notices it instead:
+//! inside it, the first [`read_to_string`] of a path remembers what was read,
+//! every write and removal compares the file with that just before it lands -
+//! after the tempfile is synced, immediately ahead of the rename - and a file
+//! that moved abandons the write and runs the whole operation again on what is
+//! there now. Every integration's `connect`, `disconnect` and
+//! `leave_gate_models` runs inside it ([`crate::registry`]), and they are
+//! idempotent, which is what makes running one again safe. What is left is the
+//! instant between that comparison and the rename.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -111,11 +127,142 @@ impl Stored {
     }
 }
 
+/// Attempts [`guarded`] makes at an operation before it gives up and returns
+/// the [`ConcurrentEdit`]. A tool rewrites its file on a user's action, so a
+/// second collision in a row is already unusual and a third means something is
+/// rewriting the file continuously.
+const MAX_ATTEMPTS: usize = 3;
+
+/// A tool's configuration changed between Gate reading it and Gate writing it
+/// back, so the write was abandoned rather than overwriting the change.
+#[derive(Debug)]
+pub struct ConcurrentEdit {
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for ConcurrentEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} changed while Gate was updating it; try again",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for ConcurrentEdit {}
+
+thread_local! {
+    /// What each path held when the running [`guarded`] operation first read
+    /// it (`None` for a file that was not there), kept current with Gate's own
+    /// writes. `None` outside an operation, where nothing is remembered and
+    /// nothing is checked.
+    static READ: RefCell<Option<BTreeMap<PathBuf, Option<Vec<u8>>>>> =
+        const { RefCell::new(None) };
+}
+
+/// Run `op`, which reads tool configurations and writes them back, so that a
+/// tool's edit landing in between is kept: the write that would overwrite it
+/// fails with [`ConcurrentEdit`], and `op` runs again from a fresh read, up to
+/// [`MAX_ATTEMPTS`] times. Nested calls run inside the outer one, which owns
+/// the retry.
+pub(crate) fn guarded<T>(mut op: impl FnMut() -> Result<T>) -> Result<T> {
+    if READ.with(|read| read.borrow().is_some()) {
+        return op();
+    }
+    let mut attempt = 1;
+    loop {
+        let result = {
+            let _scope = Scope::enter();
+            op()
+        };
+        match result {
+            Err(e) if attempt < MAX_ATTEMPTS && is_concurrent_edit(&e) => attempt += 1,
+            other => return other,
+        }
+    }
+}
+
+/// Clears what [`guarded`] remembered when the operation ends, however it ends.
+struct Scope;
+
+impl Scope {
+    fn enter() -> Self {
+        READ.with(|read| *read.borrow_mut() = Some(BTreeMap::new()));
+        Scope
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        READ.with(|read| *read.borrow_mut() = None);
+    }
+}
+
+fn is_concurrent_edit(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| cause.is::<ConcurrentEdit>())
+}
+
+/// [`fs::read_to_string`] for a tool configuration Gate is about to edit:
+/// inside [`guarded`], the first read of a path is what its write is checked
+/// against. A missing file is remembered as missing.
+pub(crate) fn read_to_string(path: &Path) -> std::io::Result<String> {
+    let body = fs::read_to_string(path);
+    match &body {
+        Ok(body) => remember_first(path, Some(body.as_bytes())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => remember_first(path, None),
+        Err(_) => {}
+    }
+    body
+}
+
+fn remember_first(path: &Path, seen: Option<&[u8]>) {
+    READ.with(|read| {
+        if let Some(read) = read.borrow_mut().as_mut() {
+            read.entry(path.to_path_buf())
+                .or_insert_with(|| seen.map(<[u8]>::to_vec));
+        }
+    });
+}
+
+/// Gate's own write is the new baseline for the rest of the operation.
+fn remember_written(path: &Path, written: Option<&[u8]>) {
+    READ.with(|read| {
+        if let Some(read) = read.borrow_mut().as_mut() {
+            read.insert(path.to_path_buf(), written.map(<[u8]>::to_vec));
+        }
+    });
+}
+
+/// Fail with [`ConcurrentEdit`] if `path` no longer holds what the operation
+/// read. A path it never read through [`read_to_string`] is not checked.
+fn unchanged_since_read(path: &Path) -> Result<()> {
+    let Some(expected) = READ.with(|read| {
+        read.borrow()
+            .as_ref()
+            .and_then(|read| read.get(path).cloned())
+    }) else {
+        return Ok(());
+    };
+    let now = match fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    if now != expected {
+        return Err(anyhow::Error::new(ConcurrentEdit {
+            path: path.to_path_buf(),
+        }));
+    }
+    Ok(())
+}
+
 /// Write a tool configuration, recording the change when the bytes differ from
 /// what is on disk. The routing view is the whole file; a tool that edits its
 /// own file goes through [`write_with_view`] instead. Identical bytes still go
-/// through [`crate::primitives::write_file`], which leaves the content alone
-/// and only corrects the mode.
+/// through [`crate::primitives::write_file`], which leaves the content alone.
+/// `mode` applies to a file Gate creates; one that exists keeps its own
+/// ([`kept_mode`]).
 pub(crate) fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     write_with_view(path, bytes, mode, whole_file)
 }
@@ -129,8 +276,10 @@ pub(crate) fn write_with_view(
     mode: u32,
     view: fn(&[u8]) -> Vec<u8>,
 ) -> Result<()> {
+    let mode = kept_mode(path, mode);
     let current = fs::read(path).ok();
-    crate::primitives::write_file(path, bytes, mode)?;
+    crate::primitives::write_file_checked(path, bytes, mode, || unchanged_since_read(path))?;
+    remember_written(path, Some(bytes));
     if current.as_deref() != Some(bytes) {
         record(
             path,
@@ -154,7 +303,9 @@ pub(crate) fn remove_with_view(path: &Path, view: fn(&[u8]) -> Vec<u8>) -> Resul
         return Ok(());
     }
     let current = fs::read(path).unwrap_or_default();
+    unchanged_since_read(path)?;
     fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+    remember_written(path, None);
     record(path, &view(&current), &view(b""));
     Ok(())
 }
@@ -162,6 +313,27 @@ pub(crate) fn remove_with_view(path: &Path, view: fn(&[u8]) -> Vec<u8>) -> Resul
 /// The routing view of a tool that acts on its whole file.
 pub(crate) fn whole_file(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
+}
+
+/// The mode a tool's file keeps across Gate's write: the one it has, or `mode`
+/// when there is no file yet. The file is the user's, and so is its mode -
+/// Gate's own values in it are routing settings, not credentials (the relay
+/// injects the key per request), so a tool's 0644 is no reason to tighten it,
+/// and a disconnect especially should leave nothing of Gate's behind.
+/// Resolved through a symlink, as [`crate::primitives::write_file`] writes.
+pub(crate) fn kept_mode(path: &Path, mode: u32) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|meta| meta.permissions().mode() & 0o7777)
+            .unwrap_or(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        mode
+    }
 }
 
 /// Gate's changes to the file at `path`, oldest first. Empty when it has no
@@ -393,5 +565,127 @@ mod tests {
                 view: Some("x".into())
             }]
         );
+    }
+
+    /// A temp `GATE_CONNECT_TEST_HOME`, so the change record these writes keep
+    /// lands there rather than in the real app-support directory, and a tool
+    /// file inside it holding `body`.
+    struct ToolFile {
+        home: PathBuf,
+        path: PathBuf,
+        prev: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ToolFile {
+        fn new(name: &str, body: &str) -> Self {
+            let lock = crate::env::path_env_lock();
+            let home = std::env::temp_dir()
+                .join(format!("gate-config-changes-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&home);
+            fs::create_dir_all(&home).unwrap();
+            let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+            std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+            let path = home.join("settings.txt");
+            fs::write(&path, body).unwrap();
+            ToolFile {
+                home,
+                path,
+                prev,
+                _lock: lock,
+            }
+        }
+
+        fn body(&self) -> String {
+            fs::read_to_string(&self.path).unwrap()
+        }
+    }
+
+    impl Drop for ToolFile {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+                None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
+
+    /// The race in the ticket: the tool rewrites its file after Gate read it
+    /// and before Gate's write lands. Gate's write is abandoned, the operation
+    /// runs again on what the tool wrote, and the file ends with both edits.
+    #[test]
+    fn a_tool_edit_between_read_and_write_is_kept() {
+        let file = ToolFile::new("kept", "user\n");
+        let mut attempts = 0;
+        guarded(|| {
+            attempts += 1;
+            let body = read_to_string(&file.path)?;
+            if attempts == 1 {
+                fs::write(&file.path, format!("{body}tool\n")).unwrap();
+            }
+            write(&file.path, format!("{body}gate\n").as_bytes(), 0o600)
+        })
+        .unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(file.body(), "user\ntool\ngate\n");
+    }
+
+    /// A file that changes under every attempt is left as the tool last wrote
+    /// it, and the caller is told why.
+    #[test]
+    fn a_file_that_keeps_changing_is_left_to_the_tool() {
+        let file = ToolFile::new("busy", "user\n");
+        let mut attempts = 0;
+        let result = guarded(|| {
+            attempts += 1;
+            let body = read_to_string(&file.path)?;
+            fs::write(&file.path, format!("{body}tool {attempts}\n")).unwrap();
+            write(&file.path, format!("{body}gate\n").as_bytes(), 0o600)
+        });
+        let err = result.unwrap_err();
+        assert!(is_concurrent_edit(&err), "{err:#}");
+        assert_eq!(attempts, MAX_ATTEMPTS);
+        assert!(!file.body().contains("gate"), "{}", file.body());
+    }
+
+    /// A removal checks the same way: a file Gate would delete as holding
+    /// nothing but its own lines is kept once the tool has added one.
+    #[test]
+    fn a_removal_does_not_take_a_tool_edit_with_it() {
+        let file = ToolFile::new("remove", "gate\n");
+        let mut attempts = 0;
+        guarded(|| {
+            attempts += 1;
+            let body = read_to_string(&file.path)?;
+            if attempts == 1 {
+                fs::write(&file.path, "gate\ntool\n").unwrap();
+            }
+            match body.as_str() {
+                "gate\n" => remove(&file.path),
+                _ => write(&file.path, body.replace("gate\n", "").as_bytes(), 0o600),
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(file.body(), "tool\n");
+    }
+
+    /// Gate's own write is the baseline for the rest of the operation, so a
+    /// second write to the same file is not mistaken for someone else's.
+    #[test]
+    fn gate_writing_one_file_twice_is_not_a_conflict() {
+        let file = ToolFile::new("twice", "user\n");
+        let mut attempts = 0;
+        guarded(|| {
+            attempts += 1;
+            let body = read_to_string(&file.path)?;
+            write(&file.path, format!("{body}one\n").as_bytes(), 0o600)?;
+            let body = read_to_string(&file.path)?;
+            write(&file.path, format!("{body}two\n").as_bytes(), 0o600)
+        })
+        .unwrap();
+        assert_eq!(attempts, 1);
+        assert_eq!(file.body(), "user\none\ntwo\n");
     }
 }
