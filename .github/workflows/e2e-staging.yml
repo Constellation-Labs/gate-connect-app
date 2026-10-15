@@ -1,0 +1,189 @@
+name: E2E (staging evidence)
+
+# AG-907: send marked requests through Gate Connect's relay to the staging
+# gateway on all three OS, then ask staging for each marker and assert it
+# landed as the right user, org and source, with harness detection and a
+# verdict, and that the org's counts agree.
+#
+# Until the staging side lands (AG-1102 to AG-1105) this runs the MOCK backend:
+# the relay forwards to ci/e2e/mock-gateway.mjs with MOCK_EVIDENCE=1, which
+# records what the gateway would store and serves the two reads. The job
+# summary says which backend ran. ci/e2e/staging/relay-run.sh has the flow and
+# ci/e2e/staging/backends/staging.mjs the two TODOs.
+#
+# Turning staging on is configuration:
+#   1. AG-1103 puts GATE_STAGING_API_KEY, GATE_STAGING_ORG_ID and
+#      GATE_STAGING_USER_ID on the `staging-e2e` environment (placeholder name,
+#      to be confirmed there), with a deployment policy that admits the default
+#      branch and v* tags only;
+#   2. AG-1104 and AG-1105 fill in the two reads;
+#   3. the repository variable GATE_STAGING_E2E is set to `on`.
+# With the variable on and a secret missing, the run fails as a config error
+# rather than quietly falling back to the mock.
+#
+# Never on pull_request, and never in a fork: the staging key must not be
+# reachable from code a PR author controls, and the job checks the repository.
+# AC6: every URL the checker or the sign-in uses passes
+# ci/e2e/staging/lib/host-guard.mjs, which allows the staging hosts only.
+on:
+  # A release tag always runs; the guard below never skips it (AC5).
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run even if this commit already passed (AG-902 guard)
+        type: boolean
+        default: false
+      backend:
+        description: auto uses staging once it is switched on (GATE_STAGING_E2E=on), else the mock
+        type: choice
+        options: [auto, mock]
+        default: auto
+  # Nightly, half an hour after real-tools. GitHub fires `schedule` from the
+  # default branch only, so this starts when it reaches main.
+  schedule:
+    - cron: '30 6 * * *'
+
+permissions:
+  contents: read
+
+# Must match ci.yml's, or the shared Rust cache below misses.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  # AG-902's run guard (ci/run-guard.sh), as in e2e-real-tools.yml: schedule
+  # and workflow_dispatch are guarded, a v* tag never is. The suite runs unless
+  # the guard says exactly "false", so a guard that errors fails open.
+  guard:
+    name: run guard
+    if: github.repository == 'Constellation-Labs/gate-connect-app'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.guard.outputs.run || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        with:
+          sparse-checkout: ci/run-guard.sh
+          sparse-checkout-cone-mode: false
+      - name: Decide
+        id: guard
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_FILE: e2e-staging.yml
+          # feat/new-app-ui until #151 merges, then main, as in e2e-real-tools.yml.
+          GUARD_BRANCH: feat/new-app-ui
+          HEAD_SHA: ${{ github.sha }}
+          SUITE_JOB_PREFIX: 'staging evidence ('
+          FORCE: ${{ inputs.force == true }}
+        run: bash ci/run-guard.sh
+
+  evidence:
+    name: staging evidence (${{ matrix.os }})
+    needs: guard
+    if: >-
+      !cancelled() && needs.guard.result == 'success' && needs.guard.outputs.run != 'false' &&
+      github.repository == 'Constellation-Labs/gate-connect-app' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+    environment: staging-e2e
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+      # The CLI is a subset of what ci.yml's `rust` job builds; restore its cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}
+          save-if: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+
+      - name: Unit tests (checker and outcome classification)
+        shell: bash
+        run: node --test ci/e2e/staging/test/
+
+      - name: Build gate-connect CLI
+        run: cargo build --locked -p gate-connect-cli
+
+      # Which backend, said once, in the summary. Staging only when it has been
+      # switched on; then a missing secret is an error, not a fallback.
+      - name: Choose backend
+        id: backend
+        shell: bash
+        env:
+          ENABLED: ${{ vars.GATE_STAGING_E2E == 'on' }}
+          REQUESTED: ${{ inputs.backend || 'auto' }}
+          HAS_KEY: ${{ secrets.GATE_STAGING_API_KEY != '' }}
+          HAS_ORG: ${{ secrets.GATE_STAGING_ORG_ID != '' }}
+          HAS_USER: ${{ secrets.GATE_STAGING_USER_ID != '' }}
+        run: |
+          if [ "$REQUESTED" = mock ]; then
+            backend=mock; why="the mock backend was asked for"
+          elif [ "$ENABLED" = true ]; then
+            if [ "$HAS_KEY" != true ] || [ "$HAS_ORG" != true ] || [ "$HAS_USER" != true ]; then
+              echo "::error::GATE_STAGING_E2E is on but the staging-e2e environment lacks GATE_STAGING_API_KEY, GATE_STAGING_ORG_ID or GATE_STAGING_USER_ID (AG-1103)"
+              exit 2
+            fi
+            backend=staging; why="staging is switched on"
+          else
+            backend=mock; why="staging is not switched on yet: it waits on AG-1102 to AG-1105 (secrets, and the two reads)"
+          fi
+          echo "backend=$backend" >>"$GITHUB_OUTPUT"
+          echo "Backend: **$backend** on ${{ matrix.os }}, because $why." >>"$GITHUB_STEP_SUMMARY"
+          [ "$backend" = mock ] && echo "This run proves Gate Connect's side against a mock. It proves nothing about staging." >>"$GITHUB_STEP_SUMMARY"
+          echo "backend: $backend ($why)"
+
+      # Exit codes are the checker's: 0 pass, 1 routing failure, 2 config
+      # error, 3 staging unreachable (AC4), each named in the annotation.
+      - name: Send marked requests and check the evidence
+        shell: bash
+        timeout-minutes: 15
+        env:
+          E2E_BACKEND: ${{ steps.backend.outputs.backend }}
+          OUT: ${{ github.workspace }}/staging-e2e-out
+          GATE_STAGING_API_KEY: ${{ steps.backend.outputs.backend == 'staging' && secrets.GATE_STAGING_API_KEY || '' }}
+          GATE_STAGING_ORG_ID: ${{ steps.backend.outputs.backend == 'staging' && secrets.GATE_STAGING_ORG_ID || '' }}
+          GATE_STAGING_USER_ID: ${{ steps.backend.outputs.backend == 'staging' && secrets.GATE_STAGING_USER_ID || '' }}
+        run: |
+          rc=0
+          bash ci/e2e/staging/relay-run.sh || rc=$?
+          case "$rc" in
+            0) ;;
+            1) echo "::error::routing failure: staging answered and a request is missing or landed wrong" ;;
+            2) echo "::error::config error: the run could not prove anything either way" ;;
+            3) echo "::error::staging unreachable: a gateway outage, not a Gate Connect break" ;;
+            *) echo "::error::the run died with exit $rc" ;;
+          esac
+          echo "Outcome on ${{ matrix.os }}: exit $rc" >>"$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-e2e-${{ matrix.os }}
+          path: staging-e2e-out/
+          if-no-files-found: ignore
+          retention-days: 30
