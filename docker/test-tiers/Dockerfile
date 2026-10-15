@@ -94,7 +94,30 @@ RUN useradd -m -u 1000 tester \
 # which the container runtime creates and no image can ship, and a PID 1 that
 # is not the host's init.
 ENV GATE_CONNECT_E2E_CONTAINER=1
+# The Secret Service, made race-free. The signin script starts
+# `gnome-keyring-daemon --unlock` and probes it with secret-tool right away.
+# When the probe wins the race for the bus name, D-Bus activates a second
+# daemon. That daemon finds a half-written login.keyring, asks the prompter
+# for a password, and waits forever on a display nobody watches (seen on
+# ubuntu-latest). So any daemon D-Bus activates starts unlocked with the same
+# password, and the prompter is gone, so a prompt fails at once instead of
+# hanging.
+RUN printf '%s\n' '[D-BUS Service]' 'Name=org.freedesktop.secrets' \
+      "Exec=/bin/sh -c 'printf e2e | exec /usr/bin/gnome-keyring-daemon --foreground --unlock --components=secrets'" \
+      >/usr/share/dbus-1/services/org.freedesktop.secrets.service \
+ && rm -f /usr/share/dbus-1/services/org.gnome.keyring.SystemPrompter.service \
+          /usr/share/dbus-1/services/org.gnome.keyring.PrivatePrompter.service
 COPY app-entry.sh /usr/local/bin/app-entry.sh
 USER tester
+# And a complete login keyring (password "e2e", the script's) already on disk,
+# so no daemon ever reads one mid-write.
+RUN dbus-run-session -- sh -c '\
+      eval "$(printf e2e | gnome-keyring-daemon --unlock --components=secrets)"; \
+      for i in $(seq 1 50); do \
+        gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+          --method org.freedesktop.DBus.NameHasOwner org.freedesktop.secrets | grep -q true && break; \
+        sleep 0.1; done; \
+      printf seed | secret-tool store --label=seed gc-app-e2e seed && secret-tool clear gc-app-e2e seed' \
+ && test -s /home/tester/.local/share/keyrings/login.keyring
 WORKDIR /home/tester
 ENTRYPOINT ["/usr/local/bin/app-entry.sh"]

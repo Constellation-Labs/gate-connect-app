@@ -26,5 +26,14 @@ export OUT="${OUT:-/out}"
 cd "$SRC"
 # Not exec'd: xvfb-run as PID 1 waits forever for Xvfb's readiness signal.
 # scripts/test-tiers.sh also passes --init, so PID 1 is docker-init.
-xvfb-run -a -s "-screen 0 1440x900x24" dbus-run-session -- \
-  bash ci/e2e/app/windows-linux-signin.sh
+# Bounded, so a hang reads as a failure with the step it reached, not as a
+# CI job that times out with nothing said. The signin takes about a minute
+# natively and two under emulation.
+LIMIT="${GC_APP_TIER_TIMEOUT:-900}"
+rc=0
+timeout -k 10 "$LIMIT" xvfb-run -a -s "-screen 0 1440x900x24" dbus-run-session -- \
+  bash ci/e2e/app/windows-linux-signin.sh || rc=$?
+if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+  echo "app e2e (linux) timed out after ${LIMIT}s; the last ::group:: above is the step it was in" >&2
+fi
+exit "$rc"
