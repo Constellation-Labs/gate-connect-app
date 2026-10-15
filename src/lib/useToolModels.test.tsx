@@ -287,5 +287,30 @@ describe("useToolModels", () => {
     // And the stale view did not replace the newer one.
     expect(h.latest().view?.configured.get("codex")).toBeUndefined();
   });
+
+  it("does not carry a drift report from a read sent for the previous account", async () => {
+    // The overtaken-read rule above holds within one account. A read sent
+    // before the credential changed says nothing about the new account, and
+    // its report must not land on that account's pane after the reset.
+    let resolveOld: (v: unknown) => void = () => undefined;
+    readCall
+      .mockImplementationOnce(() => new Promise((r) => (resolveOld = r)))
+      .mockResolvedValueOnce(payload("tool", ["openai/gpt-5"]));
+    let credential = "a";
+    function Probe() {
+      latest = useToolModels(true, credential);
+      return null;
+    }
+    let latest: ReturnType<typeof useToolModels> | null = null;
+    const view = render(<Probe />);
+    credential = "b";
+    view.rerender(<Probe />);
+    await flush();
+
+    await act(async () => {
+      resolveOld(payload("tool", ["openai/gpt-5"], null, leftTo("gpt-6-sol")));
+    });
+    expect(latest!.leftGateModels.has("codex")).toBe(false);
+  });
 });
 
