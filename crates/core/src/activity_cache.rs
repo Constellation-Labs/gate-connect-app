@@ -88,6 +88,18 @@ struct CacheFile {
 /// for it again.
 static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// How many times [`clear`] has run in this process. A [`Scope`] carries the
+/// value it was taken under, and [`store_for`] refuses one taken before the
+/// latest clear.
+///
+/// The account string alone cannot say this. Signing out leaves `account.json`
+/// in place - gateway, auth mode and org all stay - so a read that went out
+/// before the sign-out comes back to a scope byte-identical to the one it was
+/// asked for, and would refill the file the sign-out just emptied with the
+/// signed-out org's counts. A clear means "what was asked for before this is no
+/// longer wanted", whatever the account file says.
+static CLEAR_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// What an empty half of a key means: no filter. Cannot collide with a slug or
 /// an installation id.
 const UNFILTERED: &str = "";
@@ -131,12 +143,22 @@ fn config_path() -> Result<PathBuf> {
 /// Opaque on purpose: the only things to do with one are to hand it to
 /// [`store_for`] and to compare it with the account as it is now.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scope(String);
+pub struct Scope {
+    account: String,
+    /// [`CLEAR_GENERATION`] when this was taken.
+    generation: u64,
+}
 
 /// The account as it is now, for a caller about to ask the gateway. `None` when
 /// there is none, which is also when there is nothing to hold a reading under.
 pub fn scope_now() -> Option<Scope> {
-    scope().map(Scope)
+    // The generation first: a clear landing between the two reads then makes
+    // this scope stale rather than current.
+    let generation = CLEAR_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+    scope().map(|account| Scope {
+        account,
+        generation,
+    })
 }
 
 /// Which reading this is: everything that changes what the gateway would answer.
@@ -203,12 +225,16 @@ pub fn store_for(taken: &Scope, install_id: Option<&str>, clients: &[&str], body
     // Held for the duration of the read-modify-write, not just the write: two
     // threads that both read this file before either writes lose one insert.
     // And taken before the comparison, so a scope cannot change between the
-    // check and the write.
+    // check and the write. [`clear`] takes it too, so a clear cannot land
+    // between the generation check and the write either.
     let _lock = STORE_LOCK.lock();
-    if scope().as_deref() != Some(taken.0.as_str()) {
+    if CLEAR_GENERATION.load(std::sync::atomic::Ordering::Acquire) != taken.generation {
         return;
     }
-    let scope = taken.0.clone();
+    if scope().as_deref() != Some(taken.account.as_str()) {
+        return;
+    }
+    let scope = taken.account.clone();
     // Merged into whatever this scope already holds, so one tool's read does not
     // evict the others - the whole point of the map. A file from another scope is
     // replaced rather than merged into: its readings belong to an org the user
@@ -290,7 +316,12 @@ pub fn load_tools(install_id: Option<&str>) -> BTreeMap<String, String> {
 /// Forget the held reading. Called when the account goes away: a disconnect or a
 /// reset must not leave one org's figures on disk for the next person to sign in
 /// on this machine to see flash past.
+///
+/// Also retires every [`Scope`] taken before it, so a read still in flight
+/// cannot put the readings back (see [`CLEAR_GENERATION`]).
 pub fn clear() -> Result<()> {
+    let _lock = STORE_LOCK.lock();
+    CLEAR_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let path = config_path()?;
     if path.exists() {
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
@@ -497,6 +528,62 @@ mod tests {
             "the tray would open on the old org's counts"
         );
         assert_eq!(after.as_deref(), Some(r#"{"org":"second"}"#));
+    }
+
+    /// A reply that lands after a sign-out is not held. Signing out leaves
+    /// `account.json` - gateway, mode and org - in place, so the account string
+    /// is byte-identical before and after, and only the clear the sign-out ran
+    /// can say the reply is no longer wanted.
+    #[test]
+    fn a_reply_from_before_a_clear_is_not_held() {
+        // Both seams are process-global; see `replacing_an_api_key_changes_the_scope`.
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!("gate-cache-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        account::save("https://gw.example", Some("sk-gw-aaaaaaaaaaaa1111")).unwrap();
+        let asked_for = scope_now().expect("an account exists");
+        // The request is in flight; the user signs out, which clears the cache
+        // and nothing else this scope is made of.
+        clear().unwrap();
+        let unchanged = scope_now().expect("the account file is still there");
+        store_for(
+            &asked_for,
+            Some("install-7"),
+            &["claude-code"],
+            r#"{"org":"signed-out"}"#,
+        );
+        let after_clear = load(Some("install-7"), &["claude-code"]);
+        let rows = load_tools(Some("install-7"));
+        // A read asked for after the clear is still held.
+        store(Some("install-7"), &["claude-code"], r#"{"org":"fresh"}"#);
+        let fresh = load(Some("install-7"), &["claude-code"]);
+
+        let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        };
+        restore("GATE_CONNECT_TEST_HOME", prev_home);
+        restore("GATE_CONNECT_TEST_SECRETS", prev_secrets);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            asked_for.account, unchanged.account,
+            "the premise: a clear leaves the account string as it was"
+        );
+        assert_eq!(
+            after_clear, None,
+            "a read from before the sign-out refilled the cache"
+        );
+        assert!(
+            rows.is_empty(),
+            "the tray would open on the signed-out org's counts"
+        );
+        assert_eq!(fresh.as_deref(), Some(r#"{"org":"fresh"}"#));
     }
 
     /// The merge, through the real filesystem: storing one tool must not evict

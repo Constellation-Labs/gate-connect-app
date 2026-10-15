@@ -331,10 +331,14 @@ export function adapt(raw: RawOverview): ActivityView {
     stats: {
       // Null, not zero, for a counter the gateway declined: `UsageStats` says
       // why. A counter that answered `0` is a real reading and stays a zero.
-      messages: c.requestsRouted.state === "ok" ? (c.requestsRouted.value ?? 0) : null,
-      blockedFlagged: c.blockedOrFlagged.state === "ok" ? (c.blockedOrFlagged.value ?? 0) : null,
+      // An "ok" with no value is still no reading, so it is null too: filling
+      // in a zero would print a count nobody measured.
+      messages: c.requestsRouted.state === "ok" ? (c.requestsRouted.value ?? null) : null,
+      blockedFlagged:
+        c.blockedOrFlagged.state === "ok" ? (c.blockedOrFlagged.value ?? null) : null,
       // The endpoint sends a fraction; the tile wants whole percent.
-      tokensSavedPercent: saved.state === "ok" ? Math.round((saved.fraction ?? 0) * 100) : null,
+      tokensSavedPercent:
+        saved.state === "ok" && saved.fraction != null ? Math.round(saved.fraction * 100) : null,
       // No dollar figure. The gateway still sends `amount` and `currency`, and
       // the frame still draws the estimate beside the percentage, but AG-879's
       // Key decisions say Connect does not display estimated dollar figures for
