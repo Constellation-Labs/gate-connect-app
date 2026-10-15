@@ -161,6 +161,10 @@ struct State {
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
+    /// Whether connect created `config.yaml` itself, so disconnect removes it
+    /// once nothing is left in it rather than leave an empty file behind.
+    #[serde(default)]
+    config_file_created: bool,
     /// What the `config.yaml` header edit had to create, so disconnect takes
     /// back exactly that. Absent on a state file written before the header
     /// existed, which reads as "we wrote nothing there" - correct, because we
@@ -547,6 +551,9 @@ impl Integration for Hermes {
         // routing above is what makes Hermes work, and refusing to connect over
         // a label would be the wrong trade. `status` reports it.
 
+        if !crate::env::hermes_config_path()?.exists() {
+            state.config_file_created = true;
+        }
         let header_created = write_tool_header()
             .map_err(|e| {
                 eprintln!("note: could not name Hermes in its config ({e:#}); its traffic will be recorded as unattributed.");
@@ -562,6 +569,9 @@ impl Integration for Hermes {
         if state.header_created.is_none() {
             state.header_created = header_created;
         }
+        // Saved before Gate models, which can fail: without it that failure
+        // leaves the header in `config.yaml` with no record for disconnect.
+        save_state(&state)?;
 
         // Gate models: Hermes' own provider list and default model, pointed at
         // the relay's Gate models route. Unlike the header above this is not
@@ -638,6 +648,14 @@ impl Integration for Hermes {
             let after = yaml_block::tidy_parent(&before, "model", &shape);
             if after != before {
                 write_config(&crate::env::hermes_config_path()?, &after)?;
+            }
+        }
+        // A `config.yaml` connect created holds nothing of the user's once
+        // Gate's lines are out, so it goes rather than stay behind empty.
+        if state.config_file_created && read_config_body()?.trim().is_empty() {
+            let path = crate::env::hermes_config_path()?;
+            if path.exists() {
+                crate::config_changes::remove(&path)?;
             }
         }
         // Each key Gate added, narrowed to Gate's own line when the file holds
