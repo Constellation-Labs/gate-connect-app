@@ -618,8 +618,14 @@ impl<O: DesktopOps> DesktopManager<O> {
                 } else {
                     crate::proxy::relay::load_persisted_port()
                 },
-                // Per-user UID gating is a Linux concern (the daemon's shared
-                // loopback proxy); unresolvable for TCP peers here.
+                // Only this user may spend the credential. Windows resolves a
+                // loopback peer's user from its process token; macOS resolves
+                // no loopback peer, so it can't gate (the forwarder in front
+                // would launder a non-owner into an owner connection anyway,
+                // so the two have to be gated together there).
+                #[cfg(windows)]
+                owner_uid: Some(crate::proxy::engine::PeerOwner),
+                #[cfg(not(windows))]
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate
                 // traffic still flows through it while routing is on.

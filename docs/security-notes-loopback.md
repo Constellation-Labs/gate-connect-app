@@ -60,19 +60,25 @@ Store-packaged Claude and ChatGPT apps were checked and resolve as the owner.
 
 This is the ordering the forwarder section below asks for: the forwarder is
 gated before the engine, so nothing is laundered. The engine and its relay
-still apply no UID gate on Windows, so a non-owner that dials the engine's own
-ports rather than the forwarder's is the gap described in the next section.
+gate on the same answer since AG-1134 (`owner_uid` is `Some(PeerOwner)` on
+Windows, resolved by the same code, which now lives in
+`gate-connect-paths/src/peer.rs`), so a non-owner that dials the engine's own
+ports rather than the forwarder's is refused too: the MITM port tunnels it
+blind and the relay drops the connection. The forwarder's own connection to
+the engine resolves as the owner, since it runs as the owner.
 What prompted it: Claude Desktop's Cowork VM reaches the host through
 `cowork-svc.exe`, running as LocalSystem, which applies the host's PAC; its
 traffic to Gate's hosts was intercepted and failed on a certificate the VM
 does not trust.
 
-## Accepted: local processes on macOS and Windows
+## Accepted: local processes on macOS (and the same user on Windows)
 
-On macOS and Windows `owner_uid` is `None`: TCP loopback peers are not
-UID-resolved there (no `SO_PEERCRED` equivalent for TCP; the platform routes
-exist - `GetExtendedTcpTable`, pcblist sysctls - but are a per-platform
-project). Consequences, stated plainly:
+On macOS `owner_uid` is `None`: TCP loopback peers are not UID-resolved there
+(no `SO_PEERCRED` equivalent for TCP; the route that exists, the
+`net.inet.tcp.pcblist_n` sysctl or a libproc scan of every process's sockets,
+is a per-platform project, and the forwarder would have to be gated with it).
+Windows resolves peers since AG-1134 (previous sections), so only the
+same-user bullet below applies there. Consequences, stated plainly:
 
 - **Same user, any process**: a malicious npm package or editor extension
   running as the owner can drive billed inference through the relay. A
@@ -80,7 +86,7 @@ project). Consequences, stated plainly:
   owner's 0600 tool configs (and the keychain entry gates on the app, not on
   the caller). This is the OS's same-user trust boundary; every local
   credential helper (ssh-agent, cloud CLI token caches) shares it.
-- **Different local user on a shared macOS/Windows box**: can connect to the
+- **Different local user on a shared macOS box**: can connect to the
   loopback port and spend the owner's credential. This is the real gap a
   per-run path token baked into tool configs would close (other users cannot
   read the owner's 0600 configs). Measured earlier: the major CLI tools
@@ -113,8 +119,8 @@ crate's production sources for a bare read of a seam name, so a sixth cannot be
 added the same way. If that test is ever relaxed, this paragraph is the reason
 it exists.
 
-Decision: ship with the browser and cross-user-Linux defenses; treat the
-macOS/Windows cross-user token as a tracked follow-up rather than a blocker,
+Decision: ship with the browser and cross-user Linux and Windows defenses;
+treat the macOS cross-user gap as a tracked follow-up rather than a blocker,
 because multi-user desktop machines are rare in the target audience and the
 same-user case is not fixable with a token at all.
 
@@ -202,9 +208,10 @@ alternative, which is that turning Gate off takes the machine's AI tooling
 
 **But do not read "it holds no credential" as containment for the cross-user
 case.** While the engine is up, the forwarder hands the connection straight to
-it, and the engine on macOS and Windows applies no UID gate either - so a
-non-owner peer reaching the forwarder gets exactly what it would get by dialing
-the engine directly, credential injection included. The forwarder neither adds
+it, and the engine on macOS applies no UID gate either - so a non-owner peer
+reaching the forwarder gets exactly what it would get by dialing the engine
+directly, credential injection included. (On Windows both hops gate, on the
+same answer.) The forwarder neither adds
 that exposure nor removes it; it is parity with an already-accepted gap, which
 is why the decision stands. It does mean the ordering of any future UID work
 matters: gating the engine and relay while leaving the forwarder ungated would
@@ -283,11 +290,11 @@ process already has by opening its own socket, so the marginal capability is
 reaching an arbitrary host *through* Gate's process rather than directly,
 which matters only where an egress filter treats the two differently.
 
-The macOS/Windows cross-user gap named above is therefore unchanged in kind
-and smaller in consequence while parked: another local user reaching a parked
-port gets a forward proxy, not the owner's credential. The same UID-resolution
-work (`net.inet.tcp.pcblist`, `GetExtendedTcpTable`) would close it for both
-states at once.
+The macOS cross-user gap named above is therefore unchanged in kind and
+smaller in consequence while parked: another local user reaching a parked port
+gets a forward proxy, not the owner's credential. The same UID-resolution work
+(`net.inet.tcp.pcblist_n`) would close it for both states at once, as
+`GetExtendedTcpTable` does on Windows.
 
 The park does not outlive the app: the ports are released on app exit, on a
 gateway switch, on a re-enable, and on untrusting the CA. Exit is also the
@@ -402,9 +409,11 @@ catalog's providers through Gate's process. That is the
 capability the parked relay already had for the length of an app session,
 extended in time, with the same catalog constraint - and any local process can
 reach those providers with its own socket anyway. The cross-user gap above is
-unchanged: while the engine is up the forwarder splices a non-owner peer
-straight to the engine's relay, which applies no UID gate on these platforms,
-so the ordering note in the previous section applies to this listener too.
+unchanged on macOS: while the engine is up the forwarder splices a non-owner
+peer straight to the engine's relay, which applies no UID gate there, so the
+ordering note in the previous section applies to this listener too. On Windows
+the forwarder serves a non-owner on the direct path instead, and the engine's
+relay refuses one that dials it.
 
 Windows has no socket activation, so nothing holds the public relay port from
 login until the app first starts the forwarder. In that window a process that

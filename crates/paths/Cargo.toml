@@ -14,3 +14,16 @@ socket2 = "0.6"
 # The loopback health challenge. Both already in the tree via the app.
 hmac = "0.12"
 sha2.workspace = true
+
+# Resolves which user a loopback peer runs as (`src/peer.rs`), for the
+# forwarder and for core's engine and relay. The version tokio already links
+# on Windows, so this adds bindings, not a new crate.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+] }
