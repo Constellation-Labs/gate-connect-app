@@ -192,6 +192,12 @@ pub(crate) trait Prefs {
     /// The provider domains Gate switched on for one tool.
     fn read_auto_enabled_domains(&self, tool: &str) -> Vec<String>;
 
+    /// Persist what one tool's switch says (AG-1120).
+    fn record_tool_intent(&self, tool: &str, on: bool) -> anyhow::Result<()>;
+
+    /// What one tool's switch last said, if it was ever recorded.
+    fn tool_intent(&self, tool: &str) -> Option<bool>;
+
     /// Record whether the last sign-out was the user's own.
     fn set_signed_out_deliberately(&self, deliberate: bool) -> anyhow::Result<()>;
 }
@@ -832,6 +838,14 @@ impl<T: Tauri> Prefs for T {
         gate_connect_core::preferences::read_auto_enabled_domains(tool)
     }
 
+    fn record_tool_intent(&self, tool: &str, on: bool) -> anyhow::Result<()> {
+        gate_connect_core::preferences::record_tool_intent(tool, on)
+    }
+
+    fn tool_intent(&self, tool: &str) -> Option<bool> {
+        gate_connect_core::preferences::tool_intent(tool)
+    }
+
     fn set_signed_out_deliberately(&self, deliberate: bool) -> anyhow::Result<()> {
         gate_connect_core::preferences::set_signed_out_deliberately(deliberate)
     }
@@ -1413,6 +1427,8 @@ pub(crate) mod fake {
         pub security_sound: Mutex<Option<bool>>,
         pub device_name: Mutex<String>,
         pub auto_enabled: Mutex<BTreeMap<String, Vec<String>>>,
+        /// What each tool's switch was last recorded as.
+        pub tool_intent: Mutex<BTreeMap<String, bool>>,
         pub milestones: Mutex<HashSet<String>>,
         pub updater_relaunching: Mutex<Option<bool>>,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1861,6 +1877,19 @@ pub(crate) mod fake {
                 .get(tool)
                 .cloned()
                 .unwrap_or_default()
+        }
+
+        fn record_tool_intent(&self, tool: &str, on: bool) -> anyhow::Result<()> {
+            self.check_write()?;
+            self.tool_intent
+                .lock()
+                .unwrap()
+                .insert(tool.to_string(), on);
+            Ok(())
+        }
+
+        fn tool_intent(&self, tool: &str) -> Option<bool> {
+            self.tool_intent.lock().unwrap().get(tool).copied()
         }
 
         fn set_signed_out_deliberately(&self, deliberate: bool) -> anyhow::Result<()> {

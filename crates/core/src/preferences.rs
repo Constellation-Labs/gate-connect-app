@@ -186,6 +186,25 @@ pub struct Preferences {
     /// only ever describe the most recent departure.
     #[serde(default)]
     pub signed_out_deliberately: bool,
+    /// What each tool's switch last said, keyed by tool slug: `true` when Gate's
+    /// configuration was in place (connected, drifted or overridden), `false`
+    /// when it was not.
+    ///
+    /// A tool's switch is read off its own config, and that is right while the
+    /// config can be read. When it cannot - a permission error, a file the tool
+    /// rewrote into something unparseable - the read has no answer, and the
+    /// switch used to render off for want of one: principle 2's bug, a switch
+    /// driven by an observation that failed. This is the answer it falls back
+    /// to, so the switch keeps saying what the person asked for (AG-1120).
+    ///
+    /// Written when a status read succeeds and the answer moved, and when a
+    /// turn-off is refused because the config could not be read, so the off the
+    /// person asked for is kept even though nothing on disk changed. A tool
+    /// with no entry has never been read, and its switch reads off.
+    ///
+    /// A `BTreeMap` for the same reason as `tool_models`.
+    #[serde(default)]
+    pub tool_intent: BTreeMap<String, bool>,
 }
 
 /// The catalogue fields a tool's own model picker can use.
@@ -248,6 +267,7 @@ impl Default for Preferences {
             gate_model_paid_ack_unix: None,
             gate_model_meta: BTreeMap::new(),
             signed_out_deliberately: false,
+            tool_intent: BTreeMap::new(),
         }
     }
 }
@@ -549,6 +569,26 @@ pub fn read_auto_enabled_domains(tool: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Record what `tool`'s switch says. See [`Preferences::tool_intent`].
+///
+/// Called from a read path - every status read that succeeds - so an unchanged
+/// answer writes nothing: the file stays put, and so does the stamp the relay's
+/// cache keys on.
+pub fn record_tool_intent(tool: &str, on: bool) -> Result<()> {
+    let _w = write_guard();
+    let mut prefs = load();
+    if prefs.tool_intent.get(tool) == Some(&on) {
+        return Ok(());
+    }
+    prefs.tool_intent.insert(tool.to_string(), on);
+    save_locked(&prefs)
+}
+
+/// What `tool`'s switch last said, or `None` if it has never been recorded.
+pub fn tool_intent(tool: &str) -> Option<bool> {
+    load().tool_intent.get(tool).copied()
+}
+
 /// Set one tool's model choice, leaving every other tool alone.
 ///
 /// Read-modify-write on the whole file, like the switches above, so a caller
@@ -742,6 +782,21 @@ fn device_name_override(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file from before AG-1120 has recorded no tool's switch, so every tool
+    /// reads "never recorded" rather than off by a value someone wrote.
+    #[test]
+    fn a_file_without_tool_intent_records_none() {
+        let prefs: Preferences = serde_json::from_str("{}").expect("parses");
+        assert!(prefs.tool_intent.is_empty());
+        let raw = serde_json::to_string(&Preferences {
+            tool_intent: BTreeMap::from([("codex".to_string(), true)]),
+            ..Preferences::default()
+        })
+        .expect("serialize");
+        let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(back.tool_intent.get("codex"), Some(&true));
+    }
 
     #[test]
     fn defaults_are_everything_on() {

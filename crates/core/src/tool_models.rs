@@ -46,6 +46,28 @@ static FLOW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// before the limit existed can still be put back on the tool's own model.
 pub const MAX_GATE_MODELS: usize = 4;
 
+/// The longest Gate model id [`choose`] accepts. Catalogue ids are a vendor and
+/// a model name, well under this.
+const MAX_MODEL_ID_LEN: usize = 256;
+
+/// Whether `id` has the shape of a catalogue model id: ASCII letters and
+/// digits, with `.`, `_`, `:`, `/`, `@` and `-` between them (`openai/gpt-5.6-luna`,
+/// `meta-llama/llama-4-scout`, a `:free` or `@version` suffix).
+///
+/// The ids are written into the tools' own configs, and Hermes' `config.yaml`
+/// is edited as text: an id carrying a newline would add keys to the provider
+/// block Gate writes there. So an id is checked before it is stored rather than
+/// trusted because it came from the picker.
+fn valid_model_id(id: &str) -> bool {
+    let edge_ok = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric());
+    id.len() <= MAX_MODEL_ID_LEN
+        && edge_ok(id.chars().next())
+        && edge_ok(id.chars().last())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '@' | '-'))
+}
+
 fn flow_guard() -> std::sync::MutexGuard<'static, ()> {
     FLOW_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -88,6 +110,11 @@ pub fn choose(
             "{} Gate models were chosen, and a tool can use at most {MAX_GATE_MODELS}",
             model_ids.len()
         );
+    }
+    if source == ModelSource::Gate {
+        if let Some(bad) = model_ids.iter().find(|id| !valid_model_id(id)) {
+            anyhow::bail!("{bad:?} is not a Gate model id");
+        }
     }
     let _guard = flow_guard();
     let integ = registry::find(tool);

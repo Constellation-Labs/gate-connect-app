@@ -517,17 +517,18 @@ pub fn serve() -> Result<()> {
              instead; it hosts this same relay, so the two are not meant to run together."
         );
 
-        // Keep the OAuth token fresh (`access_token_for_injection` silently
-        // refreshes a stale token) and pick up an org switch; block forever
-        // hosting the relay.
+        // Keep the OAuth token fresh (`access_token_update_for_injection`
+        // silently refreshes a stale token) and pick up an org switch; block
+        // forever hosting the relay. An identity provider that cannot be
+        // reached leaves the token as it is, as the app's loop does.
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(
                 crate::oauth::REFRESH_INTERVAL_SECS,
             ))
             .await;
-            let _ = token_tx.send(Arc::from(
-                crate::oauth::access_token_for_injection().as_str(),
-            ));
+            if let Some(token) = crate::oauth::access_token_update_for_injection() {
+                let _ = token_tx.send(Arc::from(token.as_str()));
+            }
             let _ = org_tx.send(Arc::from(crate::account::org_id_for_injection().as_str()));
             let _ = mode_tx.send(crate::account::billing_mode_for_injection());
         }
