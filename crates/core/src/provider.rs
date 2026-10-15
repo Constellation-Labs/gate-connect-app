@@ -1390,6 +1390,22 @@ pub fn snapshot_and_park_everything() -> Result<()> {
     snapshot_and_disable_all_locked(ToolConfigs::Kept)
 }
 
+/// Forget every pending restore: the provider snapshot, the swept-tools
+/// snapshot and the member skip list.
+///
+/// Run by [`crate::account::clear`]. A sign-out (the Reset button, or
+/// `gate-connect logout`) disconnects every tool, but the routing-off that
+/// precedes it has already written the snapshots, and nothing else removes
+/// them until a restore consumes them. The next sign-in's "Turn on routing"
+/// runs [`restore_all`], which would then reconnect the previous account's
+/// tools without being asked - possibly into a different org.
+pub fn discard_restore() -> Result<()> {
+    let _guard = master_flow_guard();
+    clear_snapshot(PROVIDER_SNAPSHOT)?;
+    clear_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
+    clear_snapshot(RESTORE_SKIP_MEMBERS)
+}
+
 /// Is this tool pointed at an address that stops answering when the GUI quits?
 ///
 /// Managed at all (its status is one the sweeps act on), and at least one
@@ -2416,6 +2432,59 @@ mod tests {
             "the per-row Retry left an unresolvable slug in the snapshot, so the \
              row comes back and the button can never clear it; got {:?}",
             after.providers
+        );
+    }
+
+    /// Signing out forgets the pending restore.
+    ///
+    /// Reset runs routing-off and then `clear_account`. The routing-off writes
+    /// the restore snapshots, and `account::clear` used to leave them behind, so
+    /// the next sign-in's "Turn on routing" ran `restore_all` and reconnected
+    /// every tool the previous account had routed - after a dialog that had
+    /// just promised no app would stay protected.
+    #[test]
+    fn clearing_the_account_discards_the_pending_restore() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-clear-restore-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let outcome = (|| -> Result<Vec<Vec<String>>> {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            save_snapshot(PROVIDER_SNAPSHOT, &["anthropic".to_string()])?;
+            save_snapshot(SWEPT_TOOLS_SNAPSHOT, &["opencode".to_string()])?;
+            save_snapshot(RESTORE_SKIP_MEMBERS, &["claude-desktop".to_string()])?;
+            account::clear()?;
+            Ok(vec![
+                load_snapshot(PROVIDER_SNAPSHOT)?,
+                load_snapshot(SWEPT_TOOLS_SNAPSHOT)?,
+                load_snapshot(RESTORE_SKIP_MEMBERS)?,
+            ])
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        let after = outcome.expect("save, clear and reload should all succeed");
+        assert!(
+            after.iter().all(Vec::is_empty),
+            "a sign-out left a restore pending, so the next sign-in reconnects \
+             the previous account's tools; got {after:?}"
         );
     }
 

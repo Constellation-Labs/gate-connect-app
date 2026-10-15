@@ -508,6 +508,9 @@ pub fn clear() -> Result<()> {
     // A full disconnect forgets every credential, so any OAuth tokens go too -
     // nothing is left behind in the secret store .
     crate::oauth::clear()?;
+    // So is any pending restore: it names the tools the account being cleared
+    // had routed, and the next sign-in's routing-on would reconnect them.
+    crate::provider::discard_restore()?;
     // The held activity reading belongs to the org that just went away. Best
     // effort, and after the credentials on purpose: a cache file that will not
     // delete must not be the reason a disconnect reports failure, and without a
