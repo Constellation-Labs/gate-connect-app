@@ -34,7 +34,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::ModifyKind;
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::registry;
 
@@ -198,15 +199,22 @@ fn watch_targets(targets: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) -
         return Ok(());
     }
 
-    let (tx, rx) = mpsc::channel::<PathBuf>();
+    // Each path travels with whether the event could have taken its name away,
+    // which is what tells the debounce thread an armed directory has to be
+    // armed again - see `unarm`.
+    let (tx, rx) = mpsc::channel::<(PathBuf, bool)>();
     let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         // A dropped receiver means the debounce thread is gone, which cannot
         // happen while this process lives - and if it did, there is nobody left
         // to tell. An error from the backend is not actionable either: the
         // paths it concerns are still watched, and the next event still lands.
         if let Ok(event) = res {
+            let renamed_or_removed = matches!(
+                event.kind,
+                EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+            );
             for path in event.paths {
-                let _ = tx.send(path);
+                let _ = tx.send((path, renamed_or_removed));
             }
         }
     })
@@ -237,10 +245,20 @@ fn watch_targets(targets: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) -
                 // burst goes quiet. A `Disconnected` here means the watcher was
                 // dropped, which ends the thread with it.
                 let Ok(first) = rx.recv() else { return };
-                let mut relevant = is_relevant(&first, &names);
+                let mut relevant = is_relevant(&first.0, &names);
+                let mut gone = HashSet::new();
+                let mut note = |(path, renamed_or_removed): (PathBuf, bool)| {
+                    if renamed_or_removed {
+                        gone.insert(path);
+                    }
+                };
+                note(first);
                 loop {
                     match rx.recv_timeout(QUIET) {
-                        Ok(path) => relevant |= is_relevant(&path, &names),
+                        Ok(event) => {
+                            relevant |= is_relevant(&event.0, &names);
+                            note(event);
+                        }
                         Err(RecvTimeoutError::Timeout) => break,
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
@@ -251,6 +269,9 @@ fn watch_targets(targets: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) -
                 // Before reporting: a directory that appeared during the burst
                 // is armed now, so the *next* change inside it is heard - and
                 // re-spelled with it, in case what appeared is itself a link.
+                // One that went away is forgotten first, so if it is back it is
+                // armed again rather than skipped as already armed.
+                unarm(&watcher, &gone, &mut arms);
                 let _ = arm(&watcher, &targets, &mut arms);
                 names = spellings(&targets);
                 on_change();
@@ -281,6 +302,33 @@ fn arm(
         }
     }
     Ok(armed.len())
+}
+
+/// Forget every armed directory whose name an event took away, so the next
+/// [`arm`] watches whatever stands under that name now.
+///
+/// Without this a tool directory that is deleted and recreated goes unheard for
+/// the life of the process: the backend's watch died with the old directory
+/// (inotify drops it on `DELETE_SELF`), but `armed` still lists the name, so
+/// `arm` skipped the new one as already watched. A rename counts the same way,
+/// because inotify keeps following a renamed directory under its old name, and
+/// whatever is put back under that name is a different directory.
+///
+/// The unwatch is best effort: where the backend already dropped the watch it
+/// fails, which is the outcome wanted anyway.
+fn unarm(
+    watcher: &Arc<Mutex<RecommendedWatcher>>,
+    gone: &HashSet<PathBuf>,
+    armed: &mut HashSet<PathBuf>,
+) {
+    let Ok(mut watcher) = watcher.lock() else {
+        return;
+    };
+    for dir in gone {
+        if armed.remove(dir) {
+            let _ = watcher.unwatch(dir);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -478,6 +526,74 @@ mod tests {
              target: {target:?}\narmed: {armed:?}\nspellings: {names:?}",
             armed = arm_dir(&target),
             names = spellings(&[target.clone()]),
+        );
+    }
+
+    /// Wait for `calls` to pass `from`, re-running `touch` on the same 2s cadence
+    /// as the test above and for the same reasons.
+    fn heard_after(calls: &AtomicUsize, from: usize, touch: impl Fn()) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let mut nudged = Instant::now();
+        while calls.load(Ordering::SeqCst) == from && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+            if nudged.elapsed() >= Duration::from_secs(2) {
+                touch();
+                nudged = Instant::now();
+            }
+        }
+        calls.load(Ordering::SeqCst) > from
+    }
+
+    /// A tool directory deleted and recreated is still heard from inside.
+    ///
+    /// The watch on the old directory died with it, and the record of having
+    /// armed that name used to outlive it, so the new directory was never armed:
+    /// its parent still heard it appear, and nothing inside it was heard again.
+    ///
+    /// Not on Windows: a directory a watch handle holds open is only
+    /// delete-pending there, so recreating it at once is not a step the test can
+    /// rely on.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_recreated_directory_is_armed_again() {
+        let root = resolved_scratch("rearm");
+        let dir = root.join("dot-tool");
+        let target = dir.join("config.toml");
+        std::fs::create_dir_all(&dir).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        watch_targets(vec![target.clone()], move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Each step waits to be heard, so each lands in a burst of its own and
+        // the watch re-arms between them, as it would for a user.
+        let before = calls.load(Ordering::SeqCst);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            heard_after(&calls, before, || {}),
+            "the directory going away was not heard"
+        );
+
+        let before = calls.load(Ordering::SeqCst);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            heard_after(&calls, before, || {}),
+            "the directory coming back was not heard"
+        );
+        // Let that burst's re-arm finish before the write it is meant to hear.
+        std::thread::sleep(Duration::from_millis(500));
+
+        // The parent is watched non-recursively, so only a watch on the new
+        // directory itself can hear this.
+        let before = calls.load(Ordering::SeqCst);
+        std::fs::write(&target, "[gate]\n").unwrap();
+        assert!(
+            heard_after(&calls, before, || std::fs::write(&target, "[gate]\n")
+                .unwrap()),
+            "nothing inside the recreated directory was heard",
         );
     }
 }
