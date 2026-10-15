@@ -3920,13 +3920,20 @@ fn recheck_gate_session(
         use_stored_api_key();
         return SessionHealth::Valid;
     }
+    // Read before the re-check, which can take seconds of network: a sign-out
+    // in that time must not be overwritten by the token it recovers (AG-1130).
+    let epoch = gate_connect_core::oauth::sign_in_epoch();
     match gate_connect_core::startup::reverify_session() {
         // The session was alive and the local clock was simply wrong about it.
         // The forced refresh minted a token that works; push it into the
         // running engine so in-flight tools recover without a restart, and take
         // back any dead-session signal.
         gate_connect_core::startup::Recheck::Recovered(token) => {
-            gate_connect_core::proxy::manager().refresh_token(&token);
+            if !gate_connect_core::oauth::push_for_sign_in(epoch, || {
+                gate_connect_core::proxy::manager().refresh_token(&token)
+            }) {
+                return SessionHealth::Unknown;
+            }
             if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
                 let running = gate_connect_core::proxy::manager()
                     .status()
@@ -5831,8 +5838,13 @@ pub fn run() {
                     // for the re-check's renewed token (`bearer_needs_recovery`),
                     // which is what recovers a machine whose network comes
                     // back between ticks.
+                    //
+                    // Either push is dropped when a sign-in or sign-out lands
+                    // after the epoch is read (AG-1130): the reading belongs to
+                    // the session that ended, and that path pushed its own.
+                    let epoch = gate_connect_core::oauth::sign_in_epoch();
                     let reading = gate_connect_core::oauth::session_reading();
-                    match &reading {
+                    gate_connect_core::oauth::push_for_sign_in(epoch, || match &reading {
                         gate_connect_core::oauth::SessionReading::Live(t) => {
                             gate_connect_core::proxy::manager().refresh_token(&t.access_token)
                         }
@@ -5840,7 +5852,7 @@ pub fn run() {
                             gate_connect_core::proxy::manager().refresh_token("")
                         }
                         gate_connect_core::oauth::SessionReading::Unavailable => {}
-                    }
+                    });
 
                     // Raise (or clear) the tray attention signal on the
                     // signed-in↔dead edge. "Dead" means a stored session was

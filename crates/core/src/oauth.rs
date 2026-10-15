@@ -62,6 +62,38 @@ pub fn session_generation() -> u64 {
     SESSION_GENERATION.load(Ordering::Acquire)
 }
 
+/// Moved by a sign-in ([`login`]) or a sign-out ([`clear`]), and never by a
+/// refresh: whose session this is, where [`SESSION_GENERATION`] is which
+/// bundle. A token read before one of those belongs to the session that
+/// ended, and must not reach an engine after the push that ended it.
+///
+/// The counter is its own lock, and [`push_for_sign_in`] holds it across the
+/// push, so a sign-out's bump and a push of the old session's token cannot
+/// interleave: the push lands before the bump, and the sign-out's own `""`
+/// after it, or the push sees the bump and is dropped (AG-1130).
+static SIGN_IN_EPOCH: Mutex<u64> = Mutex::new(0);
+
+/// The current [`SIGN_IN_EPOCH`]. Read it before reading the session whose
+/// token you mean to push.
+pub fn sign_in_epoch() -> u64 {
+    *SIGN_IN_EPOCH.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn advance_sign_in_epoch() {
+    *SIGN_IN_EPOCH.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+}
+
+/// Run `push` unless a sign-in or sign-out has landed since `epoch` (a
+/// [`sign_in_epoch`]). Returns whether it ran. `push` must not sign in or out.
+pub fn push_for_sign_in(epoch: u64, push: impl FnOnce()) -> bool {
+    let current = SIGN_IN_EPOCH.lock().unwrap_or_else(|e| e.into_inner());
+    if *current != epoch {
+        return false;
+    }
+    push();
+    true
+}
+
 /// The last refreshed bundle the secret store would not take, read in
 /// preference to the stored one while it stands.
 ///
@@ -655,6 +687,9 @@ pub fn clear() -> Result<()> {
     keychain::delete(&service(), &user)?;
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    // After the delete, so a reader that saw the old epoch is the only kind
+    // that can still have read the bundle.
+    advance_sign_in_epoch();
     // The session is gone, so the analytics identity tied to it is too (AG-960).
     // Here rather than in each caller so every sign-out path forgets it: the
     // app's Disconnect and Reset, `gate-connect logout` (through
@@ -746,6 +781,27 @@ pub fn access_token_for_injection() -> String {
         return String::new();
     }
     live_session().map(|t| t.access_token).unwrap_or_default()
+}
+
+/// [`access_token_for_injection`] for a holder that already has a bearer and
+/// re-reads it on a timer: `None` when nobody could tell
+/// ([`SessionReading::Unavailable`]), meaning keep the one you have. `""`
+/// there would say the session is dead, and refuse every request as signed
+/// out over a network blip (AG-1130).
+pub fn access_token_update_for_injection() -> Option<String> {
+    if crate::account::auth_mode().unwrap_or_default() != crate::account::AuthMode::OAuth {
+        return Some(String::new());
+    }
+    bearer_for_reading(session_reading())
+}
+
+/// The pure half of [`access_token_update_for_injection`].
+pub fn bearer_for_reading(reading: SessionReading) -> Option<String> {
+    match reading {
+        SessionReading::Live(t) => Some(t.access_token),
+        SessionReading::SignedOut => Some(String::new()),
+        SessionReading::Unavailable => None,
+    }
 }
 
 /// Return the freshest token bundle, refreshing silently if the stored one is
@@ -1403,6 +1459,7 @@ where
     }
     let tokens = complete_login(cfg, &code, &req.verifier, listener.redirect_uri())?;
     store(&tokens)?;
+    advance_sign_in_epoch();
     // After the store, so a reader in another process cannot cache the old
     // bundle under the moved witness. See `account::stamp_sign_in`.
     crate::account::stamp_sign_in()?;
@@ -1816,6 +1873,34 @@ mod tests {
             classify_session(true, || Ok(Some(tokens()))),
             SessionReading::SignedOut
         ));
+    }
+
+    /// AG-1130: a holder that already has a bearer is told to drop it on a
+    /// sign-out and to keep it when nobody could tell.
+    #[test]
+    fn an_unavailable_reading_leaves_the_bearer_alone() {
+        let live = tokens().access_token;
+        assert_eq!(
+            bearer_for_reading(SessionReading::Live(tokens())),
+            Some(live)
+        );
+        assert_eq!(
+            bearer_for_reading(SessionReading::SignedOut).as_deref(),
+            Some("")
+        );
+        assert_eq!(bearer_for_reading(SessionReading::Unavailable), None);
+    }
+
+    /// AG-1130: once the epoch has moved, a push read under the old one is
+    /// dropped. Other tests in this binary sign out too, so this only advances
+    /// the epoch and never asserts it stood still.
+    #[test]
+    fn a_push_from_before_a_sign_out_is_dropped() {
+        let read = sign_in_epoch();
+        advance_sign_in_epoch();
+        let mut ran = false;
+        assert!(!push_for_sign_in(read, || ran = true));
+        assert!(!ran);
     }
 
     /// A bundle that does not parse is a refusal; a store that could not be
