@@ -260,8 +260,9 @@ fn unchanged_since_read(path: &Path) -> Result<()> {
 /// Write a tool configuration, recording the change when the bytes differ from
 /// what is on disk. The routing view is the whole file; a tool that edits its
 /// own file goes through [`write_with_view`] instead. Identical bytes still go
-/// through [`crate::primitives::write_file`], which leaves the content alone
-/// and only corrects the mode.
+/// through [`crate::primitives::write_file`], which leaves the content alone.
+/// `mode` applies to a file Gate creates; one that exists keeps its own
+/// ([`kept_mode`]).
 pub(crate) fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     write_with_view(path, bytes, mode, whole_file)
 }
@@ -275,6 +276,7 @@ pub(crate) fn write_with_view(
     mode: u32,
     view: fn(&[u8]) -> Vec<u8>,
 ) -> Result<()> {
+    let mode = kept_mode(path, mode);
     let current = fs::read(path).ok();
     crate::primitives::write_file_checked(path, bytes, mode, || unchanged_since_read(path))?;
     remember_written(path, Some(bytes));
@@ -311,6 +313,27 @@ pub(crate) fn remove_with_view(path: &Path, view: fn(&[u8]) -> Vec<u8>) -> Resul
 /// The routing view of a tool that acts on its whole file.
 pub(crate) fn whole_file(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
+}
+
+/// The mode a tool's file keeps across Gate's write: the one it has, or `mode`
+/// when there is no file yet. The file is the user's, and so is its mode -
+/// Gate's own values in it are routing settings, not credentials (the relay
+/// injects the key per request), so a tool's 0644 is no reason to tighten it,
+/// and a disconnect especially should leave nothing of Gate's behind.
+/// Resolved through a symlink, as [`crate::primitives::write_file`] writes.
+pub(crate) fn kept_mode(path: &Path, mode: u32) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|meta| meta.permissions().mode() & 0o7777)
+            .unwrap_or(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        mode
+    }
 }
 
 /// Gate's changes to the file at `path`, oldest first. Empty when it has no
