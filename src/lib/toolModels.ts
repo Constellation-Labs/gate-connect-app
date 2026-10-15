@@ -473,6 +473,8 @@ export function useToolModels(
     () => new Map(),
   );
   const attempt = useRef(0);
+  /** The credential the held `leftGateModels` belong to. */
+  const scope = useRef(credential);
 
   const reload = useCallback(() => {
     if (!enabled) return;
@@ -486,9 +488,11 @@ export function useToolModels(
         // folded it, and a newer read in flight (a quick double focus, the
         // reload inside `save`) would otherwise drop that one report with the
         // stale view: the card flips to App default and never says why. Added
-        // to, never replaced.
+        // to, never replaced. Within one account only: a read sent before an
+        // account change says nothing about the new one, and its report would
+        // land on the new account's pane after the reset below had cleared it.
         const left = [...next.configured].filter(([, c]) => c.leftGateModels);
-        if (left.length > 0) {
+        if (left.length > 0 && scope.current === credential) {
           setLeftGateModels((held) => {
             const merged = new Map(held);
             for (const [slug, c] of left) merged.set(slug, c.leftToModel);
@@ -514,6 +518,7 @@ export function useToolModels(
   }, [enabled, credential]);
 
   useEffect(() => {
+    scope.current = credential;
     setView(null);
     setFailure(null);
     setLeftGateModels(new Map());
