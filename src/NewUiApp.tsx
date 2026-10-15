@@ -51,7 +51,8 @@ import { useSetup } from "./lib/useSetup";
 import { gatewaySawTrafficFromThisMachine, launchProps, sessionFacts } from "./lib/analyticsSession";
 import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
-import { allSettled, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
+import { allSettled } from "./lib/reopen";
+import { recheckCadence, useVerdictWatch } from "./lib/verdictWatch";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
@@ -967,39 +968,26 @@ export function NewUiApp() {
   );
 
   /**
-   * Is any tool waiting to be reopened?
+   * How often to re-check, if at all: the reopen watch while a tool waits to
+   * be reopened, a slower re-check while anything else reads Not protected
+   * (AG-1097), and nothing while every row is settled. A number rather than
+   * the map, so the watch arms and disarms on the cadence changing and not on
+   * every sweep replacing the map that decided it.
    *
-   * A boolean rather than the map, so the effect below arms and disarms on the
-   * fact changing and not on every sweep replacing the map that told it.
-   */
-  const reopenWaiting = useMemo(
-    () => [...verdicts.values()].some((v) => v.reason === "reopen_required"),
-    [verdicts],
-  );
-
-  /**
-   * Keep sweeping while something is waiting to be reopened.
-   *
-   * This is the one reading in the shell that resolves without anybody touching
-   * the app: a tool picks up its new route when the person opens a terminal,
-   * and no event says so. `tool_watch.rs` watches config files and binaries -
-   * it has no view of the process table - so dropping the old 5s poll for
-   * `tools-changed` left the *process* half of detection with nothing to
-   * replace it. The result was a banner that stood there naming a tool the user
-   * had already reopened, with a button that scanned, found nothing running and
-   * returned in silence.
+   * The reopen half is the one reading in the shell that resolves without
+   * anybody touching the app: a tool picks up its new route when the person
+   * opens a terminal, and no event says so. `tool_watch.rs` watches config
+   * files and binaries - it has no view of the process table. The failure
+   * half exists because nothing else re-checked a failure: a row that failed
+   * while the forwarder was down read "Not protected" for hours after it came
+   * back.
    *
    * Armed on the condition, not always: `routing_verdicts` probes the relay and
    * the account's session, which is why `redetect` deliberately leaves it out
-   * of the visibility edge. So it runs while there is an answer worth waiting
-   * for and stops the moment there is not - a reopen clears the verdict, which
-   * disarms this, which is the whole cycle.
+   * of the visibility edge.
    */
-  useEffect(() => {
-    if (!reopenWaiting) return;
-    const id = setInterval(() => void refreshVerdicts(), REOPEN_IDLE_WATCH_MS);
-    return () => clearInterval(id);
-  }, [reopenWaiting, refreshVerdicts]);
+  const recheckEvery = useMemo(() => recheckCadence(verdicts.values()), [verdicts]);
+  useVerdictWatch(recheckEvery, () => void refreshVerdicts());
 
 
   const refresh = useCallback(async () => {
@@ -1259,11 +1247,12 @@ export function NewUiApp() {
     // The session is the thing most likely to have died while the window was
     // away, and nothing else tells this window it did.
     void refreshSession();
-    // The same edge is the likeliest moment for a reopen to have happened:
-    // someone alt-tabs out, opens their terminal, and comes back. Gated on the
-    // condition for the reason the interval above is - the sweep costs two
-    // network probes, and there is nothing to learn from it otherwise.
-    if (reopenWaiting) void refreshVerdicts();
+    // The same edge is the likeliest moment for a reopen to have happened -
+    // someone alt-tabs out, opens their terminal, and comes back - and the
+    // moment someone looks at a row that is failing. Gated on the condition
+    // for the reason the watch above is: the sweep costs two network probes,
+    // and there is nothing to learn from it otherwise.
+    if (recheckEvery !== null) void refreshVerdicts();
     // The same edge for the activity reads. A report that arrived while the
     // window was hidden is read for now, whatever the age: it is a certain
     // signal that was only deferred, not a guess. Otherwise this covers what

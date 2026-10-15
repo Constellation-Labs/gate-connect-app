@@ -22,7 +22,8 @@ import {
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
 import { useRunningApps } from "./lib/useRunningApps";
-import { allSettled, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
+import { allSettled } from "./lib/reopen";
+import { recheckCadence, useVerdictWatch } from "./lib/verdictWatch";
 import { classifyError } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
@@ -223,46 +224,29 @@ export function TrayApp() {
   }, []);
 
   /**
-   * Is any tool waiting to be reopened?
-   *
-   * A boolean rather than the map, so the effect below arms and disarms on the
-   * fact changing and not on every sweep replacing the map that told it.
-   */
-  const reopenWaiting = useMemo(
-    () => [...verdicts.values()].some((v) => v.reason === "reopen_required"),
-    [verdicts],
-  );
-
-  /**
-   * Keep sweeping while something is waiting to be reopened.
-   *
-   * The window shell's effect, for the window shell's reason: a tool picks up
-   * its new route when the person opens a terminal, and no event says so -
-   * `tool_watch.rs` watches config files and binaries, never the process table.
-   * Both shells draw a pending reopen on the row (as "Not protected"), so both
-   * have to notice, and on the same cadence: two numbers here is how the tray
-   * comes to clear a status the window is still showing.
+   * The window shell's re-check, for the window shell's reasons: the reopen
+   * watch while a tool waits to be reopened, a slower re-check while anything
+   * else reads Not protected (AG-1097), and nothing otherwise. Both shells
+   * draw these rows, so both have to notice, and on the same cadence: two
+   * numbers here is how the tray comes to clear a status the window is still
+   * showing. See `lib/verdictWatch`.
    *
    * Armed on the condition rather than always, because the sweep probes the
    * relay and the account's session - and this surface is behind a tray icon
    * somebody opens and closes all day.
    */
-  useEffect(() => {
-    if (!reopenWaiting) return;
-    const id = setInterval(() => void refreshVerdicts(), REOPEN_IDLE_WATCH_MS);
-    return () => clearInterval(id);
-  }, [reopenWaiting, refreshVerdicts]);
+  const recheckEvery = useMemo(() => recheckCadence(verdicts.values()), [verdicts]);
+  useVerdictWatch(recheckEvery, () => void refreshVerdicts());
 
-  /** The same flag where the reveal handler can read it.
+  /** The same cadence where the reveal handler can read it.
    *
    * That effect is keyed on `redetect` alone and registers a Tauri listener, so
    * adding this to its dependencies would tear the listener down and build it
-   * again every time a tool starts or stops waiting. Reading it through the
-   * render instead is how the reveal sweep would have been frozen at whatever
-   * the flag was on first paint - which is `false`, so it would never have
-   * fired at all. */
-  const reopenWaitingRef = useRef(reopenWaiting);
-  reopenWaitingRef.current = reopenWaiting;
+   * again every time the cadence changes. Reading it through the render
+   * instead is how the reveal sweep would have been frozen at whatever it was
+   * on first paint - which is `null`, so it would never have fired at all. */
+  const recheckEveryRef = useRef(recheckEvery);
+  recheckEveryRef.current = recheckEvery;
 
   /** Event-driven re-read: a write landed or the engine changed state, so
    * commit whatever comes back and re-sweep the verdicts. */
@@ -398,11 +382,12 @@ export function TrayApp() {
         return;
       }
       void redetect();
-      // A reveal is the likeliest moment for a reopen to have happened: the
-      // popover is what someone comes back to after opening their terminal.
-      // `redetect` above sweeps only when the tool inventory moved, and a
-      // reopened CLI does not move it. Gated for the reason the interval is.
-      if (reopenWaitingRef.current) void refreshVerdicts();
+      // A reveal is the likeliest moment for a reopen to have happened - the
+      // popover is what someone comes back to after opening their terminal -
+      // and the moment someone looks at a failing row. `redetect` above sweeps
+      // only when the tool inventory moved, and neither moves it. Gated for
+      // the reason the watch is.
+      if (recheckEveryRef.current !== null) void refreshVerdicts();
       // Put focus in the popover, for the same reason: the window is shown
       // rather than created, so nothing moves focus on its own. Without this a
       // keyboard user opened the popover and their focus was still in whatever
