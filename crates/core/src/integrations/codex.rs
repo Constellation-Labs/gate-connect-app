@@ -924,7 +924,8 @@ fn active_profile_override(doc: &DocumentMut, source: &str) -> Option<Override> 
 }
 
 fn read_doc(path: &Path) -> Result<DocumentMut> {
-    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let raw = crate::config_changes::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
     raw.parse::<DocumentMut>()
         .with_context(|| format!("parsing {} as TOML", path.display()))
 }

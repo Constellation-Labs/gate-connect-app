@@ -198,10 +198,10 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
         anyhow::bail!("refusing to write {key}: its value spans more than one line");
     }
     let file_created = !path.exists();
-    let body = if file_created {
-        String::new()
-    } else {
-        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
+    let body = match crate::config_changes::read_to_string(path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
 
     // `split_inclusive` keeps each line's own terminator attached, so lines we
@@ -324,8 +324,8 @@ pub(crate) fn remove_owned(path: &Path, owned: &[Owned], file_created: bool) -> 
     if !path.exists() || owned.is_empty() {
         return Ok(());
     }
-    let existing =
-        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let existing = crate::config_changes::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
     let lines: Vec<&str> = existing.split_inclusive('\n').collect();
     let doomed = |line: &str| {
         owned.iter().any(|o| {
