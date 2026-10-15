@@ -158,7 +158,7 @@ describe("useRunningApps: when to say anything", () => {
     const { api, onNothingRunning } = harness();
 
     await act(async () => {
-      await api.current!.offerAfterChange(["codex"]);
+      await api.current!.offerAfterChange(["codex"], "on");
     });
 
     expect(api.current!.stage).toBeNull();
