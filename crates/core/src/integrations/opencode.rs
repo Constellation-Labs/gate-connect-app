@@ -211,12 +211,27 @@ struct ProviderSnapshot {
 /// Likely install locations of the `opencode` binary. Detection falls
 /// back to the config dir if none match, so npm/Bun/Volta layouts that
 /// land binaries in per-user prefixes still register as installed.
+/// Windows has no fixed locations, so it adds per-user ones at runtime through
+/// [`windows_install_paths`].
 #[cfg(target_os = "macos")]
 const CLI_BIN_PATHS: &[&str] = &["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode"];
 #[cfg(all(unix, not(target_os = "macos")))]
 const CLI_BIN_PATHS: &[&str] = &["/usr/local/bin/opencode", "/usr/bin/opencode"];
 #[cfg(windows)]
 const CLI_BIN_PATHS: &[&str] = &[];
+
+/// The per-user install locations [`env::opencode_cli_candidates`] names, or
+/// none off Windows. Checked by `detect` only, never by `binary()`: one of them
+/// is the Desktop app's GUI executable, which a `--version` probe would launch.
+///
+/// They also cover a gap `PATH` cannot: a Gate Connect started before the user
+/// ran `npm i -g` or `scoop install` holds the `PATH` it was launched with.
+fn windows_install_paths() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    return env::opencode_cli_candidates().unwrap_or_default();
+    #[cfg(not(windows))]
+    Vec::new()
+}
 
 pub struct OpenCode;
 
@@ -257,6 +272,7 @@ impl Integration for OpenCode {
         // The sidecar under app support is deliberately absent: it changes
         // because `connect` wrote it, and that path already refreshes.
         let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(windows_install_paths());
         paths.extend(env::opencode_config_dir());
         paths.extend(settings_path());
         paths.extend(env::opencode_auth_path());
@@ -266,11 +282,14 @@ impl Integration for OpenCode {
     fn detect(&self) -> Result<bool> {
         // The packaged paths, then PATH, then the bin directories a login
         // shell adds and a GUI process does not inherit - see
-        // `integrations::binaries`. Failing all three, a config file or a
-        // login naming a provider Gate routes still counts: see
+        // `integrations::binaries` - and on Windows the per-user install
+        // locations of `windows_install_paths`. Failing all of them, a config
+        // file or a login naming a provider Gate routes still counts: see
         // `has_routable_setup`.
         let (well_known, names) = self.binary();
-        if binaries::resolve_binary(well_known, names).is_some() {
+        if binaries::resolve_binary(well_known, names).is_some()
+            || windows_install_paths().iter().any(|p| p.is_file())
+        {
             return Ok(true);
         }
         has_routable_setup()
@@ -1067,6 +1086,69 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// An install that has never been launched still reads as installed on
+    /// Windows. OpenCode Desktop puts nothing on `PATH` and writes no config
+    /// until first run, and an npm or scoop install lands on a `PATH` this
+    /// process may have been started before, so each showed "not installed"
+    /// right after the user had installed it.
+    ///
+    /// `PATH` is emptied for the body so a real install on the machine running
+    /// the test does not decide it.
+    #[cfg(windows)]
+    #[test]
+    fn windows_detects_each_installer_before_first_launch() {
+        let _lock = env::path_env_lock();
+        let home =
+            std::env::temp_dir().join(format!("gate-opencode-detect-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
+        let prev_path = std::env::var_os("PATH");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::remove_var("OPENCODE_CONFIG_DIR");
+        std::env::remove_var("PATH");
+
+        let result = std::panic::catch_unwind(|| {
+            assert!(
+                !OpenCode.detect().unwrap(),
+                "an empty home has nothing installed"
+            );
+            for rel in [
+                r"AppData\Local\Programs\@opencodedesktop\OpenCode.exe",
+                r"AppData\Roaming\npm\opencode.cmd",
+                r"scoop\shims\opencode.exe",
+            ] {
+                let bin = home.join(rel);
+                fs::create_dir_all(bin.parent().unwrap()).unwrap();
+                fs::write(&bin, b"").unwrap();
+                assert!(
+                    OpenCode.detect().unwrap(),
+                    "{rel} alone must read as installed"
+                );
+                assert!(
+                    !home.join(".config").join("opencode").exists(),
+                    "and without the config dir that first launch creates"
+                );
+                fs::remove_file(&bin).unwrap();
+            }
+        });
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        if let Some(v) = prev_dir {
+            std::env::set_var("OPENCODE_CONFIG_DIR", v);
+        }
+        if let Some(v) = prev_path {
+            std::env::set_var("PATH", v);
+        }
+        let _ = fs::remove_dir_all(&home);
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]
