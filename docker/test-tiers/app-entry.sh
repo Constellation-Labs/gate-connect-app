@@ -24,5 +24,7 @@ export OUT="${OUT:-/out}"
 }
 
 cd "$SRC"
-exec xvfb-run -a -s "-screen 0 1440x900x24" dbus-run-session -- \
+# Not exec'd: xvfb-run as PID 1 waits forever for Xvfb's readiness signal.
+# scripts/test-tiers.sh also passes --init, so PID 1 is docker-init.
+xvfb-run -a -s "-screen 0 1440x900x24" dbus-run-session -- \
   bash ci/e2e/app/windows-linux-signin.sh

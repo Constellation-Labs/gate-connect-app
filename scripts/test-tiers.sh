@@ -126,7 +126,12 @@ tier_workspace() {
   step rustfmt cargo fmt --all -- --check || return 1
   step clippy cargo clippy --locked --workspace --all-targets -- -D warnings || return 1
   step cargo-test noproxy cargo test --locked --workspace || return 1
-  # The `web` job.
+  # The `web` job, which runs Node 20. Node 25 and later ship a global
+  # localStorage that shadows jsdom's, and the vitest suite fails on it.
+  local node_major; node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo none)"
+  if [ "$node_major" != 20 ]; then
+    note "Node $node_major on PATH; CI runs Node 20. On Node 25+ vitest fails on localStorage; switch with nvm/fnm to 20 (or 24)"
+  fi
   step pnpm-install pnpm install --frozen-lockfile || return 1
   step pnpm-build pnpm build || return 1
   step vitest noproxy pnpm test || return 1
@@ -201,7 +206,7 @@ tier_app() {
   # nothing inside can reach anything else. The hosts file, the trust store,
   # port 443 and the install are the container's, removed with it.
   trap 'docker_ rm -f "$name" >/dev/null 2>&1' INT TERM
-  step signin docker_ run --rm --name "$name" --platform linux/amd64 --network none --shm-size 1g \
+  step signin docker_ run --rm --name "$name" --platform linux/amd64 --init --network none --shm-size 1g \
     -v "$(hostpath "$ROOT"):/src:ro" -v "$(hostpath "$DEB_DIR"):/bundle:ro" -v "$(hostpath "$out"):/out" \
     "$img"
   local rc=$?
@@ -250,7 +255,7 @@ for t in "${ALL_TIERS[@]}"; do
   case " ${TIERS[*]} " in *" $t "*) ;; *) printf '  %-10s not selected\n' "$t" ;; esac
 done
 if [ ${#NOTES[@]} -gt 0 ]; then
-  echo "not covered here:"
+  echo "notes (what ran elsewhere, or not at all, on this host):"
   printf '  - %s\n' "${NOTES[@]}"
 fi
 exit $overall

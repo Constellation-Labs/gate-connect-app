@@ -18,7 +18,8 @@ bash scripts/test-tiers.sh --tier workspace,routing
 | `--list` | Print the tier names. |
 
 It needs Rust (the pinned toolchain), pnpm and Node 20 for the host tiers, and
-Docker for the container ones. Every step's output goes to
+Docker for the container ones. Node 20 is what CI runs. Node 25 and later ship
+a global `localStorage` that shadows jsdom's, and vitest fails on it there. Every step's output goes to
 `target/test-tiers/<timestamp>/<tier>-<step>.log`. A failure prints
 `FAIL: tier <tier>, step <step>` with that log's path, and the summary at the
 end repeats it with each tier's time. The summary also lists what was not
@@ -87,7 +88,8 @@ and every runtime dependency of the `.deb`. The command starts it with:
   and logs the CI job uploads.
 
 The hosts file, the trust store, port 443 and the install all belong to the
-container, and go away with it (`--rm`).
+container, and go away with it (`--rm`). It also runs with `--init`: with
+`xvfb-run` as PID 1 the container waits forever for Xvfb's readiness signal.
 
 `windows-linux-signin.sh` accepts the container only when it can verify it is
 inside one: the image sets `GATE_CONNECT_E2E_CONTAINER=1`, the container
