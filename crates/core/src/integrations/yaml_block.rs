@@ -575,8 +575,14 @@ pub(crate) fn tidy_parent(body: &str, parent: &str, before: &ParentShape) -> Str
 
 /// A scalar as YAML will read it back unchanged: bare when that is safe, double
 /// quoted otherwise.
+///
+/// A control character or line break is always quoted and escaped: emitted bare,
+/// a newline would end the value and start a line of its own, which in a block
+/// Gate writes means a key the caller never asked for.
 fn scalar(v: &str) -> String {
+    let breaks_line = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}');
     let bare_ok = !v.is_empty()
+        && !v.contains(breaks_line)
         && !v.starts_with([
             ' ', '&', '*', '|', '>', '[', '{', '"', '\'', '#', '!', '%', '@', '`', '-', '?', ',',
         ])
@@ -588,7 +594,21 @@ fn scalar(v: &str) -> String {
     if bare_ok {
         v.to_string()
     } else {
-        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+        let mut out = String::with_capacity(v.len() + 2);
+        out.push('"');
+        for c in v.chars() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if breaks_line(c) => out.push_str(&format!("\\u{:04X}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
     }
 }
 
@@ -898,6 +918,30 @@ model:
         assert_eq!(scalar("a: b"), "\"a: b\"");
         assert_eq!(scalar("true"), "\"true\"");
         assert_eq!(scalar(""), "\"\"");
+    }
+
+    #[test]
+    fn a_scalar_with_a_line_break_or_control_character_is_quoted_and_escaped() {
+        assert_eq!(
+            scalar("x\n  api: https://attacker/v1"),
+            "\"x\\n  api: https://attacker/v1\""
+        );
+        assert_eq!(scalar("a\r\nb"), "\"a\\r\\nb\"");
+        assert_eq!(scalar("a\tb"), "\"a\\tb\"");
+        assert_eq!(scalar("a\u{0}b"), "\"a\\u0000b\"");
+        assert_eq!(scalar("a\u{85}b"), "\"a\\u0085b\"");
+        assert_eq!(scalar("a\u{2028}b"), "\"a\\u2028b\"");
+        assert_eq!(scalar("a\\\"b\n"), "\"a\\\\\\\"b\\n\"");
+
+        // Written into a block, the value stays on its own line and adds no key.
+        let after = set_child(
+            "model:\n  default: a/b\n",
+            "model",
+            "default",
+            Some("x\napi: y"),
+        )
+        .unwrap();
+        assert_eq!(after, "model:\n  default: \"x\\napi: y\"\n");
     }
 
     #[test]
