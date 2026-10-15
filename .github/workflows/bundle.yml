@@ -106,12 +106,16 @@ jobs:
       # macOS notarization uses an App Store Connect API key. The .p8 is stored
       # as a base64 secret; decode it to a file the bundler reads via
       # APPLE_API_KEY_PATH. Only macOS notarizes, so skip it on the other runners.
+      # The secret arrives through env, not `${{ }}` in the script: an expression
+      # is pasted into the script text before bash parses it.
       - name: Write App Store Connect API key (macOS)
         if: inputs.release && matrix.platform == 'macos-latest'
         shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
           set -euo pipefail
-          printf '%s' "${{ secrets.APPLE_API_KEY_P8 }}" | openssl base64 -d -A > "$RUNNER_TEMP/apple-api-key.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | openssl base64 -d -A > "$RUNNER_TEMP/apple-api-key.p8"
       - name: Build, sign & release
         if: inputs.release
         uses: tauri-apps/tauri-action@v0

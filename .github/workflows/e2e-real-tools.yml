@@ -153,18 +153,21 @@ jobs:
       # not on main). Unpinned, install.sh clones the tip of main, so an
       # upstream break turns this job red on PRs that touch nothing here
       # (96c64b45 did on 2026-10-06). Bump the SHA deliberately, after a newer
-      # commit is seen to install cleanly.
+      # commit is seen to install cleanly, in all four Hermes steps below.
       #
       # The installer is read through the GitHub contents API with this job's
       # token, not from raw.githubusercontent.com. Raw reads are anonymous and
       # rate-limited per runner IP, and shared macOS runners hit that limit
       # even with retries (a 429 failed #450 on 2026-10-13 and #468 on
       # 2026-10-14). An authenticated API read has its own, far higher limit,
-      # and returns the same bytes. The token is read-only and the repo is
-      # public, so nothing is exposed. --retry still covers transient errors,
-      # and the script is saved first so a failed fetch stops the step before
-      # bash runs anything.
-      - name: Install Hermes (Linux/macOS)
+      # and returns the same bytes. --retry still covers transient errors, and
+      # the script is saved first so a failed fetch stops the job before
+      # anything runs it.
+      #
+      # The fetch and the install are separate steps so the token is only in
+      # the environment of curl. The installer is third-party code and never
+      # sees it (AG-1139).
+      - name: Fetch Hermes installer (Linux/macOS)
         if: matrix.os != 'windows-latest'
         shell: bash
         env:
@@ -177,11 +180,19 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -o "$RUNNER_TEMP/hermes-install.sh" \
             "https://api.github.com/repos/NousResearch/hermes-agent/contents/scripts/install.sh?ref=$HERMES_COMMIT"
+
+      - name: Install Hermes (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        env:
+          HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
+        run: |
           bash "$RUNNER_TEMP/hermes-install.sh" --skip-browser --commit "$HERMES_COMMIT"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # Windows gets install.ps1 at the same pinned commit. It does take a
-      # browser opt-out: -SkipBrowser is install.sh's --skip-browser (both pass
+      # Windows gets install.ps1 at the same pinned commit, fetched in its own
+      # step for the same reason. It does take a browser opt-out:
+      # -SkipBrowser is install.sh's --skip-browser (both pass
       # `--without agent-browser` to Hermes' package manager), so no
       # Playwright/Chromium download happens. -SkipComputerUse drops the
       # cua-driver the same way, and -NonInteractive skips the setup and gateway
@@ -189,10 +200,9 @@ jobs:
       # %LOCALAPPDATA%\hermes\bin, which the installer adds to the user PATH
       # only, so it is added to GITHUB_PATH here. timeout-minutes bounds the
       # step, so a stalled download fails it rather than the whole job.
-      - name: Install Hermes (Windows)
+      - name: Fetch Hermes installer (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        timeout-minutes: 20
         env:
           HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
           GH_TOKEN: ${{ github.token }}
@@ -201,6 +211,15 @@ jobs:
           # Through the contents API with the job's token, as on Linux/macOS.
           curl.exe -fsSL --retry 5 --retry-delay 10 --retry-max-time 120 -H "Authorization: Bearer $env:GH_TOKEN" -H "Accept: application/vnd.github.raw" -H "X-GitHub-Api-Version: 2022-11-28" -o $installer "https://api.github.com/repos/NousResearch/hermes-agent/contents/scripts/install.ps1?ref=$env:HERMES_COMMIT"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Install Hermes (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          HERMES_COMMIT: 80cf5183f8ed812e8814b244e3ea6e72661d228a
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'hermes-install.ps1'
           pwsh -NoProfile -File $installer -Commit $env:HERMES_COMMIT -SkipBrowser -SkipComputerUse -NonInteractive
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $bin = Join-Path $env:LOCALAPPDATA 'hermes\bin'
