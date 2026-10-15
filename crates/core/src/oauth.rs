@@ -630,8 +630,9 @@ pub fn current() -> Result<Option<OAuthTokens>> {
     // hour.
     //
     // The witness moves on exactly what must not be served stale: login
-    // rewrites `account.json` and sign-out removes it, in this process or in
-    // the CLI. What it deliberately does not catch is another process
+    // rewrites `account.json` with a fresh stamp after storing the bundle
+    // (`account::stamp_sign_in`), even when it changes nothing else, and
+    // sign-out removes it, in this process or in the CLI. What it deliberately does not catch is another process
     // *refreshing* the bundle, because that one is harmless here - `ensure_fresh`
     // re-tests the expiry of whatever comes back, so a bundle that ages out is
     // refreshed rather than served, and Cognito does not rotate refresh tokens
@@ -1389,6 +1390,9 @@ where
     }
     let tokens = complete_login(cfg, &code, &req.verifier, listener.redirect_uri())?;
     store(&tokens)?;
+    // After the store, so a reader in another process cannot cache the old
+    // bundle under the moved witness. See `account::stamp_sign_in`.
+    crate::account::stamp_sign_in()?;
     Ok(tokens)
 }
 
