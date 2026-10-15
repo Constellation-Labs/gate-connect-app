@@ -354,6 +354,44 @@ jobs:
       # merge, not only on the tag.
       macos_universal: ${{ github.event_name != 'pull_request' }}
 
+  # The shipped app, installed and driven through its own window (AG-905). The
+  # macOS half first, because it is the half with no WebDriver: WKWebView
+  # publishes the page to the accessibility tree, and the runner image already
+  # trusts osascript for accessibility and bash for screen capture, so the
+  # driver needs nothing from the app. See ci/e2e/app/macos-signin.sh for how
+  # the release-profile bundle, whose test seams are compiled out, ends up
+  # talking to the mock gateway. Screenshots and accessibility dumps of every
+  # failed step land in `app-e2e-macos`.
+  app-e2e-macos:
+    name: App e2e (macOS)
+    # Waits on all three bundle legs: a reusable workflow cannot expose one
+    # leg as a dependency, so a Windows or Linux bundling failure skips this
+    # job too. Free today, since macOS is the slowest leg.
+    needs: bundle
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-macos-latest
+          path: bundle
+      - name: Sign in through the installed app
+        env:
+          BUNDLE_DIR: ${{ github.workspace }}/bundle
+          OUT: ${{ github.workspace }}/app-e2e-out
+        run: bash ci/e2e/app/macos-signin.sh
+      - name: Upload screenshots and accessibility dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-e2e-macos
+          path: app-e2e-out/
+          retention-days: 7
+
   # The seam neither other suite covers: a CLICK in the real frontend reaching
   # the real Rust command, and the real backend's state deciding what the UI
   # then shows. `web` drives the frontend against a fake backend; `rust` and
@@ -487,4 +525,80 @@ jobs:
         with:
           name: playwright-report-live-${{ matrix.os }}
           path: playwright-report/
+          retention-days: 7
+
+  # The shipped app on Windows and Linux, installed from this run's bundle and
+  # driven through its own window (AG-905), the same sign-in as the macOS job.
+  # One script, ci/e2e/app/windows-linux-signin.sh, with a driver per OS:
+  # UI Automation on Windows (windows-uia.ps1; msedgedriver cannot attach to
+  # this app's WebView2, see its header) and WebDriver through tauri-driver
+  # and WebKitWebDriver on Linux (webdriver.mjs). The script's header says how
+  # the release bundle, whose test seams are compiled out, reaches the mock
+  # gateway. Screenshots, page dumps and logs land in `app-e2e-<os>`.
+  app-e2e-windows:
+    name: App e2e (Windows)
+    needs: bundle
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-windows-latest
+          path: bundle
+      - name: Sign in through the installed app
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ github.workspace }}/bundle
+          OUT: ${{ github.workspace }}/app-e2e-out
+        run: bash ci/e2e/app/windows-linux-signin.sh
+      - name: Upload screenshots, page dumps and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-e2e-windows
+          path: app-e2e-out/
+          retention-days: 7
+
+  app-e2e-linux:
+    name: App e2e (Linux)
+    needs: bundle
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-ubuntu-22.04
+          path: bundle
+      # WebKitWebDriver, a display, a session bus, and a Secret Service for the
+      # app's keychain (secret-tool to probe it). imagemagick for the screen
+      # capture on a failure.
+      - name: Install the driver and a desktop session
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y webkit2gtk-driver xvfb dbus-x11 gnome-keyring libsecret-tools imagemagick
+      # From outside the checkout, so the image's stable toolchain builds it
+      # rather than the repo's pinned 1.88: tauri-driver 2.1 needs 1.90. A
+      # standalone binary, not a workspace member, so no Rust cache to restore.
+      - name: Install tauri-driver
+        working-directory: ${{ runner.temp }}
+        run: cargo install tauri-driver@2.1.0 --locked
+      - name: Sign in through the installed app
+        env:
+          BUNDLE_DIR: ${{ github.workspace }}/bundle
+          OUT: ${{ github.workspace }}/app-e2e-out
+        run: xvfb-run -a -s "-screen 0 1440x900x24" dbus-run-session -- bash ci/e2e/app/windows-linux-signin.sh
+      - name: Upload screenshots, page dumps and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-e2e-linux
+          path: app-e2e-out/
           retention-days: 7
