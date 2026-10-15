@@ -1,4 +1,4 @@
-// node --test ci/e2e/staging/test/
+// node --test 'ci/e2e/staging/test/*.test.mjs'
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assertRecord, checkEntry, waitForEvidence } from '../lib/evidence.mjs';

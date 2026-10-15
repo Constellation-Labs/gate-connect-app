@@ -1,4 +1,4 @@
-// node --test ci/e2e/staging/test/
+// node --test 'ci/e2e/staging/test/*.test.mjs'
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';

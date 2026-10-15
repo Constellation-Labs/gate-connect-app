@@ -1,4 +1,4 @@
-// node --test ci/e2e/staging/test/
+// node --test 'ci/e2e/staging/test/*.test.mjs'
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BadResponseError, ConfigError, EXIT, HttpError, NotImplementedError, classify, describe, worst } from '../lib/outcome.mjs';

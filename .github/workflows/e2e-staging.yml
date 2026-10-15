@@ -122,7 +122,7 @@ jobs:
 
       - name: Unit tests (checker and outcome classification)
         shell: bash
-        run: node --test ci/e2e/staging/test/
+        run: node --test 'ci/e2e/staging/test/*.test.mjs'
 
       - name: Build gate-connect CLI
         run: cargo build --locked -p gate-connect-cli
