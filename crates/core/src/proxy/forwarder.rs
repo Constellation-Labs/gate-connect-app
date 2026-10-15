@@ -21,6 +21,54 @@ use anyhow::{Context, Result};
 /// How long to wait for a freshly spawned forwarder to be answering.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a loaded launch agent gets to answer after a `kickstart -k`, before
+/// it is given up on.
+///
+/// Longer than launchd's default `ThrottleInterval` of 10s, which this plist
+/// does not override: a forwarder that exited moments ago is not started again
+/// until that interval has passed, whatever connects. [`SPAWN_TIMEOUT`] alone
+/// is shorter than the throttle, so a forwarder that had just exited read as an
+/// agent that does not work, and the agent was torn down for it (AG-1098).
+#[cfg(target_os = "macos")]
+const AGENT_RESTART_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long the direct fallback waits for the agent's port to be let go of
+/// before it spawns.
+///
+/// The spawned forwarder retries the port it is asked for for only 250ms
+/// before it takes a fresh one, and a `bootout` hands launchd's socket back
+/// slower than that. Spawning straight after the bootout is what moved the
+/// forwarder from 47100 to 47101 and left every running tool on a dead port
+/// (AG-1098).
+#[cfg(target_os = "macos")]
+const PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Say what the forwarder lifecycle did, on stderr and in `gate-connect.log`.
+///
+/// Both, because the forwarder runs in the background and nothing on screen
+/// reports it: the app's stderr goes nowhere in a bundled build, and these
+/// were `eprintln!`s only, so an outage left no trace to diagnose it from.
+fn note(level: crate::logging::Level, message: &str) {
+    eprintln!("gate proxy: {message}");
+    crate::logging::log(level, &format!("forwarder: {message}"));
+}
+
+/// Poll until nothing is listening on `port`, or `timeout` runs out. Whether
+/// the port is free.
+#[cfg(any(target_os = "macos", test))]
+fn await_port_free(port: u16, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !gate_connect_paths::port_is_live(port) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Name of the sidecar binary, installed beside the app's own executable.
 #[cfg(windows)]
 const FORWARDER_BIN: &str = "gate-connect-forwarder.exe";
@@ -84,8 +132,8 @@ fn marker_body() -> Option<Vec<u8>> {
 /// meet here.
 ///
 /// Held across a spawn and its answer-poll, so an ensure can own it for
-/// [`SPAWN_TIMEOUT`] (twice that on macOS, where the launch agent is tried
-/// first). Two consequences worth knowing rather than fixing: a `stop` on the
+/// [`SPAWN_TIMEOUT`] - and on macOS, where the launch agent is tried first,
+/// restarted in place and only then given up on, for up to about 30s. Two consequences worth knowing rather than fixing: a `stop` on the
 /// quit path waits that long in the worst case, which is the price of it being
 /// airtight, and a user-facing `enable` can wait behind a supervisory pass
 /// that is mid-spawn. The reverse cannot happen, because a supervisor takes
@@ -658,8 +706,24 @@ mod launch_agent {
     }
 
     /// Whether launchd has the job loaded, plist or not.
-    fn loaded() -> bool {
+    pub(super) fn loaded() -> bool {
         launchctl(&["print", &format!("{}/{LABEL}", domain())])
+    }
+
+    /// Whether the agent's plist is on disk.
+    pub(super) fn installed() -> bool {
+        plist_path().is_ok_and(|p| p.exists())
+    }
+
+    /// Kill the job's process, if any, and start it again now, keeping the
+    /// plist and the sockets launchd holds.
+    ///
+    /// This is the repair for a loaded agent whose forwarder does not answer -
+    /// hung, crashed, or inside launchd's respawn throttle. Removing the agent
+    /// instead gives the port back, and the direct spawn that follows can lose
+    /// it (AG-1098).
+    pub(super) fn kickstart() -> bool {
+        launchctl(&["kickstart", "-k", &format!("{}/{LABEL}", domain())])
     }
 
     /// Write back the plist [`forget`] deleted, without touching the loaded
@@ -704,7 +768,7 @@ pub(crate) fn ensure_running() -> Result<u16> {
     let _serial = ENSURE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_running_locked()
+    ensure_running_locked(true)
 }
 
 /// [`ensure_running`] for a supervisor rather than for a caller who is about
@@ -727,14 +791,19 @@ pub(crate) fn ensure_running_supervised() -> Supervision {
     if !wanted() {
         return Supervision::NotWanted;
     }
-    match ensure_running_locked() {
+    // No adopting from a supervisor: it would cost a working forwarder its
+    // port for a moment on a timer, with nobody asking.
+    match ensure_running_locked(false) {
         Ok(port) => Supervision::Running(port),
         Err(e) => Supervision::Failed(e),
     }
 }
 
 /// The body of an ensure. Callers hold [`ENSURE_LOCK`].
-fn ensure_running_locked() -> Result<u16> {
+///
+/// `adopt_stray` lets this hand a forwarder running outside launchd back to
+/// the launch agent; see [`adopt_stray_once`].
+fn ensure_running_locked(adopt_stray: bool) -> Result<u16> {
     // Read before the write below, which is what cancels a drain.
     let was_draining = draining();
     let marker = marker_path()?;
@@ -760,7 +829,7 @@ fn ensure_running_locked() -> Result<u16> {
         launch_agent::restore_file(fronting);
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = was_draining;
+    let _ = (was_draining, adopt_stray);
 
     if let Some(port) = persisted_port() {
         // The one place being out of date counts: replace it. Everywhere else
@@ -790,22 +859,26 @@ fn ensure_running_locked() -> Result<u16> {
             #[cfg(target_os = "macos")]
             Some(RelayClaim::Holds(held)) if launch_agent::needs_relay_socket(held) => {
                 match launch_agent::install(Some(held)) {
-                    Ok(port) if await_health(port, &token) => return Ok(port),
-                    Ok(_) => {
-                        eprintln!(
-                            "gate proxy: the forwarder launch agent did not answer after adding \
-                             the relay socket; removing it and starting the forwarder directly"
-                        );
-                        launch_agent::remove();
-                    }
-                    Err(e) => eprintln!(
-                        "gate proxy: could not add the relay socket to the forwarder launch \
-                         agent ({e:#})"
+                    Ok(port) if await_health(port, &token, SPAWN_TIMEOUT) => return Ok(port),
+                    Ok(port) if restart_agent(port, &token) => return Ok(port),
+                    Ok(port) => abandon_agent(
+                        port,
+                        "the launch agent did not answer after adding the relay socket, \
+                         nor after a restart",
+                    ),
+                    Err(e) => note(
+                        crate::logging::Level::Warn,
+                        &format!("could not add the relay socket to the launch agent ({e:#})"),
                     ),
                 }
             }
+            #[cfg(target_os = "macos")]
+            Some(_) if adopt_stray && !was_draining && adopt_stray_once(port) => {}
             Some(_) => return Ok(port),
-            None => {}
+            None => note(
+                crate::logging::Level::Warn,
+                &format!("nothing answered as the forwarder on port {port}"),
+            ),
         }
     }
 
@@ -834,32 +907,158 @@ fn ensure_running_locked() -> Result<u16> {
     #[cfg(target_os = "macos")]
     {
         match launch_agent::install(None) {
-            Ok(port) => {
-                if await_health(port, &token) {
-                    return Ok(port);
-                }
-                eprintln!(
-                    "gate proxy: the forwarder launch agent did not answer; removing it and \
-                     starting the forwarder directly"
-                );
-                launch_agent::remove();
-            }
-            Err(e) => eprintln!("gate proxy: could not install the forwarder launch agent ({e:#})"),
+            Ok(port) if await_health(port, &token, SPAWN_TIMEOUT) => return Ok(port),
+            Ok(port) if restart_agent(port, &token) => return Ok(port),
+            Ok(port) => abandon_agent(port, "the launch agent did not answer, nor after a restart"),
+            Err(e) => note(
+                crate::logging::Level::Warn,
+                &format!("could not install the launch agent ({e:#})"),
+            ),
         }
     }
 
+    // What the exported variables and tool configs name now. A forwarder that
+    // comes up anywhere else strands every process that read them at launch.
+    let wanted_port = persisted_port();
     spawn_detached()?;
+    // On macOS this is the fallback, and worth a warning: the agent did not
+    // work. Elsewhere it is the only way a forwarder starts.
+    #[cfg(target_os = "macos")]
+    let (level, how) = (crate::logging::Level::Warn, "directly, outside launchd");
+    #[cfg(not(target_os = "macos"))]
+    let (level, how) = (crate::logging::Level::Info, "as a detached process");
+    note(
+        level,
+        &format!(
+            "started the forwarder {how} (wanted port {})",
+            wanted_port.map_or_else(|| "none yet".to_string(), |p| p.to_string())
+        ),
+    );
 
     let deadline = std::time::Instant::now() + SPAWN_TIMEOUT;
     while std::time::Instant::now() < deadline {
         if let Some(port) = persisted_port() {
             if health_ok(port, &token) {
+                if let Some(wanted) = wanted_port.filter(|wanted| *wanted != port) {
+                    note(
+                        crate::logging::Level::Error,
+                        &format!(
+                            "the forwarder moved from port {wanted} to {port}; tools that were \
+                             already running keep {wanted} and need a restart"
+                        ),
+                    );
+                }
                 return Ok(port);
             }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    note(
+        crate::logging::Level::Error,
+        &format!("the directly started forwarder did not answer within {SPAWN_TIMEOUT:?}"),
+    );
     anyhow::bail!("the environment forwarder did not answer within {SPAWN_TIMEOUT:?}")
+}
+
+/// Bring a loaded agent's forwarder back without giving up its port.
+///
+/// `false` when no job is loaded, or it still does not answer after the
+/// restart; the caller then falls back to [`abandon_agent`].
+#[cfg(target_os = "macos")]
+fn restart_agent(port: u16, token: &str) -> bool {
+    if !launch_agent::loaded() {
+        return false;
+    }
+    note(
+        crate::logging::Level::Warn,
+        &format!("the launch agent's forwarder on port {port} did not answer; restarting it"),
+    );
+    launch_agent::kickstart();
+    let answered = await_health(port, token, AGENT_RESTART_TIMEOUT);
+    if answered {
+        note(
+            crate::logging::Level::Info,
+            &format!("the launch agent's forwarder answers on port {port} again"),
+        );
+    }
+    answered
+}
+
+/// Give up on the agent, and wait for its port before the direct spawn takes
+/// it, so the forwarder comes back on the address tools already hold.
+#[cfg(target_os = "macos")]
+fn abandon_agent(port: u16, why: &str) {
+    note(
+        crate::logging::Level::Warn,
+        &format!("{why}; removing it and starting the forwarder directly"),
+    );
+    launch_agent::remove();
+    if !await_port_free(port, PORT_RELEASE_TIMEOUT) {
+        note(
+            crate::logging::Level::Warn,
+            &format!(
+                "port {port} was still held {PORT_RELEASE_TIMEOUT:?} after removing the launch \
+                 agent; the forwarder may have to take another port"
+            ),
+        );
+    }
+}
+
+/// Hand a forwarder running outside launchd back to the launch agent, on the
+/// port it holds. `true` when the caller should go on to install the agent.
+///
+/// A forwarder ends up outside launchd only through [`abandon_agent`]'s direct
+/// spawn, and it then works until it dies, the session ends or the app is
+/// updated - and the next start is another direct spawn racing for the port.
+/// The agent holds the port from login on and cannot lose it, so the app
+/// returns to it. The port stays the one the forwarder holds, not the one the
+/// agent first had: tool configs and running processes name the current one.
+///
+/// Costs new connections about one marker poll (2s) with nothing on the port.
+/// Connections already open are drained, not cut. So it runs only from a
+/// foreground ensure, at most once per process, and never over a drained
+/// forwarder (whose agent is loaded and kept on purpose).
+#[cfg(target_os = "macos")]
+fn adopt_stray_once(port: u16) -> bool {
+    static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // `loaded` asks the real launchd about the real label, so under the test
+    // seam a test forwarder would always look stray. The same seam that keeps
+    // tests from spawning one keeps them from retiring one.
+    if crate::env::test_seam("GATE_CONNECT_TEST_HOME").is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    if launch_agent::installed() || launch_agent::loaded() {
+        return false;
+    }
+    if TRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    note(
+        crate::logging::Level::Warn,
+        &format!(
+            "the forwarder on port {port} runs outside launchd; handing it back to the launch agent"
+        ),
+    );
+    let Ok(marker) = marker_path() else {
+        return false;
+    };
+    // Removing the marker is how a forwarder is asked to let go: it gives up
+    // both ports on its next poll and drains what it has.
+    let _ = std::fs::remove_file(&marker);
+    let released = await_port_free(port, PORT_RELEASE_TIMEOUT);
+    if let Err(e) = crate::primitives::write_file(&marker, b"", 0o600) {
+        note(
+            crate::logging::Level::Error,
+            &format!("could not write the forwarder marker back ({e:#})"),
+        );
+    }
+    if !released {
+        note(
+            crate::logging::Level::Warn,
+            &format!("port {port} did not come free; keeping the forwarder outside launchd"),
+        );
+    }
+    released
 }
 
 /// Poll `port` until it answers as ours, or the spawn budget runs out.
@@ -872,8 +1071,8 @@ fn ensure_running_locked() -> Result<u16> {
 /// file, because that allow deliberately exempts macOS and Windows - so on
 /// Windows this was a hard error under `-D warnings`, which is what CI reported.
 #[cfg(target_os = "macos")]
-fn await_health(port: u16, token: &str) -> bool {
-    let deadline = std::time::Instant::now() + SPAWN_TIMEOUT;
+fn await_health(port: u16, token: &str, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if health_ok(port, token) {
             return true;
@@ -1356,5 +1555,42 @@ mod tests {
             );
         });
         assert!(health_ok(port, "the-token"));
+    }
+
+    /// AG-1098: the direct fallback must not spawn while launchd still holds
+    /// the port, or the forwarder takes a fresh one and strands every tool.
+    #[test]
+    fn await_port_free_waits_for_the_listener_to_go() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(listener);
+        });
+        assert!(await_port_free(port, Duration::from_secs(5)));
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn await_port_free_gives_up_on_a_port_that_stays_held() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let started = std::time::Instant::now();
+        assert!(!await_port_free(port, Duration::from_millis(300)));
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        drop(listener);
+    }
+
+    /// The restart window has to outlast launchd's respawn throttle, or a
+    /// forwarder that just exited still reads as an agent that does not work.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_agent_restart_window_outlasts_launchds_default_throttle() {
+        const LAUNCHD_DEFAULT_THROTTLE: Duration = Duration::from_secs(10);
+        assert!(AGENT_RESTART_TIMEOUT > LAUNCHD_DEFAULT_THROTTLE);
+        assert!(
+            SPAWN_TIMEOUT < LAUNCHD_DEFAULT_THROTTLE,
+            "why the restart exists"
+        );
     }
 }
