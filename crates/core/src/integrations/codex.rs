@@ -639,7 +639,13 @@ impl Integration for Codex {
         // and a re-connect that ignored it would re-snapshot our own
         // `"gate"` pointer - disconnect would then "restore" `model_provider
         // = "gate"` after deleting the provider block.
-        let marker_has_prev = has_connect_key(&doc);
+        //
+        // The exception is a pointer the user moved off `"gate"` while
+        // connected: that is their choice now, and the one disconnect has to
+        // hand back, so it replaces the snapshot.
+        let pointer_is_ours =
+            doc.get("model_provider").and_then(|i| i.as_str()) == Some(PROVIDER_ID);
+        let marker_has_prev = has_connect_key(&doc) && pointer_is_ours;
         // A pre-existing `"gate"` pointer is never worth restoring: it came
         // from a hand-written setup whose block we adopt and later delete,
         // so treat it like no prior value.
@@ -722,6 +728,8 @@ impl Integration for Codex {
         // connected config as merely Detected.
         marker.remove(PASSTHROUGH_MARKER);
         if !marker_has_prev {
+            marker.remove("previous_model_provider");
+            marker.remove("previous_model_provider_absent");
             match previous_model_provider {
                 Some(s) => {
                     marker.insert("previous_model_provider", value(s));
@@ -798,7 +806,11 @@ impl Integration for Codex {
         }
 
         // Restore the prior `model_provider` (or remove the key entirely
-        // if there was none before).
+        // if there was none before) - only while it still names our block. A
+        // pointer the user moved elsewhere, or removed, is their choice, and
+        // the snapshot from connect time must not overwrite it.
+        let pointer_is_ours =
+            doc.get("model_provider").and_then(|i| i.as_str()) == Some(PROVIDER_ID);
         let (prev, absent) = doc
             .get("_gate_connect")
             .and_then(|i| i.as_table_like())
@@ -814,16 +826,12 @@ impl Integration for Codex {
             })
             .unwrap_or((None, false));
         match (prev, absent) {
+            _ if !pointer_is_ours => {}
             (Some(s), _) => doc["model_provider"] = value(s),
-            (None, true) => {
+            (None, _) => {
+                // No prior value, or no marker (or partial state): our pointer
+                // goes and nothing else is touched.
                 doc.remove("model_provider");
-            }
-            (None, false) => {
-                // No marker (or partial state) - best-effort: only remove
-                // our pointer, don't risk clobbering an unrelated value.
-                if doc.get("model_provider").and_then(|i| i.as_str()) == Some(PROVIDER_ID) {
-                    doc.remove("model_provider");
-                }
             }
         }
         if had_gate_block {

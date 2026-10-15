@@ -632,7 +632,10 @@ fn disable_inner(slug: &str, audit: bool, configs: ToolConfigs) -> Result<Provid
                 integ.status(),
                 Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
             );
-            if connected || integ.detect().unwrap_or(false) {
+            // A tool Gate never connected and whose config carries no marker
+            // of ours has nothing to revert, and its config is the user's own:
+            // a merely installed tool is left alone.
+            if connected || integ.config_is_managed().unwrap_or(false) {
                 integ
                     .disconnect()
                     .with_context(|| format!("disconnecting {}", integ.display_name()))?;

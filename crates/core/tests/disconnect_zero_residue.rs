@@ -1532,3 +1532,211 @@ fn a_reinstalled_opencode_does_not_inherit_the_old_sidecar() {
     );
     assert!(!sidecar.exists());
 }
+
+fn read_json(path: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A Claude Code Gate never connected carries no marker, and its proxy and CA
+/// keys are the user's own - a corporate egress proxy and bundle. Disconnect,
+/// which every quit runs, must leave them exactly as they are (AG-1117).
+#[test]
+fn claude_code_disconnect_without_a_marker_leaves_the_users_keys_alone() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original = r#"{
+  "env": {
+    "HTTPS_PROXY": "http://corp.example:3128",
+    "NODE_EXTRA_CA_CERTS": "/etc/corp/ca.pem",
+    "NO_PROXY": "intranet.example"
+  }
+}
+"#;
+    fs::write(&settings, original).unwrap();
+
+    find(ToolId::ClaudeCode).unwrap().disconnect().unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        original,
+        "a settings.json Gate never wrote must not be touched"
+    );
+}
+
+/// A key the user changed while connected is theirs: disconnect puts back only
+/// the keys still holding what Gate wrote (AG-1117).
+#[test]
+fn claude_code_disconnect_keeps_a_key_the_user_changed_while_connected() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{"env":{"HTTPS_PROXY":"http://corp.example:3128","NODE_EXTRA_CA_CERTS":"/etc/corp/ca.pem"}}"#,
+    )
+    .unwrap();
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    // While connected, the user repoints the CA and widens the bypass list.
+    let mut edited = read_json(&settings);
+    let env_block = edited["env"].as_object_mut().unwrap();
+    env_block.insert("NODE_EXTRA_CA_CERTS".into(), "/etc/new-corp/ca.pem".into());
+    let no_proxy = format!("{},build.example", env_block["NO_PROXY"].as_str().unwrap());
+    env_block.insert("NO_PROXY".into(), no_proxy.clone().into());
+    fs::write(&settings, serde_json::to_string(&edited).unwrap()).unwrap();
+
+    claude.disconnect().unwrap();
+
+    let after = read_json(&settings);
+    let env_block = after["env"].as_object().unwrap();
+    assert_eq!(
+        env_block["NODE_EXTRA_CA_CERTS"].as_str(),
+        Some("/etc/new-corp/ca.pem"),
+        "the CA the user set while connected must survive, not be overwritten by the snapshot"
+    );
+    assert_eq!(
+        env_block["NO_PROXY"].as_str(),
+        Some(no_proxy.as_str()),
+        "the hosts the user added to NO_PROXY must survive"
+    );
+    assert_eq!(
+        env_block["HTTPS_PROXY"].as_str(),
+        Some("http://corp.example:3128"),
+        "a key still holding Gate's value goes back to the user's own"
+    );
+    assert!(after.get("_gateConnect").is_none());
+}
+
+/// A reconnect over a key the user changed re-snapshots it, so the following
+/// disconnect hands back the user's newer value rather than the one from the
+/// first connect (AG-1117).
+#[test]
+fn claude_code_reconnect_resnapshots_a_key_the_user_changed() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{"env":{"HTTPS_PROXY":"http://corp.example:3128"}}"#,
+    )
+    .unwrap();
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    let mut edited = read_json(&settings);
+    edited["env"]
+        .as_object_mut()
+        .unwrap()
+        .insert("HTTPS_PROXY".into(), "http://new-corp.example:8080".into());
+    fs::write(&settings, serde_json::to_string(&edited).unwrap()).unwrap();
+
+    claude.connect(&connect_input(9977)).unwrap();
+    assert_eq!(
+        read_json(&settings)["env"]["HTTPS_PROXY"].as_str(),
+        Some("http://gate-claude-code:route@127.0.0.1:9977"),
+        "the reconnect routes Claude Code again"
+    );
+
+    claude.disconnect().unwrap();
+    assert_eq!(
+        read_json(&settings)["env"]["HTTPS_PROXY"].as_str(),
+        Some("http://new-corp.example:8080"),
+        "the user's newer proxy is the one to hand back"
+    );
+}
+
+/// A `model_provider` the user moved off `gate` while connected stays where
+/// they put it on disconnect, and a reconnect over it records it as the value
+/// to hand back (AG-1117).
+#[test]
+fn codex_disconnect_keeps_a_model_provider_the_user_changed() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let config = env::codex_config_toml_path().unwrap();
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "model_provider = \"openai\"\n").unwrap();
+
+    let input = ConnectInput {
+        billing_mode: gate_connect_core::account::BillingMode::Payg,
+        ..connect_input(9977)
+    };
+    let codex = find(ToolId::Codex).unwrap();
+    let provider = || {
+        let doc: toml_edit::DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+        doc.get("model_provider")
+            .and_then(|i| i.as_str())
+            .map(str::to_owned)
+    };
+    let set_provider = |p: &str| {
+        let mut doc: toml_edit::DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+        doc["model_provider"] = toml_edit::value(p);
+        fs::write(&config, doc.to_string()).unwrap();
+    };
+
+    codex.connect(&input).unwrap();
+    assert_eq!(provider().as_deref(), Some("gate"));
+    set_provider("ollama");
+    codex.disconnect().unwrap();
+    assert_eq!(
+        provider().as_deref(),
+        Some("ollama"),
+        "the provider the user picked while connected must not be overwritten"
+    );
+
+    // Connected again from there, then moved again: the reconnect snapshots
+    // the user's latest choice, and disconnect hands that one back.
+    codex.connect(&input).unwrap();
+    set_provider("lmstudio");
+    codex.connect(&input).unwrap();
+    assert_eq!(provider().as_deref(), Some("gate"));
+    codex.disconnect().unwrap();
+    assert_eq!(provider().as_deref(), Some("lmstudio"));
+}
+
+/// A proxy the user repointed while OpenClaw was connected is theirs, and
+/// stays switched on (AG-1117).
+#[test]
+fn openclaw_disconnect_keeps_a_proxy_the_user_repointed() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    seed_engine_port(9977);
+
+    let cfg = env::openclaw_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(&cfg, r#"{"models":{}}"#).unwrap();
+
+    let integ = find(ToolId::OpenClaw).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    let mut edited = read_json(&cfg);
+    edited["proxy"]["proxyUrl"] = "http://mitm.example:8080".into();
+    fs::write(&cfg, serde_json::to_string(&edited).unwrap()).unwrap();
+
+    integ.disconnect().unwrap();
+
+    let after = read_json(&cfg);
+    assert_eq!(
+        after["proxy"]["proxyUrl"].as_str(),
+        Some("http://mitm.example:8080"),
+        "the user's proxy must survive disconnect"
+    );
+    assert_eq!(
+        after["proxy"]["enabled"].as_bool(),
+        Some(true),
+        "and stay switched on, since it is what that proxy runs on"
+    );
+}

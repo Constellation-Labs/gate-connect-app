@@ -640,9 +640,10 @@ impl Integration for Hermes {
                 write_config(&crate::env::hermes_config_path()?, &after)?;
             }
         }
-        // Each key Gate added, narrowed to Gate's own line when the file holds
-        // it: a second line of the key that the user added stays. A key the
-        // user took over is taken back by name, as disconnect always did.
+        // Each key Gate added, narrowed to Gate's own line: a second line of
+        // the key that the user added stays, and so does a line the user
+        // edited since Gate wrote it. Only a sidecar from before values were
+        // recorded takes a key back by name.
         let owned: Vec<dotenv::Owned> = state
             .added_vars
             .iter()
