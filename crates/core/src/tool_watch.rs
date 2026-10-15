@@ -531,6 +531,7 @@ mod tests {
 
     /// Wait for `calls` to pass `from`, re-running `touch` on the same 2s cadence
     /// as the test above and for the same reasons.
+    #[cfg(not(windows))]
     fn heard_after(calls: &AtomicUsize, from: usize, touch: impl Fn()) -> bool {
         let deadline = Instant::now() + Duration::from_secs(12);
         let mut nudged = Instant::now();
