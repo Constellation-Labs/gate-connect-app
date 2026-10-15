@@ -404,7 +404,9 @@ export function AlertBanner({
   /** The action this banner offers is in flight. Threaded to the switch so the
    *  remedy cannot be started twice while the first attempt is still writing. */
   busy?: boolean;
-  onToggle: () => void;
+  /** Omitted when the banner has no remedy Gate can perform: no switch is
+   *  drawn, rather than one that repeats a step bound to fail the same way. */
+  onToggle?: () => void;
   onDismiss: () => void;
   /** Present only in the multiple-apps variant. */
   paging?: { onPrev: () => void; onNext: () => void };
@@ -424,7 +426,9 @@ export function AlertBanner({
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
-        <BaseSwitch on={on} label={switchLabel} busy={busy} onClick={onToggle} />
+        {onToggle && (
+          <BaseSwitch on={on} label={switchLabel} busy={busy} onClick={onToggle} />
+        )}
         <button
           type="button"
           onClick={onDismiss}

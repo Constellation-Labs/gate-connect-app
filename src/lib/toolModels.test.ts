@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GATE_MODEL_TOOLS,
   adaptCredits,
   adaptModels,
   adaptPreferences,
@@ -563,3 +564,15 @@ describe("configured problems", () => {
   });
 });
 
+
+describe("which apps get the Gate model card", () => {
+  it("is every app whose own config Gate writes models into, and no other", () => {
+    // Each of these has `Integration::supports_gate_models` on the backend, and
+    // the relay refuses the Gate models route to any tool that does not. A slug
+    // added here without the backend half draws a card whose choice does nothing.
+    expect([...GATE_MODEL_TOOLS].sort()).toEqual(["claude-code", "codex", "hermes", "opencode"]);
+    for (const slug of ["openclaw", "env-proxy", "chatgpt", "claude-web"]) {
+      expect(GATE_MODEL_TOOLS.has(slug)).toBe(false);
+    }
+  });
+});

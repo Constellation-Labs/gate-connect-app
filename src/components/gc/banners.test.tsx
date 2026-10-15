@@ -156,6 +156,15 @@ describe("AlertBanner", () => {
     render(<AlertBanner {...props} />);
     expect(screen.queryByText("Details")).toBeNull();
   });
+
+  it("draws its switch only with a handler for it", () => {
+    const { unmount } = render(<AlertBanner {...props} />);
+    expect(screen.getByRole("switch", { name: "Try Codex again" })).toBeTruthy();
+    unmount();
+    render(<AlertBanner {...props} onToggle={undefined} />);
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.getByRole("button", { name: "Dismiss alert" })).toBeTruthy();
+  });
 });
 
 /**
