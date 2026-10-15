@@ -5,7 +5,6 @@
 //! be an object, 0600 atomic writes with a trailing newline - are a single
 //! decision instead of three drifting ones.
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -94,10 +93,11 @@ pub(crate) fn ensure_object<'a>(
 }
 
 fn read_raw(path: &Path) -> Result<Option<String>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let raw = match crate::config_changes::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
     if raw.trim().is_empty() {
         return Ok(None);
     }

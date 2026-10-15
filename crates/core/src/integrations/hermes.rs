@@ -1207,7 +1207,7 @@ const HEADER_CHILD: &str = "extra_headers";
 /// arm is reserved for I/O, so a refused shape is not reported as a failure.
 fn write_tool_header() -> Result<Option<yaml_block::Created>> {
     let path = crate::env::hermes_config_path()?;
-    let before = match std::fs::read_to_string(&path) {
+    let before = match crate::config_changes::read_to_string(&path) {
         Ok(body) => body,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
@@ -1249,7 +1249,7 @@ fn write_tool_header() -> Result<Option<yaml_block::Created>> {
 /// Take the header back out, per what connect recorded creating.
 fn remove_tool_header(created: yaml_block::Created) -> Result<()> {
     let path = crate::env::hermes_config_path()?;
-    let Ok(before) = std::fs::read_to_string(&path) else {
+    let Ok(before) = crate::config_changes::read_to_string(&path) else {
         // Gone already; nothing of ours is left in a file that is not there.
         return Ok(());
     };
@@ -1286,7 +1286,7 @@ fn is_gate_provider(value: &str) -> bool {
 
 fn read_config_body() -> Result<String> {
     let path = crate::env::hermes_config_path()?;
-    match std::fs::read_to_string(&path) {
+    match crate::config_changes::read_to_string(&path) {
         Ok(body) => Ok(body),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
