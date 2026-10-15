@@ -54,6 +54,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use super::engine::PeerOwner;
 use crate::account::BillingMode;
 use crate::proxy::{default_domains, ProxyDomain};
 
@@ -255,10 +256,11 @@ struct RelayState {
     /// every request forwards to the real upstream under the tool's own
     /// credential: the relay's analogue of the MITM port's blind tunnel.
     intercept: watch::Receiver<bool>,
-    /// The UID allowed to spend the host's Gate credential, or `None` to allow
-    /// any loopback peer. Set only where UIDs are resolvable (Linux); mirrors
-    /// [`super::engine::EngineConfig::owner_uid`]. See [`RelayState::peer_allowed`].
-    owner_uid: Option<u32>,
+    /// The user allowed to spend the host's Gate credential, or `None` to allow
+    /// any loopback peer. Set wherever peers are resolvable (all three
+    /// platforms); mirrors [`super::engine::EngineConfig::owner_uid`]. See
+    /// [`RelayState::peer_allowed`].
+    owner_uid: Option<PeerOwner>,
 }
 
 impl RelayState {
@@ -269,7 +271,7 @@ impl RelayState {
         org: watch::Receiver<Arc<str>>,
         mode: watch::Receiver<BillingMode>,
         intercept: watch::Receiver<bool>,
-        owner_uid: Option<u32>,
+        owner_uid: Option<PeerOwner>,
     ) -> Self {
         let scheme = gateway.scheme_str().unwrap_or("https");
         let authority = gateway.authority().map(|a| a.as_str()).unwrap_or("");
@@ -308,18 +310,21 @@ impl RelayState {
         }
     }
 
-    /// Whether `peer` (a loopback connection's remote address) may spend the
-    /// host's Gate credential. `true` when no owner restriction is set;
-    /// otherwise the peer's resolved UID must equal the owner. Fails **closed**:
-    /// an unresolvable UID is rejected rather than served, so we never hand the
-    /// credential to an unverified local process. Mirrors the MITM engine's
-    /// `peer_allowed`, except the relay drops the connection where the engine
-    /// falls back to a blind tunnel.
-    fn peer_allowed(&self, peer: std::net::SocketAddr) -> bool {
-        match self.owner_uid {
-            None => true,
-            Some(owner) => super::engine::peer_uid_for(peer) == Some(owner),
-        }
+    /// Whether `peer` (a loopback connection's remote address, accepted on
+    /// `local`) may spend the host's Gate credential. `true` when no owner
+    /// restriction is set; otherwise the peer's resolved user must be the
+    /// owner. Fails **closed**: an unresolvable user is rejected rather than
+    /// served, so we never hand the credential to an unverified local process.
+    /// Mirrors the MITM engine's `peer_allowed`, except the relay drops the
+    /// connection where the engine falls back to a blind tunnel.
+    fn peer_allowed(
+        &self,
+        peer: std::net::SocketAddr,
+        local: std::io::Result<std::net::SocketAddr>,
+    ) -> bool {
+        self.owner_uid.is_none_or(|owner| {
+            local.is_ok_and(|local| super::engine::peer_is_owner(peer, local, owner))
+        })
     }
 }
 
@@ -338,7 +343,7 @@ pub(crate) fn spawn(
     org: watch::Receiver<Arc<str>>,
     mode: watch::Receiver<BillingMode>,
     intercept: watch::Receiver<bool>,
-    owner_uid: Option<u32>,
+    owner_uid: Option<PeerOwner>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
@@ -367,7 +372,7 @@ async fn accept_loop(listener: TcpListener, state: Arc<RelayState>) {
         // (or UID-unresolvable) peer before serving it - unlike the MITM engine,
         // which blind-tunnels, the relay has nowhere to forward without the
         // credential, so refusing the connection is the fail-closed action.
-        if !state.peer_allowed(peer) {
+        if !state.peer_allowed(peer, stream.local_addr()) {
             if super::engine::debug_log() {
                 eprintln!("[gate-relay] refusing connection from non-owner peer {peer}");
             }
@@ -481,12 +486,11 @@ pub fn serve() -> Result<()> {
         let listener =
             TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
         // Only the user who launched `proxy relay` may spend its credential.
-        // UID gating is Linux-only (see `engine::peer_uid_for`); elsewhere a
-        // loopback peer's UID isn't resolvable, so we can't gate.
-        #[cfg(target_os = "linux")]
-        let owner_uid = Some(unsafe { libc::geteuid() });
-        #[cfg(not(target_os = "linux"))]
-        let owner_uid: Option<u32> = None;
+        // See `engine::peer_is_owner` for how each platform resolves a peer.
+        #[cfg(unix)]
+        let owner_uid: Option<PeerOwner> = Some(unsafe { libc::geteuid() });
+        #[cfg(windows)]
+        let owner_uid = Some(PeerOwner);
         let state = Arc::new(RelayState::new(
             &gateway,
             key_rx,

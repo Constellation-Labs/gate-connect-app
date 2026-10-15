@@ -78,6 +78,27 @@ describe("adapt", () => {
   });
 
   /**
+   * The same rule from the other side: "ok" says the section answered, and only
+   * the value is the answer. An "ok" that carries no value has no reading behind
+   * it, so it is null and the tile prints N/A, never a zero nobody measured.
+   */
+  it("nulls an ok counter that carries no value", () => {
+    const view = adapt(
+      overview([], {
+        blockedOrFlagged: { state: "ok" },
+        requestsRouted: { state: "ok" },
+        tokensSaved: { state: "ok", currency: "USD" },
+      }),
+    );
+
+    expect(view.stats.messages).toBeNull();
+    expect(view.stats.blockedFlagged).toBeNull();
+    expect(view.stats.tokensSavedPercent).toBeNull();
+    // And a fraction that is there, including zero, is still a reading.
+    expect(adapt(overview([])).stats.tokensSavedPercent).toBe(0);
+  });
+
+  /**
    * The taxonomy ships with the gateway, not with this build, so a newer gateway
    * can name a cause this app has never heard of. `activityGaps` switches
    * exhaustively over the union with no default branch, so an unrecognised value

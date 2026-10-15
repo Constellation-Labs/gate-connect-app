@@ -1517,7 +1517,7 @@ mod tests {
         let models = settings["provider"]["gate-connect"]["models"]
             .as_object()
             .unwrap();
-        assert_eq!(models.keys().collect::<Vec<_>>(), ["a/three", "a/two"]);
+        assert_eq!(models.keys().collect::<Vec<_>>(), ["a/two", "a/three"]);
     }
 
     /// A default the user moved off Gate's provider is theirs and stays; Gate's

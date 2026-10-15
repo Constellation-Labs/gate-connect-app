@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+pub mod peer;
+
 /// Test seam, read from the environment rather than a process-global so it
 /// survives into a spawned child. Mirrors `gate_connect_core::env`, which is
 /// the definition of record; this crate reads it so a test that redirects the

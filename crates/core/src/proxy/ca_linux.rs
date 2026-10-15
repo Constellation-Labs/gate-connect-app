@@ -131,6 +131,54 @@ fn generate() -> Result<(String, String)> {
     Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
+/// The pair already on this machine, or `None` when the certificate or the key
+/// is missing.
+fn read_existing() -> Result<Option<(String, String)>> {
+    let user = env::current_user()?;
+    let path = cert_path()?;
+
+    // Certificate first, because it witnesses the key: the key is always
+    // written before the cert (see [`load_or_create`]), so a byte-identical
+    // cert on disk means the key in the store is the one that goes with it.
+    // That keeps this off the secret store on the repeat calls - the proxy
+    // manager makes one every 30 seconds to re-push the intercept config -
+    // where each read would cost the daemon ~8 KB it never returns. See
+    // `keychain::get_cached`.
+    let existing_cert = match fs::read_to_string(&path) {
+        Ok(c) => Some(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let Some(cert_pem) = existing_cert else {
+        // No cert to vouch for a key.
+        return Ok(None);
+    };
+    Ok(keychain::get_cached(&key_service(), &user, &cert_pem)?.map(|key_pem| (cert_pem, key_pem)))
+}
+
+/// Load the CA already on this machine, and never mint one.
+///
+/// For the callers that only re-send the CA the daemon was started with, on a
+/// timer: the session loop's token push. Minting is [`load_or_create`]'s job,
+/// and every caller of that runs [`ensure_trusted`] straight after; a pair
+/// minted anywhere else is pushed to the engine untrusted, and every
+/// intercepted host then fails its handshake while the rows read Protected.
+///
+/// Errs on a missing half and on a key that does not belong to the cert, which
+/// is what another process mid-regeneration, or `proxy untrust-ca` removing the
+/// material, looks like from here. Deliberately does not check the host
+/// fingerprint: a root minted before a host was added is still the trusted root
+/// the engine is running on, and replacing it is the enable path's call.
+pub fn load() -> Result<Ca> {
+    let (cert_pem, key_pem) =
+        read_existing()?.context("the proxy CA is missing its certificate or its private key")?;
+    anyhow::ensure!(
+        cert_authority::key_matches_cert(&key_pem, &cert_pem),
+        "the proxy CA's private key does not belong to its certificate"
+    );
+    Ok(Ca { cert_pem, key_pem })
+}
+
 /// Load the CA, generating + persisting one on first use. The pair is kept in
 /// sync: if either half is missing we regenerate both.
 pub fn load_or_create() -> Result<Ca> {
@@ -138,24 +186,7 @@ pub fn load_or_create() -> Result<Ca> {
     let service = key_service();
     let path = cert_path()?;
 
-    // Certificate first, because it witnesses the key: the pair is always
-    // written together below, so a byte-identical cert on disk means the key in
-    // the store is the one that goes with it. That keeps this off the secret
-    // store on the repeat calls - the proxy manager makes one every 30 seconds
-    // to re-push the intercept config - where each read would cost the daemon
-    // ~8 KB it never returns. See `keychain::get_cached`.
-    let existing_cert = match fs::read_to_string(&path) {
-        Ok(c) => Some(c),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    let existing_key = match existing_cert.as_deref() {
-        Some(cert_pem) => keychain::get_cached(&service, &user, cert_pem)?,
-        // No cert to vouch for it: both halves are about to be regenerated.
-        None => None,
-    };
-
-    if let (Some(key_pem), Some(cert_pem)) = (existing_key, existing_cert) {
+    if let Some((cert_pem, key_pem)) = read_existing()? {
         // Presence is not enough: the stored root's X.509 name constraints were
         // fixed at generation time from the domain catalog, so one minted before
         // a host was added cannot issue for it and interception of that host dies
@@ -180,8 +211,18 @@ pub fn load_or_create() -> Result<Ca> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    fs::write(&path, &cert_pem).with_context(|| format!("writing {}", path.display()))?;
+    // Key first, then the cert through a temp file and a rename, as on macOS.
+    // The cert is the key's witness, so it has to be the last thing to change:
+    // written the other way round, another process reading between the two saw
+    // the new cert with the old key, cached that pair under the new cert, and
+    // took the mismatch as a reason to mint a root of its own over this one.
+    // Interrupted in between, the old cert is left with the new key, which
+    // fails `key_matches_cert` and regenerates both on the next call.
     keychain::set(&service, &user, &key_pem)?;
+    let tmp = path.with_extension("pem.tmp");
+    fs::write(&tmp, &cert_pem).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
     // Written after the cert so an interrupted sequence leaves the sidecar
     // absent or stale — never describing a cert that isn't there yet.
     cert_authority::write_host_fingerprint(&path)?;
