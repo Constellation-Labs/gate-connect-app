@@ -131,7 +131,11 @@ pub(crate) fn connect_tool(platform: &impl Platform, slug: &str) -> Result<Statu
         relay_base_url: platform.relay_base_url(),
         engine_proxy_url: platform.tool_proxy_url(),
     };
-    integ.connect(&input).map_err(|e| format!("{e:#}"))?;
+    // Under the routing lock, and refused once a quit has begun taking Gate
+    // out of every tool: a connect landing after that sweep would leave this
+    // tool on Gate with nothing recorded to put it back (AG-1118).
+    gate_connect_core::provider::unless_exiting(|| integ.connect(&input))
+        .map_err(|e| format!("{e:#}"))?;
     Ok(status_for(integ.as_ref()))
 }
 
@@ -564,7 +568,8 @@ fn reapply_codex_for_mode(platform: &impl Platform, mode: BillingMode) {
         relay_base_url: platform.relay_base_url(),
         engine_proxy_url: platform.engine_proxy_url(),
     };
-    if let Err(e) = integ.connect(&input) {
+    // Guarded as `connect_tool` is, for the same reason.
+    if let Err(e) = gate_connect_core::provider::unless_exiting(|| integ.connect(&input)) {
         eprintln!("re-applying Codex for the new billing mode failed: {e:#}");
     }
 }
