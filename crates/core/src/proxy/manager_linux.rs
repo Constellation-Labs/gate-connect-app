@@ -443,24 +443,23 @@ impl ProxyManager {
             .expect("proxy client mutex poisoned")
             .as_mut()
         {
-            let domains = match config::load_domains() {
-                Ok(d) => d,
-                Err(_) => return,
+            let Some((domains, account, ca)) = Self::credential_push_material("API key") else {
+                return;
             };
-            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
-                let _ = client.set_intercept(
-                    &account.gateway_base_url,
-                    api_key,
-                    "",
-                    &crate::account::org_id_for_injection(),
-                    account.billing_mode,
-                    ca.cert_pem(),
-                    ca.key_pem(),
-                    &domains,
-                    self.detached.load(Ordering::SeqCst),
-                    system_proxy::load_port().unwrap_or(None),
-                    crate::proxy::relay::load_persisted_port(),
-                );
+            if let Err(e) = client.set_intercept(
+                &account.gateway_base_url,
+                api_key,
+                "",
+                &crate::account::org_id_for_injection(),
+                account.billing_mode,
+                ca.cert_pem(),
+                ca.key_pem(),
+                &domains,
+                self.detached.load(Ordering::SeqCst),
+                system_proxy::load_port().unwrap_or(None),
+                crate::proxy::relay::load_persisted_port(),
+            ) {
+                eprintln!("gate proxy: pushing the API key to the daemon failed: {e:#}");
             }
         }
     }
@@ -487,6 +486,27 @@ impl ProxyManager {
             .ok()
     }
 
+    /// What [`Self::refresh_token`] and [`Self::use_api_key`] re-send alongside
+    /// the new credential, or `None` with the reason logged. Both run on the
+    /// session loop's 30s tick, so the CA comes from [`ca::load`], which never
+    /// mints: a root minted here would reach the engine with no trust step
+    /// behind it. A `None` drops this tick's push, and the next tick tries
+    /// again with whatever credential is current then.
+    fn credential_push_material(
+        what: &str,
+    ) -> Option<(Vec<ProxyDomain>, account::Account, ca::Ca)> {
+        let loaded = config::load_domains()
+            .context("reading the domain list")
+            .and_then(|d| {
+                let account = account::load()?.context("no Gate account configured")?;
+                let ca = ca::load()?;
+                Ok((d, account, ca))
+            });
+        loaded
+            .map_err(|e| eprintln!("gate proxy: not pushing the {what} to the daemon: {e:#}"))
+            .ok()
+    }
+
     /// Push a refreshed OAuth access token into the running daemon, if any.
     /// Empty string means no live session: the engine falls back to the API
     /// key in legacy mode, and refuses routed requests as signed out on an
@@ -499,24 +519,23 @@ impl ProxyManager {
             .expect("proxy client mutex poisoned")
             .as_mut()
         {
-            let domains = match config::load_domains() {
-                Ok(d) => d,
-                Err(_) => return,
+            let Some((domains, account, ca)) = Self::credential_push_material("OAuth token") else {
+                return;
             };
-            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
-                let _ = client.set_intercept(
-                    &account.gateway_base_url,
-                    &account.api_key,
-                    oauth_token,
-                    &crate::account::org_id_for_injection(),
-                    account.billing_mode,
-                    ca.cert_pem(),
-                    ca.key_pem(),
-                    &domains,
-                    self.detached.load(Ordering::SeqCst),
-                    system_proxy::load_port().unwrap_or(None),
-                    crate::proxy::relay::load_persisted_port(),
-                );
+            if let Err(e) = client.set_intercept(
+                &account.gateway_base_url,
+                &account.api_key,
+                oauth_token,
+                &crate::account::org_id_for_injection(),
+                account.billing_mode,
+                ca.cert_pem(),
+                ca.key_pem(),
+                &domains,
+                self.detached.load(Ordering::SeqCst),
+                system_proxy::load_port().unwrap_or(None),
+                crate::proxy::relay::load_persisted_port(),
+            ) {
+                eprintln!("gate proxy: pushing the OAuth token to the daemon failed: {e:#}");
             }
         }
     }
