@@ -125,8 +125,12 @@ enum StatusDto {
     Overridden {
         source: String,
     },
+    /// The status read failed. `intended` is what the tool's switch last said
+    /// (`preferences::tool_intent`), because a failed read has no answer of its
+    /// own and the switch must not render off for want of one (AG-1120).
     Error {
         message: String,
+        intended: bool,
     },
 }
 
@@ -139,17 +143,6 @@ impl From<Status> for StatusDto {
             Status::Drifted(reason) => StatusDto::Drifted { reason },
             Status::Overridden(source) => StatusDto::Overridden { source },
         }
-    }
-}
-
-fn status_for(integ: &dyn gate_connect_core::Integration) -> StatusDto {
-    match integ.status() {
-        Ok(s) => s.into(),
-        Err(e) => StatusDto::Error {
-            // `{e:#}` prints the whole anyhow context chain; bare Display
-            // would stop at the outermost context and drop the root cause.
-            message: format!("{e:#}"),
-        },
     }
 }
 

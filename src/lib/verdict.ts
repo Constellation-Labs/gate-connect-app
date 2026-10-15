@@ -36,6 +36,16 @@ import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
  */
 export const WRITE_FAILED_DETAIL = "Configuration update failed";
 
+/**
+ * The status line for a tool whose config could not be read.
+ *
+ * Not one of `VerdictReason`'s five either, for the reason `WRITE_FAILED_DETAIL`
+ * gives: it comes from the tool's own status read (`kind: "error"`), not from the
+ * sweep. The pane's "could not be checked" card names the error itself and
+ * offers the retry. AG-1120.
+ */
+export const READ_FAILED_DETAIL = "Configuration couldn't be read";
+
 /** The reason on a row that has no verdict yet. Not a fault, so the pane draws
  *  no card for it; see `statusNote` in `NewUiApp`. */
 export const CHECKING_DETAIL = "Checking";
@@ -74,7 +84,12 @@ export const REASON_DETAIL: Record<VerdictReason, string> = {
  */
 export function verdictStatus(
   verdict: Verdict | undefined,
-  opts: { writeFailed?: boolean; coverage?: UpstreamCoverage | null; on?: boolean } = {},
+  opts: {
+    writeFailed?: boolean;
+    coverage?: UpstreamCoverage | null;
+    on?: boolean;
+    readFailed?: boolean;
+  } = {},
 ): AppStatus {
   // Outranks the sweep. The sweep describes the state on disk, which after a
   // failed write is the state from *before* the user acted - true, and not the
@@ -82,6 +97,14 @@ export function verdictStatus(
   // land. Callers pass it only for a failed turn-off: a tool whose turn-on
   // failed was never routed, and "Not protected" would claim it had been.
   if (opts.writeFailed) return { kind: "not-protected", detail: WRITE_FAILED_DETAIL };
+  // A config that cannot be read outranks the sweep too: whatever the sweep
+  // found, Gate cannot say what the tool is configured to do. Switched off, that
+  // is still the switch's own "Not routed"; switched on, it is the fault.
+  if (opts.readFailed) {
+    return opts.on === false
+      ? { kind: "not-routed" }
+      : { kind: "not-protected", detail: READ_FAILED_DETAIL };
+  }
   if (!verdict) {
     return opts.on === false
       ? { kind: "not-routed" }

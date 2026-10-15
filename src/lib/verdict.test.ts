@@ -104,6 +104,28 @@ describe("verdictStatus", () => {
     expect(verdictStatus(undefined, { on: false })).toEqual({ kind: "not-routed" });
   });
 
+  /**
+   * An unreadable config outranks the sweep: switched on it is the fault, named
+   * as a read failure; switched off it is still the switch's own Not routed.
+   * AG-1120.
+   */
+  it("an unreadable config reads Not protected when on and Not routed when off", () => {
+    expect(verdictStatus(verdict({ state: "on" }), { readFailed: true, on: true })).toEqual({
+      kind: "not-protected",
+      detail: "Configuration couldn't be read",
+    });
+    expect(verdictStatus(undefined, { readFailed: true, on: true })).toEqual({
+      kind: "not-protected",
+      detail: "Configuration couldn't be read",
+    });
+    expect(
+      verdictStatus(verdict({ state: "needs_attention", reason: "connection_problem" }), {
+        readFailed: true,
+        on: false,
+      }),
+    ).toEqual({ kind: "not-routed" });
+  });
+
   it("a switched-on row with no verdict is still checking", () => {
     expect(verdictStatus(undefined, { on: true })).toEqual({
       kind: "not-protected",

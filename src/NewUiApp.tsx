@@ -76,6 +76,7 @@ import {
 } from "./lib/groups";
 import {
   CHECKING_DETAIL,
+  READ_FAILED_DETAIL,
   partlyProtectedCopy,
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
@@ -1698,7 +1699,8 @@ export function NewUiApp() {
           const on =
             t.status.kind === "connected" ||
             t.status.kind === "drifted" ||
-            t.status.kind === "overridden";
+            t.status.kind === "overridden" ||
+            (t.status.kind === "error" && t.status.intended);
           return {
             slug: t.slug,
             name: t.name,
@@ -1713,6 +1715,8 @@ export function NewUiApp() {
               coverage: t.coverage,
               // A switched-off row reads Not routed with or without a verdict.
               on,
+              // An unreadable config outranks the sweep. AG-1120.
+              readFailed: t.status.kind === "error",
             }),
             on,
             logo: brandMarkFor(t.slug),
@@ -2818,6 +2822,8 @@ export function NewUiApp() {
       detail === REASON_DETAIL.configuration_changed
     )
       return undefined;
+    // The "could not be checked" card names the read error and the retry.
+    if (paneNotice?.id.startsWith("error:") && detail === READ_FAILED_DETAIL) return undefined;
     // Partly protected is the one reason with a fix this pane owns: some of the
     // app's surfaces are switched off under a switch that reads on. The app
     // switch cannot be the fix: this card exists because the switch reads On,

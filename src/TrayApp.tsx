@@ -718,7 +718,8 @@ export function TrayApp() {
           const on =
             t.status.kind === "connected" ||
             t.status.kind === "drifted" ||
-            t.status.kind === "overridden";
+            t.status.kind === "overridden" ||
+            (t.status.kind === "error" && t.status.intended);
           return {
             slug: t.slug,
             name: t.name,
@@ -733,6 +734,8 @@ export function TrayApp() {
               coverage: t.coverage,
               // A switched-off row reads Not routed with or without a verdict.
               on,
+              // An unreadable config outranks the sweep. AG-1120.
+              readFailed: t.status.kind === "error",
             }),
             on,
             logo: brandMarkFor(t.slug),
