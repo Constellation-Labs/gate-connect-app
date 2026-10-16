@@ -1330,14 +1330,34 @@ pub fn address_health(configured: &str) -> AddressHealth {
 ///
 /// `Unreachable` when any of them is [`AddressHealth::Dead`] or
 /// [`AddressHealth::Parked`]: either way the tool's traffic is not reaching
-/// Gate through it. `Unknown` when none is a loopback address of ours, which
-/// decides nothing. AG-1096: without this the only trace of a forwarder that
-/// stopped answering was a tool reading "Config drifted".
+/// Gate through it. `Unknown` when none is an address of ours, which decides
+/// nothing. AG-1096: without this the only trace of a forwarder that stopped
+/// answering was a tool reading "Config drifted".
+///
+/// "Ours" is [`tool_proxy_identity_urls`], not any loopback port. A config left
+/// on the forwarder's previous port, or naming the user's own local proxy, is a
+/// config problem whether or not anything answers there, and reading it as a
+/// connection problem would hide the drift behind a Reconnect that cannot fix
+/// it.
 pub fn local_proxy_route(addresses: &[String]) -> crate::routing_health::RouteHealth {
+    local_proxy_route_among(addresses, &tool_proxy_identity_urls())
+}
+
+/// [`local_proxy_route`] against an explicit set of addresses of ours. Compared
+/// by port, because a tool's address can carry a route selector in its userinfo
+/// that the identity list does not.
+fn local_proxy_route_among(
+    addresses: &[String],
+    identities: &[String],
+) -> crate::routing_health::RouteHealth {
     use crate::routing_health::RouteHealth;
+    let our_ports: Vec<u16> = identities
+        .iter()
+        .filter_map(|u| loopback_port_of(u))
+        .collect();
     let ours: Vec<&String> = addresses
         .iter()
-        .filter(|a| loopback_port_of(a).is_some())
+        .filter(|a| loopback_port_of(a).is_some_and(|p| our_ports.contains(&p)))
         .collect();
     if ours.is_empty() {
         return RouteHealth::Unknown;
@@ -6426,6 +6446,54 @@ mod loopback_port_tests {
         assert_eq!(loopback_port_of("http://localhost:47150"), None);
         assert_eq!(loopback_port_of("http://127.0.0.1:not-a-port"), None);
         assert_eq!(loopback_port_of(""), None);
+    }
+
+    /// A loopback port nothing is listening on, for a probe that must fail.
+    fn dead_port() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("binding");
+        listener.local_addr().expect("listener address").port()
+    }
+
+    /// AG-1096 review: only an address Gate owns is probed. A config left on
+    /// the forwarder's previous port, or naming the user's own local proxy,
+    /// is drift whether or not anything answers there, so it decides nothing
+    /// here and the verdict stays "configuration changed".
+    #[test]
+    fn a_stale_or_foreign_loopback_address_is_not_probed_as_ours() {
+        use crate::routing_health::RouteHealth;
+        let ours = format!("http://127.0.0.1:{}", dead_port());
+        let stale = format!("http://gate-claude-code:route@127.0.0.1:{}", dead_port());
+        let foreign = format!("http://127.0.0.1:{}", dead_port());
+        assert_eq!(
+            super::local_proxy_route_among(
+                std::slice::from_ref(&stale),
+                std::slice::from_ref(&ours)
+            ),
+            RouteHealth::Unknown,
+            "the forwarder's old port is a config problem, not a connection problem"
+        );
+        assert_eq!(
+            super::local_proxy_route_among(
+                std::slice::from_ref(&foreign),
+                std::slice::from_ref(&ours)
+            ),
+            RouteHealth::Unknown,
+            "the user's own dead local proxy is not ours to report"
+        );
+    }
+
+    /// The case the rule exists for: the config names Gate's own address,
+    /// selector and all, and nothing answers there.
+    #[test]
+    fn our_own_dead_address_is_unreachable() {
+        use crate::routing_health::RouteHealth;
+        let port = dead_port();
+        let ours = format!("http://127.0.0.1:{port}");
+        let configured = format!("http://gate-claude-code:route@127.0.0.1:{port}");
+        assert_eq!(
+            super::local_proxy_route_among(&[configured], &[ours]),
+            RouteHealth::Unreachable
+        );
     }
 }
 
