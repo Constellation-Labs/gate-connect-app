@@ -39,8 +39,17 @@
 set -euo pipefail
 
 # CI=true alone is not enough: self-hosted runners and some dev boxes set it.
-if [ "${GITHUB_ACTIONS:-}" != "true" ] || [ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ]; then
-  echo "windows-linux-signin.sh changes the hosts file, the machine trust store, port 443 and the installed app: GitHub-hosted runners only" >&2
+# The one other place it runs is the disposable test container
+# (docker/test-tiers, AG-909), and only when that can be verified: the image
+# sets GATE_CONNECT_E2E_CONTAINER=1, the container runtime creates /.dockerenv
+# (no image can ship it), and PID 1 is the container's entry process rather
+# than a host's init. A host needs all three, so the env var alone opens nothing.
+in_test_container() {
+  [ "${GATE_CONNECT_E2E_CONTAINER:-}" = "1" ] && [ "$(uname -s)" = Linux ] && [ -f /.dockerenv ] || return 1
+  case "$(cat /proc/1/comm 2>/dev/null)" in systemd | init | "") return 1 ;; esac
+}
+if { [ "${GITHUB_ACTIONS:-}" != "true" ] || [ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ]; } && ! in_test_container; then
+  echo "windows-linux-signin.sh changes the hosts file, the machine trust store, port 443 and the installed app: GitHub-hosted runners or the docker/test-tiers container only" >&2
   exit 2
 fi
 
