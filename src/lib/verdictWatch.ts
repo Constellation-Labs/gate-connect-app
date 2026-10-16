@@ -36,10 +36,12 @@ export function recheckCadence(verdicts: Iterable<Verdict>): number | null {
 /**
  * Re-run `refresh` on the cadence {@link recheckCadence} chose.
  *
- * The failure re-check pauses while the window is hidden, and runs once as it
- * becomes visible again: a row nobody can see does not need probing every
- * 30s, and the moment someone looks is the moment it has to be right. The
- * reopen watch is left as it was, running hidden or not.
+ * The failure re-check pauses while the window is hidden: a row nobody can
+ * see does not need probing every 30s. The reopen watch is left as it was,
+ * running hidden or not. Neither sweeps on becoming visible: each shell
+ * already sweeps on its own reveal edge whenever a cadence is armed (the
+ * tray's `visibilitychange`, the window's focus return), and a second sweep
+ * here doubled the relay and gateway probes on every reveal.
  */
 export function useVerdictWatch(cadence: number | null, refresh: () => void): void {
   const latest = useRef(refresh);
@@ -52,13 +54,6 @@ export function useVerdictWatch(cadence: number | null, refresh: () => void): vo
       if (pausesWhenHidden && document.hidden) return;
       latest.current();
     }, cadence);
-    const onVisible = () => {
-      if (pausesWhenHidden && !document.hidden) latest.current();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
+    return () => clearInterval(id);
   }, [cadence]);
 }

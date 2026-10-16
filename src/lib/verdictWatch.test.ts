@@ -72,14 +72,18 @@ describe("useVerdictWatch", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
-  it("pauses the failure re-check while hidden and runs it on becoming visible", () => {
+  it("pauses the failure re-check while hidden and resumes it once visible", () => {
     const refresh = vi.fn();
     renderHook(() => useVerdictWatch(FAILURE_RECHECK_MS, refresh));
     hidden = true;
     vi.advanceTimersByTime(FAILURE_RECHECK_MS * 3);
     expect(refresh).not.toHaveBeenCalled();
     hidden = false;
+    // The reveal itself is the shell's sweep, not this one's: both shells
+    // already re-check on their own reveal edge.
     document.dispatchEvent(new Event("visibilitychange"));
+    expect(refresh).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(FAILURE_RECHECK_MS);
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
