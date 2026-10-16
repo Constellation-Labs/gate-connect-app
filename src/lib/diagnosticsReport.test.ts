@@ -474,4 +474,47 @@ describe("tool versions", () => {
     const out = report({ versions: null });
     expect(out).not.toContain("version unreadable");
   });
+
+  // AG-1096: the report carries what each tool's checks found and when it
+  // changed, with the readings behind each change.
+  it("lists each tool's checks, last verified route and recent changes", () => {
+    const evidence = {
+      config: "drifted",
+      relay: "reachable",
+      local_proxy: "unreachable",
+      session: "valid",
+      reopen_pending: false,
+    };
+    const text = report({
+      backend: {
+        ...backend,
+        checks: [
+          {
+            slug: "claude-code",
+            state: "needs_attention",
+            reason: "connection_problem",
+            at_unix: 1791917490,
+            verified_state: "on",
+            verified_unix: 1790972498,
+            evidence,
+            recent: [
+              { at_unix: 1790972498, state: "on", reason: null, evidence: null },
+              { at_unix: 1791917490, state: "needs_attention", reason: "connection_problem", evidence },
+            ],
+          },
+        ],
+      },
+    });
+    expect(text).toContain("[checks]");
+    expect(text).toContain(
+      "needs_attention (connection_problem) at 2026-10-13T18:51:30.000Z [config drifted, relay reachable, local proxy unreachable, session valid]",
+    );
+    expect(text).toContain("last verified on at 2026-10-02T20:21:38.000Z");
+    expect(text).toContain("2026-10-02T20:21:38.000Z -> on");
+  });
+
+  it("leaves the checks section out when the backend sends none", () => {
+    expect(report({ backend })).not.toContain("[checks]");
+  });
+
 });

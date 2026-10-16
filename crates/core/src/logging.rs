@@ -112,9 +112,38 @@ fn names_production(url: &str) -> Option<bool> {
 }
 
 fn log_path() -> Option<PathBuf> {
+    if writes_to_real_log_from_a_test() {
+        return None;
+    }
     env::app_support_dir()
         .ok()
         .map(|d| d.join("gate-connect.log"))
+}
+
+/// A test binary with no redirected home, which would otherwise append to the
+/// developer's real `gate-connect.log`.
+///
+/// It did, for every run of a suite that sets only `GATE_CONNECT_TEST_SECRETS`
+/// (`keychain_partial_write` among them): about twenty keychain warnings a day
+/// on one machine, burying the lines that explain a real outage (AG-1096).
+/// Either data-dir seam makes a run hermetic, so a test that sets one still
+/// logs, into its own directory.
+///
+/// Cargo puts every test executable, unit and integration alike, in
+/// `target/<profile>/deps`, and nothing else there runs. The app and the CLI
+/// are one level up, so `pnpm app:local` keeps its log.
+fn writes_to_real_log_from_a_test() -> bool {
+    !env::data_dir_redirected() && in_test_binary()
+}
+
+fn in_test_binary() -> bool {
+    static IN_TEST: OnceLock<bool> = OnceLock::new();
+    *IN_TEST.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent()?.file_name().map(|d| d == "deps"))
+            .unwrap_or(false)
+    })
 }
 
 /// Blunt scrub for the one secret shape that reaches a message by accident: a
@@ -216,6 +245,32 @@ fn rotate_if_large(path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AG-1096: a test with no redirected home must not reach the real log.
+    #[test]
+    fn a_test_without_a_test_home_never_names_the_real_log() {
+        let _guard = env::path_env_lock();
+        let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        std::env::remove_var("GATE_CONNECT_TEST_HOME");
+        let without = log_path();
+        let dir = std::env::temp_dir().join(format!("gate-log-seam-{}", std::process::id()));
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
+        let with = log_path();
+        match prev {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+
+        assert!(
+            in_test_binary(),
+            "cargo runs this from target/<profile>/deps"
+        );
+        assert_eq!(without, None);
+        assert!(
+            with.is_some_and(|p| p.starts_with(&dir)),
+            "a test home keeps the log, inside it"
+        );
+    }
 
     #[test]
     fn production_is_recognised_by_origin_not_spelling() {

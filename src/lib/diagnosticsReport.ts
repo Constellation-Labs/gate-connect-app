@@ -1,5 +1,6 @@
 import type {
   Account,
+  CheckEvidence,
   Diagnostics,
   LaunchAtLoginStatus,
   OAuthStatus,
@@ -392,6 +393,24 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     }
   }
 
+  // The history a snapshot cannot give: what each tool's checks concluded,
+  // when that changed, and what the check saw each time. Without it a row
+  // that read "Not protected" an hour ago, or flickered, could not be
+  // explained from the report (AG-1056, AG-1096).
+  const checks = backend?.checks ?? [];
+  if (checks.length > 0) {
+    lines.push("", "[checks]");
+    for (const check of checks) {
+      lines.push(row(check.slug, `${verdictWords(check.state, check.reason)} at ${unixStamp(check.at_unix)}${evidenceSuffix(check.evidence)}`));
+      if (check.verified_state) {
+        lines.push(row("", `last verified ${check.verified_state} at ${unixStamp(check.verified_unix)}`));
+      }
+      for (const change of check.recent) {
+        lines.push(row("", `${unixStamp(change.at_unix)} -> ${verdictWords(change.state, change.reason)}${evidenceSuffix(change.evidence)}`));
+      }
+    }
+  }
+
   if (proxy) {
     lines.push("", "[proxy domains]");
     if (proxy.domains.length === 0) {
@@ -419,4 +438,19 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
   lines.push("", "No keys, tokens or passwords are included in this report.");
 
   return `${lines.join("\n")}\n`;
+}
+
+function verdictWords(state: string, reason: string | null): string {
+  return reason ? `${state} (${reason})` : state;
+}
+
+/** An ISO time, or unknown for the 0 the log writes when the clock failed. */
+function unixStamp(seconds: number): string {
+  return seconds > 0 ? new Date(seconds * 1000).toISOString() : UNKNOWN;
+}
+
+function evidenceSuffix(evidence: CheckEvidence | null): string {
+  if (!evidence) return "";
+  const reopen = evidence.reopen_pending ? ", reopen pending" : "";
+  return ` [config ${evidence.config}, relay ${evidence.relay}, local proxy ${evidence.local_proxy}, session ${evidence.session}${reopen}]`;
 }

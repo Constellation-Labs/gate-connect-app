@@ -272,6 +272,16 @@ fn file_backed_secrets() -> bool {
 /// a throwaway dir on every platform.
 static APP_SUPPORT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Whether either test seam has redirected [`app_support_dir`], so nothing
+/// this process writes there reaches the real data dir.
+pub(crate) fn data_dir_redirected() -> bool {
+    test_home_override().is_some()
+        || APP_SUPPORT_OVERRIDE
+            .lock()
+            .map(|dir| dir.is_some())
+            .unwrap_or(false)
+}
+
 /// Point [`app_support_dir`] at `dir` for the rest of this process (or clear the
 /// override with `None`). Test-only seam; never called in production.
 #[doc(hidden)]

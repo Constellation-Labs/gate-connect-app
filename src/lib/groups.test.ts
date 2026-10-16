@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./api";
 import type { Band, Group, GroupMember } from "./groups";
+import { memberNotices } from "./notices";
 import { sectionStatus } from "./verdict";
 import {
   BAND_LABELS,
@@ -288,6 +289,41 @@ describe("buildGroups", () => {
     const byKey = new Map(groups.flatMap((g) => g.members).map((m) => [m.key, m.attention]));
     expect(byKey.get("codex")).toBe("drifted");
     expect(byKey.get("claude-code")).toBe("error");
+  });
+
+  /**
+   * AG-1096: a dead forwarder makes a proxy tool's config read as drifted, and
+   * the sweep names it a connection problem. The pane must not then draw the
+   * drift card or "set up elsewhere" beside a note blaming the connection, and
+   * the switch still reads on, because the file is Gate's.
+   */
+  it("does not read a drifted tool over a dead forwarder as drift", () => {
+    const [group] = buildGroups(
+      [tool("claude-code", "Claude Code", { kind: "drifted", reason: "nothing is listening" })],
+      [],
+      {
+        ...ON,
+        verdicts: new Map([
+          [
+            "claude-code",
+            {
+              slug: "claude-code",
+              state: "needs_attention" as const,
+              reason: "connection_problem" as const,
+              next_action: "reconnect" as const,
+              route_in_use: null,
+              requested_route: null,
+            },
+          ],
+        ]),
+      },
+    );
+    const [member] = group.members;
+    expect(member.attention).toBe("unverified");
+    expect(member.desired).toBe(true);
+    expect(group.switchOn).toBe(true);
+    expect(groupSummary(group).kind).not.toBe("drifted");
+    expect(memberNotices([group], ["claude-code"])).toEqual([]);
   });
 
   /**

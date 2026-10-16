@@ -102,6 +102,11 @@ pub struct Diagnostics {
     /// two disagreeing explains "my terminal routes but Claude Desktop
     /// doesn't", which is otherwise pure guesswork.
     pub system_proxy: Option<String>,
+    /// What the routing checks found per tool, with the last changes and the
+    /// readings behind each, from `verdict_log`. A snapshot alone could not say
+    /// why a row read "Not protected" an hour ago, or whether it flickered
+    /// (AG-1056, AG-1096). Words and timestamps only, per that module.
+    pub checks: Vec<crate::verdict_log::VerdictEntry>,
 }
 
 /// Take one snapshot. Cheap on Linux/Windows (file and registry reads); on
@@ -126,6 +131,7 @@ pub fn collect() -> Diagnostics {
         relay_base_url: crate::proxy::relay_base_url(),
         exported_proxy_url: crate::proxy::exported_proxy_url(),
         system_proxy: system_proxy_summary(),
+        checks: crate::verdict_log::load().entries,
     }
 }
 

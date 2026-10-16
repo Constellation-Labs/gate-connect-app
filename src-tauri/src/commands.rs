@@ -1129,7 +1129,7 @@ pub(crate) fn routing_verdicts(platform: &impl Platform) -> Vec<VerdictDto> {
         .flatten()
         .unwrap_or_else(|| "Constellation Gate".to_string());
 
-    let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
+    let mut recorded: Vec<(String, routing_health::RoutingVerdict, Evidence)> = Vec::new();
     let integrations = platform.integrations();
     let checked: Vec<_> = integrations
         .iter()
@@ -1139,15 +1139,27 @@ pub(crate) fn routing_verdicts(platform: &impl Platform) -> Vec<VerdictDto> {
             let installed = !matches!(status, Ok(gate_connect_core::Status::NotInstalled));
             let slug = integ.id().to_string();
             let config = ConfigState::from_status(&status);
-            let verdict = routing_health::verdict_for(&Evidence {
+            // Only for a proxy-routed tool whose config reads as drifted: that
+            // is the case a dead forwarder disguises (AG-1096), and probing
+            // every tool on every sweep would cost a connect for nothing.
+            let local_proxy = if config == ConfigState::Drifted
+                && integ.mechanism() == gate_connect_core::registry::Mechanism::ForwardProxy
+            {
+                platform.probe_local_proxy(&integ.configured_addresses().unwrap_or_default())
+            } else {
+                routing_health::RouteHealth::Unknown
+            };
+            let evidence = Evidence {
                 installed,
                 config,
                 route,
                 session,
                 reopen_pending: platform.reopen_pending(&slug),
-            });
+                local_proxy,
+            };
+            let verdict = routing_health::verdict_for(&evidence);
             // The log keeps what the check found; only the row is held.
-            recorded.push((slug.clone(), verdict));
+            recorded.push((slug.clone(), verdict, evidence));
             (integ, slug, config, verdict)
         })
         .collect();
@@ -3433,6 +3445,53 @@ mod tests {
         assert_eq!(verdicts[0].state, "needs_attention");
         assert!(verdicts[0].reason.is_some());
         assert!(verdicts[0].next_action.is_some());
+    }
+
+    /// AG-1096: a proxy-routed tool whose forwarder does not answer reads as a
+    /// connection problem, not as a config that drifted. Only drifted proxy
+    /// tools are probed.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn a_dead_forwarder_is_a_connection_problem_not_drift() {
+        use gate_connect_core::registry::Mechanism;
+        use gate_connect_core::routing_health::{RouteHealth, SessionHealth};
+        let addr = "http://gate-claude-code:route@127.0.0.1:47100".to_string();
+        let platform = FakePlatform {
+            tools: vec![
+                FakeTool {
+                    status: Ok(Status::Drifted("nothing is listening".into())),
+                    mechanism: Mechanism::ForwardProxy,
+                    addresses: vec![addr.clone()],
+                    ..FakeTool::new(ToolId::ClaudeCode)
+                },
+                FakeTool {
+                    status: Ok(Status::Drifted("the base URL changed".into())),
+                    ..FakeTool::new(ToolId::Codex)
+                },
+            ],
+            route: Some(RouteHealth::Reachable),
+            session_health: Some(SessionHealth::Valid),
+            local_proxy: Some(RouteHealth::Unreachable),
+            ..signed_in()
+        };
+        let verdicts = routing_verdicts(&platform);
+        let reasons: Vec<_> = verdicts
+            .iter()
+            .map(|v| (v.slug.as_str(), v.reason))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                ("claude-code", Some("connection_problem")),
+                ("codex", Some("configuration_changed")),
+            ]
+        );
+        let probes: Vec<_> = platform
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("probe_local_proxy"))
+            .collect();
+        assert_eq!(probes, [format!("probe_local_proxy {addr}")]);
     }
 
     /// A pending opt-out reads as off while the login item is still there.

@@ -516,11 +516,19 @@ function memberFromTool(
   // switch takes what it last said, which the backend keeps (AG-1120). Rendering
   // it off would make turning its section off skip it, and leave Gate's values
   // on disk under a switch that reads off.
+  const verdict = verdicts?.get(tool.slug);
+  // AG-1096: a proxy-routed tool whose config names Gate's own forwarder, and
+  // nothing answers there, reports its config as drifted. The sweep has already
+  // probed that address and says connection problem, so the file is Gate's and
+  // the user asked for it: not drift. Reading it as drift put the drift card and
+  // "set up elsewhere" beside a pane note saying the connection was the problem.
+  const forwarderDown =
+    tool.status.kind === "drifted" && verdict?.reason === "connection_problem";
   const connected =
     tool.status.kind === "connected" ||
     tool.status.kind === "overridden" ||
-    (tool.status.kind === "error" && tool.status.intended);
-  const verdict = verdicts?.get(tool.slug);
+    (tool.status.kind === "error" && tool.status.intended) ||
+    forwarderDown;
   // Verified, or not claimed. A config tool points at the loopback relay, and a
   // file naming that relay is not evidence anything is using it: the relay may
   // be down, the session may be dead server-side, or the process may predate the
@@ -544,7 +552,7 @@ function memberFromTool(
     attention:
       tool.status.kind === "error"
         ? "error"
-        : tool.status.kind === "drifted"
+        : tool.status.kind === "drifted" && !forwarderDown
           ? "drifted"
           : tool.status.kind === "overridden"
             ? // Above not-routing and unverified on purpose: those describe a

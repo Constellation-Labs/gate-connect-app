@@ -16,8 +16,10 @@
 //!   a failed verification - the whole point of the field is to survive one.
 //!   `NeedsAttention` and `NotInstalled` are not routes, so they leave it alone.
 //!
-//! Non-secret by construction: slugs, four verdict words and two timestamps. No
-//! paths, no URLs, no credentials, no request content. Losing the file costs the
+//! Non-secret by construction: slugs, verdict and evidence words, and
+//! timestamps. No paths, no URLs, no credentials, no request content. That is
+//! also why the evidence is recorded as words rather than as the drift sentence
+//! `status()` builds: those sentences quote config values and paths. Losing the file costs the
 //! summary its history and nothing else, so a missing or unparseable one reads as
 //! empty rather than failing anything.
 //!
@@ -31,7 +33,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::routing_health::RoutingVerdict;
+use crate::routing_health::{ConfigState, Evidence, RouteHealth, RoutingVerdict, SessionHealth};
+
+/// How many verdict changes each tool keeps. Changes, not checks: a sweep that
+/// repeats every 10s would push a day's history out in minutes, and what a
+/// developer needs after an outage is when the answer changed and why.
+pub const RECENT_CHANGES: usize = 20;
 
 /// Beside the snapshots and the restore journal, for the same reason: this is
 /// routing bookkeeping, not account state.
@@ -61,6 +68,79 @@ pub struct VerdictEntry {
     pub verified_state: Option<String>,
     #[serde(default)]
     pub verified_unix: u64,
+    /// What the latest check saw, in words. `None` from an older build, or a
+    /// caller that recorded no evidence.
+    #[serde(default)]
+    pub evidence: Option<CheckEvidence>,
+    /// The last [`RECENT_CHANGES`] times this tool's verdict changed, oldest
+    /// first, each with the evidence behind it (AG-1096: "why did it say that
+    /// at 15:51" had no answer).
+    #[serde(default)]
+    pub recent: Vec<VerdictChange>,
+}
+
+/// The readings a verdict was computed from, as words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckEvidence {
+    /// `managed`, `drifted`, `overridden`, `absent` or `unreadable`.
+    pub config: String,
+    /// The relay: `reachable`, `unreachable` or `unknown`.
+    pub relay: String,
+    /// The local proxy the tool's config names: `reachable`, `unreachable` or
+    /// `unknown` (none named, or not probed).
+    pub local_proxy: String,
+    /// `valid`, `rejected` or `unknown`.
+    pub session: String,
+    pub reopen_pending: bool,
+}
+
+impl CheckEvidence {
+    pub fn from_evidence(ev: &Evidence) -> Self {
+        CheckEvidence {
+            config: config_word(ev.config).to_string(),
+            relay: route_word(ev.route).to_string(),
+            local_proxy: route_word(ev.local_proxy).to_string(),
+            session: session_word(ev.session).to_string(),
+            reopen_pending: ev.reopen_pending,
+        }
+    }
+}
+
+fn config_word(c: ConfigState) -> &'static str {
+    match c {
+        ConfigState::Managed => "managed",
+        ConfigState::Drifted => "drifted",
+        ConfigState::Overridden => "overridden",
+        ConfigState::Absent => "absent",
+        ConfigState::Unreadable => "unreadable",
+    }
+}
+
+fn route_word(r: RouteHealth) -> &'static str {
+    match r {
+        RouteHealth::Reachable => "reachable",
+        RouteHealth::Unreachable => "unreachable",
+        RouteHealth::Unknown => "unknown",
+    }
+}
+
+fn session_word(s: SessionHealth) -> &'static str {
+    match s {
+        SessionHealth::Valid => "valid",
+        SessionHealth::Rejected => "rejected",
+        SessionHealth::Unknown => "unknown",
+    }
+}
+
+/// One change of a tool's verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerdictChange {
+    pub at_unix: u64,
+    pub state: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub evidence: Option<CheckEvidence>,
 }
 
 /// Every tool the last sweep touched.
@@ -87,19 +167,47 @@ impl VerdictLog {
     /// verification never clears the history" rule has exactly one
     /// implementation, and a test can reach it without a filesystem.
     pub fn record(&mut self, slug: &str, verdict: RoutingVerdict, at: u64) {
+        self.record_with(slug, verdict, None, at);
+    }
+
+    /// [`record`](Self::record), keeping what the check saw and, when the
+    /// verdict changed, a line in [`VerdictEntry::recent`].
+    pub fn record_with(
+        &mut self,
+        slug: &str,
+        verdict: RoutingVerdict,
+        evidence: Option<CheckEvidence>,
+        at: u64,
+    ) {
         let state = verdict.as_str().to_string();
         let reason = verdict.reason().map(|r| r.as_str().to_string());
         // `NotInstalled` is not a route either: a tool that has left the machine
         // must not retro-claim that it was last seen routing nowhere.
         let verified = matches!(verdict, RoutingVerdict::On | RoutingVerdict::Off);
         self.updated_unix = at;
+        let change = VerdictChange {
+            at_unix: at,
+            state: state.clone(),
+            reason: reason.clone(),
+            evidence: evidence.clone(),
+        };
         if let Some(entry) = self.entries.iter_mut().find(|e| e.slug == slug) {
+            let changed = entry
+                .recent
+                .last()
+                .is_none_or(|last| last.state != state || last.reason != reason);
             entry.state = state;
             entry.reason = reason;
             entry.at_unix = at;
+            entry.evidence = evidence;
             if verified {
                 entry.verified_state = Some(verdict.as_str().to_string());
                 entry.verified_unix = at;
+            }
+            if changed {
+                entry.recent.push(change);
+                let over = entry.recent.len().saturating_sub(RECENT_CHANGES);
+                entry.recent.drain(..over);
             }
             return;
         }
@@ -110,6 +218,8 @@ impl VerdictLog {
             at_unix: at,
             verified_state: verified.then(|| verdict.as_str().to_string()),
             verified_unix: if verified { at } else { 0 },
+            evidence,
+            recent: vec![change],
         });
     }
 }
@@ -143,14 +253,19 @@ pub fn save(log: &VerdictLog) -> Result<()> {
 /// Best-effort by signature: the caller is a status read, and a status read that
 /// fails because its own bookkeeping could not be written would be a worse bug
 /// than a summary with a gap in it.
-pub fn record_sweep(results: &[(String, RoutingVerdict)]) {
+pub fn record_sweep(results: &[(String, RoutingVerdict, Evidence)]) {
     if results.is_empty() {
         return;
     }
     let at = crate::recovery::now_unix();
     let mut log = load();
-    for (slug, verdict) in results {
-        log.record(slug, *verdict, at);
+    for (slug, verdict, evidence) in results {
+        log.record_with(
+            slug,
+            *verdict,
+            Some(CheckEvidence::from_evidence(evidence)),
+            at,
+        );
     }
     if let Err(e) = save(&log) {
         eprintln!("[gate] writing the verdict log failed: {e:#}");
@@ -233,5 +348,51 @@ mod tests {
         let entry = log.get("codex").expect("entry");
         assert_eq!(entry.at_unix, 0);
         assert_eq!(entry.verified_state, None);
+    }
+
+    /// AG-1096: each change is kept with what the check saw, a repeat is not,
+    /// and the list stays bounded.
+    #[test]
+    fn verdict_changes_are_kept_with_their_evidence_and_bounded() {
+        let ev = Evidence {
+            installed: true,
+            config: ConfigState::Drifted,
+            route: RouteHealth::Reachable,
+            session: SessionHealth::Valid,
+            reopen_pending: false,
+            local_proxy: RouteHealth::Unreachable,
+        };
+        let seen = Some(CheckEvidence::from_evidence(&ev));
+        let down = RoutingVerdict::NeedsAttention(Reason::ConnectionProblem);
+        let mut log = VerdictLog::default();
+        log.record_with("claude-code", RoutingVerdict::On, None, 100);
+        log.record_with("claude-code", down, seen.clone(), 110);
+        log.record_with("claude-code", down, seen.clone(), 120);
+        log.record_with("claude-code", RoutingVerdict::On, None, 130);
+
+        let entry = log.get("claude-code").unwrap();
+        let at: Vec<u64> = entry.recent.iter().map(|c| c.at_unix).collect();
+        assert_eq!(at, [100, 110, 130], "a repeated verdict is not a change");
+        let why = entry.recent[1].evidence.as_ref().unwrap();
+        assert_eq!(why.config, "drifted");
+        assert_eq!(why.local_proxy, "unreachable");
+
+        for t in 0..(RECENT_CHANGES as u64 * 2) {
+            let v = if t % 2 == 0 {
+                RoutingVerdict::Off
+            } else {
+                RoutingVerdict::On
+            };
+            log.record_with("claude-code", v, None, 200 + t);
+        }
+        assert_eq!(log.get("claude-code").unwrap().recent.len(), RECENT_CHANGES);
+    }
+
+    #[test]
+    fn a_log_from_before_the_evidence_still_loads() {
+        let old = r#"{"updated_unix":5,"entries":[{"slug":"codex","state":"on","at_unix":5}]}"#;
+        let log: VerdictLog = serde_json::from_str(old).unwrap();
+        let entry = log.get("codex").unwrap();
+        assert!(entry.evidence.is_none() && entry.recent.is_empty());
     }
 }

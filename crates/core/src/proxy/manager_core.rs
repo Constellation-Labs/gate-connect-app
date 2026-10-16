@@ -1176,7 +1176,10 @@ impl<O: DesktopOps> DesktopManager<O> {
         {
             return;
         }
-        eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
+        // To the log as well: the engine dying is half of what a tool reading
+        // "Not protected" for hours was made of, and stderr goes nowhere in a
+        // bundled app (AG-1096).
+        crate::logging::failure("gate proxy engine exited unexpectedly; reverting system proxy");
         // Join the engine instead of dropping it. `RunningEngine::drop` only
         // signals shutdown and returns - deliberately, to avoid blocking - so a
         // dropped engine's listeners stay bound for an unbounded moment after
@@ -1400,10 +1403,12 @@ impl<O: DesktopOps> DesktopManager<O> {
             }
             Supervision::Running(port) => {
                 if !was_answering {
-                    eprintln!(
+                    let message = format!(
                         "gate proxy: the environment forwarder is answering again on \
                          127.0.0.1:{port}"
                     );
+                    eprintln!("{message}");
+                    crate::logging::log(crate::logging::Level::Info, &message);
                 }
                 self.forwarder_answering
                     .store(FORWARDER_ANSWERING, Ordering::SeqCst);
@@ -1426,20 +1431,20 @@ impl<O: DesktopOps> DesktopManager<O> {
                 {
                     match self.ops.enable_env(port) {
                         Ok(()) => self.exported_port.store(port, Ordering::SeqCst),
-                        Err(e) => eprintln!(
+                        Err(e) => crate::logging::failure(&format!(
                             "gate proxy: could not re-export proxy environment variables \
                              ({e}); they still name the forwarder's previous port"
-                        ),
+                        )),
                     }
                 }
             }
             Supervision::Failed(e) => {
                 if was_answering {
-                    eprintln!(
+                    crate::logging::failure(&format!(
                         "gate proxy: the environment forwarder stopped answering and could \
-                         not be restarted ({e}); browsers and tools that name it are going \
+                         not be restarted ({e:#}); browsers and tools that name it are going \
                          direct until it is back"
-                    );
+                    ));
                 }
                 self.forwarder_answering
                     .store(FORWARDER_SILENT, Ordering::SeqCst);
