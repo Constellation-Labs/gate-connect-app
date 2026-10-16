@@ -443,7 +443,7 @@ describe("toolStatusLine", () => {
   it("keeps the reason attached to the states that carry one", () => {
     expect(toolStatusLine({ kind: "not_installed" })).toBe("not installed");
     expect(toolStatusLine({ kind: "detected" })).toBe("installed, not routed");
-    expect(toolStatusLine({ kind: "error", message: "keychain denied" })).toBe(
+    expect(toolStatusLine({ kind: "error", message: "keychain denied", intended: false })).toBe(
       "error: keychain denied",
     );
   });

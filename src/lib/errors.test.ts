@@ -354,13 +354,30 @@ describe("classifyError: a loopback port held by another process (AG-960)", () =
 
 describe("a connect an integration refused for a reason the user can fix", () => {
   it("keeps the title and says what to do, in the window's words", () => {
-    const raw =
-      "No supported OpenCode providers found to route through Gate. Run `opencode auth login anthropic|openai|openrouter|opencode|opencode-go` first, then re-run connect.";
+    const raw = "Sign in to a provider in OpenCode first, or put it on Gate models, then turn this on again.";
     const c = classifyError(raw, "connect");
     expect(c.title).toBe("Couldn’t connect this tool");
-    expect(c.hint).toMatch(/opencode auth login/);
-    expect(c.hint).not.toMatch(/re-run connect/);
+    expect(c.hint).toBe("Sign in to a provider in OpenCode first, or choose Gate models for it, then try again.");
     expect(c.raw).toBe(raw);
+  });
+
+  it("says how to clear a gate-connect provider of the user's own", () => {
+    const c = classifyError(
+      'opencode.json already has a provider named "gate-connect" that Gate did not write. Rename it in opencode.json, then choose Gate models again.',
+      "connect",
+    );
+    expect(c.hint).toBe(
+      "OpenCode already has a provider named gate-connect. Rename it in opencode.json, then choose Gate models again.",
+    );
+  });
+
+  it("names the providers a local-endpoint refusal names", () => {
+    const c = classifyError(
+      "Every OpenCode provider Gate could route points at a local endpoint (anthropic, openai), so there is nothing to route.",
+      "connect",
+    );
+    expect(c.hint).toMatch(/\(anthropic, openai\)/);
+    expect(c.hint).not.toContain(String.fromCharCode(0x2014));
   });
 
   it("carries the providers an off-catalogue refusal names", () => {
@@ -392,7 +409,7 @@ describe("a connect an integration refused for a reason the user can fix", () =>
 
   it("leaves every other action's copy alone", () => {
     expect(
-      classifyError("No supported OpenCode providers found to route through Gate.", "sign_out")
+      classifyError("Sign in to a provider in OpenCode first, or put it on Gate models, then turn this on again.", "sign_out")
         .hint,
     ).toMatch(/^Try again\b/);
   });

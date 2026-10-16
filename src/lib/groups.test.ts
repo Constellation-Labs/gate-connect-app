@@ -280,7 +280,7 @@ describe("buildGroups", () => {
     const groups = buildGroups(
       [
         tool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex"),
-        tool("claude-code", "Claude Code", { kind: "error", message: "m" }),
+        tool("claude-code", "Claude Code", { kind: "error", message: "m", intended: false }),
       ],
       [],
       ON,
@@ -288,6 +288,32 @@ describe("buildGroups", () => {
     const byKey = new Map(groups.flatMap((g) => g.members).map((m) => [m.key, m.attention]));
     expect(byKey.get("codex")).toBe("drifted");
     expect(byKey.get("claude-code")).toBe("error");
+  });
+
+  /**
+   * An unreadable config has no answer of its own, so the switch takes the one
+   * the backend recorded from the last read that answered. Switched on, turning
+   * the section off reaches it; switched off, the section reads off and turning
+   * it off leaves the tool alone. AG-1120.
+   */
+  it("drives an errored tool's switch from what it last said, both ways", () => {
+    const errored = (intended: boolean) =>
+      buildGroups(
+        [tool("claude-code", "Claude Code", { kind: "error", message: "m", intended })],
+        [],
+        ON,
+      )[0];
+
+    const on = errored(true);
+    expect(on.members[0].desired).toBe(true);
+    expect(on.switchOn).toBe(true);
+    expect(cascadeTargets(on, false).map((m) => m.key)).toEqual(["claude-code"]);
+    expect(on.members[0].attention).toBe("error");
+
+    const off = errored(false);
+    expect(off.members[0].desired).toBe(false);
+    expect(off.switchOn).toBe(false);
+    expect(cascadeTargets(off, false)).toEqual([]);
   });
 });
 
@@ -513,7 +539,7 @@ describe("groupSummary", () => {
     // of member in it. OpenCode and its Zen / Go host were that pair until the
     // domain became tool-managed.
     const [group] = buildGroups(
-      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
+      [tool("claude-code", "Claude Code", { kind: "error", message: "m", intended: false })],
       [domain()],
       ON,
     );
@@ -529,7 +555,7 @@ describe("groupSummary", () => {
     // host. The environment channel is its own section now, so pairing those
     // two would be two summaries rather than one.
     const [group] = buildGroups(
-      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
+      [tool("claude-code", "Claude Code", { kind: "error", message: "m", intended: false })],
       [domain({ enabled: false })],
       { proxyOn: false, caTrusted: true },
     );

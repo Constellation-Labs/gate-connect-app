@@ -226,7 +226,8 @@
       "tier": "certified",
       "routing": {
         "mechanism": "relay",
-        "proxy_domain": null
+        "proxy_domain": null,
+        "gate_models": true
       },
       "surfaces": {
         "detector": "opencode",

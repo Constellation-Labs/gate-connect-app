@@ -62,6 +62,38 @@ pub fn session_generation() -> u64 {
     SESSION_GENERATION.load(Ordering::Acquire)
 }
 
+/// Moved by a sign-in ([`login`]) or a sign-out ([`clear`]), and never by a
+/// refresh: whose session this is, where [`SESSION_GENERATION`] is which
+/// bundle. A token read before one of those belongs to the session that
+/// ended, and must not reach an engine after the push that ended it.
+///
+/// The counter is its own lock, and [`push_for_sign_in`] holds it across the
+/// push, so a sign-out's bump and a push of the old session's token cannot
+/// interleave: the push lands before the bump, and the sign-out's own `""`
+/// after it, or the push sees the bump and is dropped (AG-1130).
+static SIGN_IN_EPOCH: Mutex<u64> = Mutex::new(0);
+
+/// The current [`SIGN_IN_EPOCH`]. Read it before reading the session whose
+/// token you mean to push.
+pub fn sign_in_epoch() -> u64 {
+    *SIGN_IN_EPOCH.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn advance_sign_in_epoch() {
+    *SIGN_IN_EPOCH.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+}
+
+/// Run `push` unless a sign-in or sign-out has landed since `epoch` (a
+/// [`sign_in_epoch`]). Returns whether it ran. `push` must not sign in or out.
+pub fn push_for_sign_in(epoch: u64, push: impl FnOnce()) -> bool {
+    let current = SIGN_IN_EPOCH.lock().unwrap_or_else(|e| e.into_inner());
+    if *current != epoch {
+        return false;
+    }
+    push();
+    true
+}
+
 /// The last refreshed bundle the secret store would not take, read in
 /// preference to the stored one while it stands.
 ///
@@ -630,8 +662,9 @@ pub fn current() -> Result<Option<OAuthTokens>> {
     // hour.
     //
     // The witness moves on exactly what must not be served stale: login
-    // rewrites `account.json` and sign-out removes it, in this process or in
-    // the CLI. What it deliberately does not catch is another process
+    // rewrites `account.json` with a fresh stamp after storing the bundle
+    // (`account::stamp_sign_in`), even when it changes nothing else, and
+    // sign-out removes it, in this process or in the CLI. What it deliberately does not catch is another process
     // *refreshing* the bundle, because that one is harmless here - `ensure_fresh`
     // re-tests the expiry of whatever comes back, so a bundle that ages out is
     // refreshed rather than served, and Cognito does not rotate refresh tokens
@@ -654,6 +687,9 @@ pub fn clear() -> Result<()> {
     keychain::delete(&service(), &user)?;
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    // After the delete, so a reader that saw the old epoch is the only kind
+    // that can still have read the bundle.
+    advance_sign_in_epoch();
     // The session is gone, so the analytics identity tied to it is too (AG-960).
     // Here rather than in each caller so every sign-out path forgets it: the
     // app's Disconnect and Reset, `gate-connect logout` (through
@@ -745,6 +781,27 @@ pub fn access_token_for_injection() -> String {
         return String::new();
     }
     live_session().map(|t| t.access_token).unwrap_or_default()
+}
+
+/// [`access_token_for_injection`] for a holder that already has a bearer and
+/// re-reads it on a timer: `None` when nobody could tell
+/// ([`SessionReading::Unavailable`]), meaning keep the one you have. `""`
+/// there would say the session is dead, and refuse every request as signed
+/// out over a network blip (AG-1130).
+pub fn access_token_update_for_injection() -> Option<String> {
+    if crate::account::auth_mode().unwrap_or_default() != crate::account::AuthMode::OAuth {
+        return Some(String::new());
+    }
+    bearer_for_reading(session_reading())
+}
+
+/// The pure half of [`access_token_update_for_injection`].
+pub fn bearer_for_reading(reading: SessionReading) -> Option<String> {
+    match reading {
+        SessionReading::Live(t) => Some(t.access_token),
+        SessionReading::SignedOut => Some(String::new()),
+        SessionReading::Unavailable => None,
+    }
 }
 
 /// Return the freshest token bundle, refreshing silently if the stored one is
@@ -1253,8 +1310,20 @@ impl LoopbackListener {
         }
     }
 
-    /// Parse one connection. `Ok(Some(code))` on a valid callback,
-    /// `Ok(None)` for an unrelated path, `Err` on an OAuth error / bad state.
+    /// Parse one connection. `Ok(Some(code))` on a valid callback, `Ok(None)`
+    /// for anything that is not this attempt's redirect, `Err` only when the
+    /// redirect that carries our `state` reports a failure.
+    ///
+    /// **Only a request carrying the expected `state` can end the wait.** The
+    /// listener is on loopback, so any web page the user has open can reach it
+    /// with a no-cors `fetch("http://127.0.0.1:<port>/callback?error=x")`. When
+    /// an `error`, a missing `state` or a wrong one was terminal, that one
+    /// request aborted a sign-in the user was halfway through. The `state` is
+    /// the only thing a page cannot know, so it is the gate: everything without
+    /// it is answered and ignored, and the wait carries on until the real
+    /// redirect, a cancel or the deadline. The identity provider echoes `state`
+    /// on its error redirects as well (RFC 6749 4.1.2.1), so a genuine refusal
+    /// still ends the login at once.
     fn handle_callback(
         &self,
         mut stream: std::net::TcpStream,
@@ -1286,14 +1355,22 @@ impl LoopbackListener {
             .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("");
-        let url = reqwest::Url::parse(&format!("http://localhost{target}"))
-            .context("parsing loopback callback URL")?;
-        if url.path() != "/callback" {
+        let Some(url) = reqwest::Url::parse(&format!("http://localhost{target}"))
+            .ok()
+            .filter(|url| url.path() == "/callback")
+        else {
             let _ = write_http(&mut stream, "404 Not Found", "");
             return Ok(None);
-        }
+        };
 
         let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        if params.get("state").map(String::as_str) != Some(expected_state) {
+            // Not this attempt's redirect: a stale tab, or a page probing the
+            // port. Answered so the requester is not left hanging, never
+            // terminal (see above).
+            let _ = write_http(&mut stream, "400 Bad Request", ERROR_HTML);
+            return Ok(None);
+        }
         if let Some(err) = params.get("error") {
             let _ = write_http(&mut stream, "200 OK", ERROR_HTML);
             let desc = params
@@ -1301,13 +1378,6 @@ impl LoopbackListener {
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
             bail!("authorization failed ({err}){desc}");
-        }
-        let state = params
-            .get("state")
-            .context("callback missing state parameter")?;
-        if state != expected_state {
-            let _ = write_http(&mut stream, "200 OK", ERROR_HTML);
-            bail!("state mismatch on OAuth callback - possible CSRF, aborting");
         }
         let code = params
             .get("code")
@@ -1389,6 +1459,10 @@ where
     }
     let tokens = complete_login(cfg, &code, &req.verifier, listener.redirect_uri())?;
     store(&tokens)?;
+    advance_sign_in_epoch();
+    // After the store, so a reader in another process cannot cache the old
+    // bundle under the moved witness. See `account::stamp_sign_in`.
+    crate::account::stamp_sign_in()?;
     Ok(tokens)
 }
 
@@ -1531,6 +1605,90 @@ mod tests {
             !err.to_string().contains("stopped from Gate Connect"),
             "a finished attempt's cancel reached a later one: {err}"
         );
+    }
+
+    /// Send one request line to a bound listener and return the response's
+    /// status line, the way a browser tab or a probing page would hit it.
+    fn hit_callback(listener: &LoopbackListener, target: &str) -> String {
+        use std::io::{Read, Write};
+        let port: u16 = listener
+            .redirect_uri()
+            .trim_start_matches("http://localhost:")
+            .trim_end_matches("/callback")
+            .parse()
+            .expect("redirect URI carries the bound port");
+        let mut stream =
+            std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+        write!(stream, "GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response.lines().next().unwrap_or_default().to_string()
+    }
+
+    /// A local web page can reach the loopback callback with a no-cors fetch,
+    /// and used to end a sign-in in progress with one request carrying `error`
+    /// or a wrong `state` (AG-1140). None of those may be terminal: the wait has
+    /// to outlast every one of them and still take the real redirect.
+    #[test]
+    fn requests_without_the_expected_state_do_not_end_the_wait() {
+        let _serial = one_login_at_a_time();
+        let listener = LoopbackListener::bind(&[0]).unwrap();
+        let cancel = CancelScope::new();
+
+        std::thread::scope(|s| {
+            let sender = s.spawn(|| {
+                for forged in [
+                    "/callback?error=access_denied",
+                    "/callback?error=access_denied&state=guessed",
+                    "/callback?code=forged",
+                    "/callback?code=forged&state=guessed",
+                    "/callback?code=forged&state=",
+                ] {
+                    assert_eq!(
+                        hit_callback(&listener, forged),
+                        "HTTP/1.1 400 Bad Request",
+                        "{forged}"
+                    );
+                }
+                assert_eq!(
+                    hit_callback(&listener, "/callback?code=real&state=expected"),
+                    "HTTP/1.1 200 OK"
+                );
+            });
+            let code = listener
+                .wait_for_code("expected", std::time::Duration::from_secs(5), &cancel)
+                .expect("only the real redirect ends the wait");
+            assert_eq!(code, "real");
+            sender.join().unwrap();
+        });
+    }
+
+    /// The other half: an error redirect that DOES carry our `state` is the
+    /// identity provider refusing the sign-in, and still ends it at once rather
+    /// than leaving the user waiting out the deadline.
+    #[test]
+    fn an_error_carrying_the_expected_state_ends_the_wait() {
+        let _serial = one_login_at_a_time();
+        let listener = LoopbackListener::bind(&[0]).unwrap();
+        let cancel = CancelScope::new();
+
+        std::thread::scope(|s| {
+            let sender = s.spawn(|| {
+                hit_callback(
+                    &listener,
+                    "/callback?error=access_denied&error_description=nope&state=expected",
+                )
+            });
+            let err = listener
+                .wait_for_code("expected", std::time::Duration::from_secs(5), &cancel)
+                .expect_err("a real refusal is terminal");
+            assert!(
+                err.to_string()
+                    .contains("authorization failed (access_denied): nope"),
+                "got: {err}"
+            );
+            assert_eq!(sender.join().unwrap(), "HTTP/1.1 200 OK");
+        });
     }
 
     #[test]
@@ -1715,6 +1873,34 @@ mod tests {
             classify_session(true, || Ok(Some(tokens()))),
             SessionReading::SignedOut
         ));
+    }
+
+    /// AG-1130: a holder that already has a bearer is told to drop it on a
+    /// sign-out and to keep it when nobody could tell.
+    #[test]
+    fn an_unavailable_reading_leaves_the_bearer_alone() {
+        let live = tokens().access_token;
+        assert_eq!(
+            bearer_for_reading(SessionReading::Live(tokens())),
+            Some(live)
+        );
+        assert_eq!(
+            bearer_for_reading(SessionReading::SignedOut).as_deref(),
+            Some("")
+        );
+        assert_eq!(bearer_for_reading(SessionReading::Unavailable), None);
+    }
+
+    /// AG-1130: once the epoch has moved, a push read under the old one is
+    /// dropped. Other tests in this binary sign out too, so this only advances
+    /// the epoch and never asserts it stood still.
+    #[test]
+    fn a_push_from_before_a_sign_out_is_dropped() {
+        let read = sign_in_epoch();
+        advance_sign_in_epoch();
+        let mut ran = false;
+        assert!(!push_for_sign_in(read, || ran = true));
+        assert!(!ran);
     }
 
     /// A bundle that does not parse is a refusal; a store that could not be
