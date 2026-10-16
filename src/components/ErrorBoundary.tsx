@@ -1,7 +1,11 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { captureException } from "../lib/analytics";
 import { proxyStatus, quitApp } from "../lib/api";
-import { Button } from "./gc/ui";
+
+/** The Settings pane's `sm` action button (`SettingsPane`'s `ActionButton`),
+ * minus its colours, which differ per button. */
+const BUTTON =
+  "flex h-8 shrink-0 items-center gap-1.5 rounded-control px-3 text-base-xs font-medium leading-4 tracking-button-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
 
 interface Props {
   children: ReactNode;
@@ -21,7 +25,7 @@ interface State {
 }
 
 /** Catches render-time throws so a crash surfaces as a readable message
- * instead of a blank white window. The onboarding and popover windows are
+ * instead of a blank white window. The onboarding and main windows are
  * both first-launch-critical: a silent blank leaves the user with nothing
  * to act on, so we show the error (and forward it to PostHog) here.
  *
@@ -55,25 +59,25 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
 
     return (
-      <div className="flex h-full flex-col gap-3 overflow-y-auto bg-gc-surface p-6 text-gc-ink">
-        <h1 className="text-gc-panel-title font-semibold tracking-[-0.01em]">Something went wrong</h1>
+      <div className="flex h-full flex-col gap-3 overflow-y-auto bg-base-background p-6 text-base-foreground">
+        <h1 className="text-lg font-semibold leading-7 tracking-heading-18">Something went wrong</h1>
 
         {/* The lede, and deliberately not the error. This window failed; the
             gateway is a separate process and usually did not. */}
-        <p className="text-gc-body-md leading-[1.45] text-gc-ink-3">
+        <p className="text-sm leading-5 text-base-muted-foreground">
           This window hit an unexpected error.{" "}
           {routing === "on" ? (
-            <span className="font-medium text-gc-ink">
+            <span className="font-medium text-base-foreground">
               Your traffic is still routing through Gate.
             </span>
           ) : routing === "off" ? (
-            <span className="font-medium text-gc-ink">
+            <span className="font-medium text-base-foreground">
               Routing is off, so nothing is going through Gate right now.
             </span>
           ) : routing === "checking" ? (
             "Checking whether your traffic is still routing…"
           ) : (
-            <span className="font-medium text-gc-ink">
+            <span className="font-medium text-base-foreground">
               Gate Connect couldn&rsquo;t check whether routing is still on.
             </span>
           )}
@@ -84,17 +88,17 @@ export class ErrorBoundary extends Component<Props, State> {
             wears the destructive treatment, because on macOS and Windows it
             stops the engine and takes routing down with it. */}
         <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
+          <button
+            type="button"
+            className={`${BUTTON} border border-base-border bg-base-card text-base-primary shadow-base-btn-sm hover:bg-gray-50 focus-visible:outline-base-primary`}
             disabled={quitting}
             onClick={() => window.location.reload()}
           >
             Reload window
-          </Button>
-          <Button
-            variant="danger"
-            size="sm"
+          </button>
+          <button
+            type="button"
+            className={`${BUTTON} bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600`}
             disabled={quitting}
             onClick={() => {
               this.setState({ quitting: true });
@@ -102,17 +106,17 @@ export class ErrorBoundary extends Component<Props, State> {
             }}
           >
             {quitting ? "Quitting…" : "Quit Gate Connect"}
-          </Button>
+          </button>
         </div>
 
         {/* Collapsed, like every other raw payload in the app. A stack trace
             is evidence for a bug report, not the first thing a user reads
             about their own machine. */}
         <details className="mt-auto">
-          <summary className="cursor-pointer py-0.5 text-gc-caption text-gc-ink-3">
+          <summary className="cursor-pointer py-0.5 text-base-xs text-base-muted-foreground">
             Error details
           </summary>
-          <pre className="mt-1.5 whitespace-pre-wrap break-words rounded bg-gc-sunken p-3 font-mono text-gc-label leading-relaxed text-gc-ink-2">
+          <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-control border border-base-border bg-gray-50 p-3 font-mono text-base-xs leading-relaxed text-base-foreground">
             {error.name}: {error.message}
             {"\n\n"}
             {error.stack ?? "(no stack)"}

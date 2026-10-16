@@ -19,6 +19,7 @@ pub struct RelayStub {
     port: u16,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     intercepting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RelayStub {
@@ -44,7 +45,7 @@ impl RelayStub {
         let flag = stop.clone();
         let intercepting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(intercepting));
         let reports = intercepting.clone();
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
@@ -92,6 +93,7 @@ impl RelayStub {
             port,
             stop,
             intercepting,
+            thread: Some(thread),
         }
     }
 
@@ -113,5 +115,10 @@ impl Drop for RelayStub {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         // Unblock the accept loop so the thread notices the flag.
         let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+        // Wait for it to drop the listener: a test that binds the same fixed
+        // port next would otherwise race this thread for it.
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }

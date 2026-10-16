@@ -180,24 +180,19 @@ that would be handed the tool's own key. The slug table is
 
 What follows from it:
 
-- **A plain exit no longer rewrites a relay config.** `QuitAddresses` records a
- fronted relay origin as absent, so `revert_stranded_configs_for_quit` and the
- quit dialog skip it. It is read once per sweep, so one sweep cannot disagree
- with itself about a tool; the dialog and the revert are two sweeps, and a
- forwarder that takes or loses the port between them makes them differ in the
- safe direction (`proxy::QuitAddresses` says how). Codex and OpenCode go
- direct while Gate is closed and route again on the next start without being
- touched, and a crash leaves them working too.
+- **A fronted relay port answers after Gate exits.** A tool still holding the
+ relay origin keeps working, direct, and a crash - which runs no teardown -
+ leaves relay tools working too. (Every quit now takes Gate out of every
+ config regardless; this is what makes that safe for tools already running,
+ and what `QuitAddresses` records as a fronted origin for the uninstall rule
+ below.)
 - **Except on Windows when the forwarder goes too.** It is a plain detached
- process there, and nothing but Gate starts it again. So at the end of the
- login session (`proxy::session_ending`, Windows' `SM_SHUTTINGDOWN`) the exit
- handler reverts relay configs whether the forwarder holds the port or not
- (`provider::revert_stranded_configs_relay_unfronted`), and the startup
- restore reconnects them; otherwise a tool that started before Gate after the
- next login would find nothing on the relay port. The uninstaller does the
- same through the app binary (`--revert-relay-configs`, from
- `installer-hooks.nsh`) before it kills the forwarder, and skips it on an
- update. macOS needs neither: launchd holds the relay port from login. A drag
+ process there, and nothing but Gate starts it again. The end of a login
+ session is covered by the quit, which reverts every config. The uninstaller
+ reverts relay configs whether the forwarder holds the port or not
+ (`provider::revert_stranded_configs_relay_unfronted`) through the app
+ binary (`--revert-relay-configs`, from `installer-hooks.nsh`) before it kills
+ the forwarder, and skips it on an update. macOS has no such step. A drag
  to the Trash runs no code of ours and can leave the launch agent naming a
  binary that is gone; that is not addressed here.
 - **A clean exit forgets `relay-engine-port`.** The forwarder dials that port
@@ -280,9 +275,9 @@ moves no traffic and costs a restart of every running tool, because a tool
 reads its configuration once and the file's mtime is what says it missed a
 change.
 
-`snapshot_and_disable_everything` is the full sweep, and the quit-and-disconnect
-choice still runs it. Signing out and Reset are on the same side of that line,
-which is where `forwarder::stop` already sat.
+`snapshot_and_disable_everything` is the full sweep, and every quit runs it
+(`snapshot_and_disable_everything_for_exit`). Signing out and Reset are on the
+same side of that line.
 
 Keeping the configs makes the switch **live**: a `codex` running before the
 toggle passes through while parked and routes again when the engine unparks,
@@ -336,7 +331,7 @@ installs written before tool configs moved to the forwarder carry.
 | OpenCode                            | relay                             | `provider.<id>.options.baseURL`                                                              | yes    |
 | OpenClaw                            | proxy engine                      | `proxy.proxyUrl` + `NODE_EXTRA_CA_CERTS`                                                     | yes    |
 | Hermes                              | proxy engine                      | four vars in `~/.hermes/.env`                                                                | yes    |
-| **Environment proxy** (`env-proxy`) | proxy engine, via the environment | nothing per-tool; the machine-wide export                                                    | hidden |
+| **Terminal tools** (`env-proxy`)     | proxy engine, via the environment | nothing per-tool; the machine-wide export                                                    | yes    |
 
 Claude Code's proxy URL includes a fixed, non-secret route selector. That lets
 the engine keep intercepting its canonical Anthropic connection when the user
@@ -367,12 +362,26 @@ routed can still resume.
 `env-proxy` is not a tool. It models the *mechanism* - the variables the system
 proxy exports - because some tools cannot be configured at all. OpenCode has no
 proxy or CA setting anywhere in its config schema and loads no dotenv, so those
-variables are the only way to route it; an OpenCode-shaped proxy integration
-would be a fiction, since nothing tool-specific happens. The same export covers
-anything else that reads `HTTPS_PROXY`.
+variables are the only way its sockets reach the *engine*; an OpenCode-shaped
+proxy integration would be a fiction, since nothing tool-specific happens. The
+same export covers anything else that reads `HTTPS_PROXY`.
+
+That qualifier is load-bearing, and this sentence used to drop it and read "the
+only way to route it". The variables are not the only way OpenCode routes:
+`integrations::opencode` rewrites `provider.<id>.options.baseURL` to the relay,
+which needs neither a variable nor the CA, and it predates this section. Without
+the qualifier the sentence denies the relay half outright, which is how it came
+to contradict both the table above and section 6 below.
 
 **OpenCode's own integration is therefore relay-only**, and stays that way. It
 writes `baseURL` and nothing else. The env coverage belongs to `env-proxy`.
+
+Neither mechanism subsumes the other, which is why both are wired. The rewrite
+is a snapshot taken at connect time over `KNOWN_PROVIDERS`, so a provider the
+user adds afterwards, one outside that allowlist, or one the `looks_local` guard
+skips has no rewrite and is the environment's to carry. Going the other way, the
+rewrite routes without the CA and without touching the machine, which is the
+whole reason it is not simply deleted in favour of the channel.
 
 It is a *choice*, not a side effect, because the variables are machine-wide:
 `HTTPS_PROXY` redirects git, curl and npm too. `manager.enable()` consults
@@ -547,13 +556,84 @@ the Routing card, and is absent entirely on Linux (`env_export_separable`),
 where those variables *are* the system proxy and a switch could not honour
 itself. Turning it off is a real opt-out that survives routing toggles.
 
-**The harnesses are listed.** OpenCode, OpenClaw and Hermes now appear in the
-ledger, forming the "Other tools" group that was dormant while they were
-hidden. (That group was called "Agent harnesses" until the round-15 design pass:
-it is the label on a `filter(t => !claimed.has(t.slug))`, and nobody installs a
-harness.) `hidden_in_ui` still exists and `env-proxy` still uses it; hiding is
-always a UI-boundary decision (`list_tools`), never removal from the registry,
-because the master-off sweep and `restore_swept_tools` walk it.
+It has a **row** now as well, "Terminal tools", in the Tools band beside
+OpenCode. (It was "Experimental" when this paragraph was written; `BAND_LABELS`
+in `groups.ts` draws Apps and Tools.) The two are there together because the
+channel carries what OpenCode's own config cannot: the `baseURL` rewrite covers
+the providers it found at connect time, the variables cover whatever else it
+sends, and turning OpenCode on turns the channel on with it. (This used to say
+the two "share a mechanism" and that the variables are "how it routes" - which
+contradicted the mechanism table in section 3, where OpenCode is relay. See the
+qualifier there.) `useRouting`'s `opencode-env` prompt says so before either
+write, and the row is what makes that promise checkable. Both controls call
+`proxy::set_env_export`, so they cannot disagree.
+
+**The ledger groups by client, not by vendor.** Every row - a config tool or a
+proxy domain - answers `taxonomy::Client`, and `buildGroups` buckets on it. So
+OpenCode, OpenClaw and Hermes each head a group, Claude Code and Claude Desktop
+are two groups rather than one "Anthropic", and the environment channel sits
+with the host entries that also cover whatever happens to be running, under
+**Any app on this machine**.
+
+This replaced a vendor grouping plus four hand-added headings. A vendor heading
+cannot file a tool that routes whatever providers the user configured in it, so
+OpenClaw, Hermes and an "Experimental" pair were named one at a time in a
+`LEFTOVER_GROUPS` table, behind an `any-provider` catch-all whose whole job was
+to catch what the taxonomy could not place. There is no catch-all now: every row
+names its client, so nothing can fall off the ledger. (The shared group was
+called "Agent harnesses" until the round-15 design pass, then "Other tools".)
+
+**The machine-wide group holds the `openai` domain.** api.openai.com belongs to no
+OpenAI tool: Codex is config-routed through the relay, which resolves routes
+against the whole catalog (`relay.rs` builds from `default_domains()`, not the
+enabled set), so it routes whatever that switch says; the ChatGPT desktop app
+talks to chatgpt.com. What the switch governs is MITM interception of that host
+for any system-proxy-honouring client - and the clients that depend on it are
+OpenClaw and Hermes, which blind-tunnel anything outside the *enabled* catalog.
+So the row sits with them, and `provider.rs` no longer lists the slug: the OpenAI
+family switch governs Codex alone, which is what it was doing in effect already. It
+is labelled **OpenAI API** - the host's role, with `api.openai.com` itself in the
+row's description rather than the label, since the popover already prints it in a
+mono identifier slot.
+
+The grouping is what makes the row labels work. Rows are named for the surface
+they cover - "API" and "Chat" for the two surfaces of the Claude desktop app,
+"CLI" for a terminal tool - and a surface kind is only legible under a heading
+that names the program. The sentence explaining each row used to be UI copy in
+`MEMBER_DESCRIPTIONS`, drawn under the App pane's title; design asked for that
+line to go on 2026-09-21 (the frame's header is title and status only) and the
+table went with it, since nothing else read it. The rail row's hover
+(`hintForMember`) is what still names the programs behind a row.
+
+**Each row also carries a scope and a credential** (`taxonomy::Scope`,
+`taxonomy::Credential`), and both are rendered rather than implied:
+
+- `scope` is the blast radius. Every proxy domain is `host`, which means
+  flipping it intercepts those hosts for *every* proxy-honouring client on the
+  machine, not only the one the row is named for - `should_intercept_host`
+  matches on host alone at CONNECT, before any header exists, and the
+  per-request narrowing in `rules_for_client` decides only what is rewritten.
+  Config tools are `client`; the environment channel is `machine`. The sentence
+  comes from `switchScopeNote` in `groups.ts` for a host section and
+  `machineScopeNote` for the environment channel.
+- `credential` is whose key rides the request, and it is the single thing that
+  decides whether a group switch may flip the row: `provider::cascade_domains`
+  filters on `Credential::Brokered`, and `cascadeTargets` does the same on the
+  frontend. The session surfaces (`claude-web`, `chatgpt-apps`, `chatgpt`) are
+  `Additive`, so they are listed under their client and reachable only from
+  their own switch.
+
+Those two used to be one `chat` boolean plus a second `chat_domain_slugs` array
+on each provider, which is why a row could be silently dropped from the ledger
+by an edit meant to keep it out of a cascade, and why the scope fact had nowhere
+to live at all. A support thread in 2026-09 turned on exactly that gap: `Chat`
+was labelled "Web" and described as the browser tab, so its owner concluded the
+Claude desktop app was uncovered when the row covers it, and covers it more
+fully than a browser.
+
+`hidden_in_ui` still exists; nothing uses it now that `env-proxy` is listed.
+Hiding is always a UI-boundary decision (`list_tools`), never removal from the
+registry, because the master-off sweep and `restore_swept_tools` walk it.
 
 **They were listed ahead of the stated bar.** That bar was one end-to-end run
 against a real install, per tool, and none of the three has had one. What
@@ -580,31 +660,27 @@ first table.
 
 | event | Gate |
 | --- | --- |
-| **Start** (after a plain quit) | Ensures the forwarder first (including when the machine-wide export is declined, since tool configs may name it), then rebinds the engine on its persisted port and the relay behind the forwarder, re-exports the PAC and the env vars. Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it - and behind the forwarder the quit put back no relay config. |
+| **Start** (after a quit) | Ensures the forwarder first - before the restore, so a relay config the restore rewrites names a live port even when the engine enable then fails - then rebinds the engine on its persisted port and the relay behind the forwarder, re-exports the PAC and the env vars. Reconnects every tool the quit put back on its own settings, which is every tool that named Gate. |
 | **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
 | **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
-| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin where the forwarder does not hold the relay port, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, a relay config the forwarder fronts, or one the user repointed by hand, is untouched. On Windows at the end of the login session, relay configs are reverted even where the forwarder holds the port, because it goes with the session (`provider::revert_stranded_configs_relay_unfronted`). The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
-| **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
+| **Any exit** (tray Quit, the window menu's Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Puts **every** tool that names Gate back on its own settings and records each one, before its write, for the startup restore (`provider::snapshot_and_disable_everything_for_exit`). Then drains the forwarder, reverts the PAC and the env, and stops the engine and the relay. Runs once per process: `quit_app` runs it and fires the notification, and `RunEvent::Exit` runs it for the exits that never reach `quit_app`. Gives up after 5s if another routing operation holds the lock, rather than hang a logout. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
 
 **What the user does:**
 
-| tool | start | routing off | routing on | any exit | disconnect and quit |
-| --- | --- | --- | --- | --- | --- |
-| **Claude Code** | nothing | nothing | nothing | nothing, works unrouted | restart a running session |
-| **Codex** | nothing | nothing | nothing, open conversations route again | nothing, works unrouted | resume open conversations |
-| **OpenCode** | nothing | nothing | nothing | nothing, works unrouted | restart |
-| **OpenClaw** | nothing | nothing | nothing | nothing, works unrouted | `openclaw gateway restart` |
-| **Hermes** | nothing | nothing | nothing | nothing, works unrouted | restart |
-| **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted | new terminal |
+| tool | start | routing off | routing on | any exit |
+| --- | --- | --- | --- | --- |
+| **Claude Code** | restart a running session to route again | nothing | nothing | nothing, works unrouted |
+| **Codex** | resume open conversations to route again | nothing | nothing, open conversations route again | nothing, works unrouted |
+| **OpenCode** | restart to route again | nothing | nothing | nothing, works unrouted |
+| **OpenClaw** | `openclaw gateway restart` to route again | nothing | nothing | nothing, works unrouted |
+| **Hermes** | restart to route again | nothing | nothing | nothing, works unrouted |
+| **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted |
 
-Starting Gate *after* a disconnect-and-quit is the start that costs the most:
-`restore_all` rewrites every config, so the last column applies again in
-reverse. A start after a plain quit rewrites nothing where the forwarder holds
-the relay port. Where it does not, the quit put the two relay configs back and
-the start rewrites them, and the Codex and OpenCode cells are the ones this
-table carried before the forwarder fronted the relay: a conversation or an
-OpenCode opened while Gate was closed keeps its direct route until resumed or
-restarted, and the exit column says the same of running ones.
+Every start after a quit is the one that costs: the quit rewrote every config,
+and `restore_all` rewrites them back, so a tool that was running across the
+quit keeps working unrouted through the drained forwarder until the login
+session ends, and routes again only once it is reopened. A tool opened while
+Gate was closed read its own settings and is in the same position.
 
 Three things to read off this:
 
@@ -613,34 +689,20 @@ Three things to read off this:
  cannot reach it. That is inherent to environment variables and holds on every
  platform; a shell that was already open keeps the forwarder address the whole
  way through and needs nothing.
-- **Every exit reverts by one rule: does the address die with the process.**
- Every exit, not only the one that goes through the panel: `quit_app` is
- reached by the tray's Quit and the crash screen's and by nothing else, while
- Cmd+Q comes from Tauri's default menu and a logout comes from the OS. Both
- land in `RunEvent::Exit` having touched none of our own code, so the revert
- runs there too. It deliberately does not *veto* the exit - `ExitRequested`
- can be prevented, but the same event carries a logout, and an app that puts a
- dialog in front of a logout is an app that hangs it. Cmd+Q therefore means
- "quit without disconnecting", the safe half of the panel.
- Decided per *configured address*, not per tool, because which address a
- config holds is per install: Codex and OpenCode name the relay origin, and a
- Claude Code, OpenClaw or Hermes install written before the forwarder repoint
- (or whose forwarder would not start) still names the engine's own port. All
- of those live in the GUI process on macOS and Windows, go back to their own
- settings on the way out, and come back at the next start - except the relay
- origin where the forwarder holds its port, which survives the exit and is
- left alone. A config naming
- the forwarder keeps working, because that process is left running on
- purpose; one the user repointed by hand names nothing of ours and is not
- touched. Before this rule the stranded ones were simply broken until Gate
- ran again, with an error naming a loopback port, which reads as the tool
- being broken rather than Gate being off. The quit dialog names which tools
- will be put back and which keep working, from the same predicate, and a
- notification repeats what was rewritten.
-- **Disconnect and quit is deliberately the harsh column.** Stopping the
- forwarder is what makes it "Gate is out of the path", and it means a process
- that inherited the forwarder address fails closed rather than falling back.
- That is the existing design, now visible as the only column with real work.
+- **Every exit takes Gate out of every config.** Every exit, not only the ones
+ that reach `quit_app` (the tray's Quit, the window menu's, the crash
+ screen's): Cmd+Q comes from Tauri's default menu and a logout comes from the
+ OS, and both land in `RunEvent::Exit` having touched none of our own code, so
+ the sweep runs there too, once. It deliberately does not *veto* the exit -
+ `ExitRequested` can be prevented, but the same event carries a logout, and an
+ app that puts a dialog in front of a logout is an app that hangs it.
+ This replaced a narrower rule, which put back only the configs whose address
+ died with the process and left the forwarder's tools pointed at Gate,
+ working, with nothing reading their traffic. That rule survives only as the
+ Windows uninstall hook's (`provider::revert_stranded_configs_relay_unfronted`).
+- **The forwarder is drained, not stopped.** A process that already holds the
+ forwarder address keeps working, direct, until the login session ends, so
+ nothing running breaks at the quit. What it costs is the start column.
 
 Confidence: the two routing columns rest on the park keeping its ports and on
 the master-cycle mtime test, verified separately, not on a live toggle with a
@@ -667,7 +729,40 @@ else is measured or read directly off the code path named.
    a property of routing rather than a tool). Remaining: it is untested against
    a real macOS or Windows session.
 5. **Verify the effective config, not our own write** - the general fix for the
-   O1 class across relay integrations.
+   O1 class. **Mostly done (AG-674), with one hole named below.**
+
+   Two halves. The *path* half is closed: `status` now reads the file the
+   harness loads, not the one Gate picked. `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+   were being ignored - Gate Connect would edit a file the CLI never opens and
+   report `Connected` off that write - and they join `OPENCLAW_CONFIG_PATH`,
+   `HERMES_HOME` and OpenCode's `OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` /
+   `XDG_CONFIG_HOME`, which were already honoured.
+
+   The *precedence* half has its own state rather than a green pill:
+   `Status::Overridden(source)` -> `ConfigState::Overridden` ->
+   `Reason::ConfigurationOverridden`, whose next action is
+   `ShowConflictingConfig` and not `ApplyGateConfiguration`, because re-writing a
+   file that is already correct moves nothing. What each integration checks
+   before it says `Connected`:
+
+   | Tool | Layer it can lose to | Seen? |
+   |---|---|---|
+   | Claude Code | enterprise `managed-settings.json` setting `HTTPS_PROXY` or `ANTHROPIC_BASE_URL` | yes |
+   | Claude Code | project `.claude/settings*.json`, CLI flags | **no** |
+   | Codex | the selected `profile`'s own `model_provider` | yes |
+   | Codex | `--profile` / `-c` on the command line | **no** |
+   | OpenCode | managed `/etc/opencode/opencode.json`, `OPENCODE_CONFIG_CONTENT` | yes |
+   | OpenCode | project `./opencode.json`, `.opencode/` - **finding O1 itself** | **no** |
+   | OpenClaw | nothing above its single file; the path override is honoured | n/a |
+   | Hermes | an `HTTPS_PROXY` already in the login environment, which python-dotenv will not replace | yes |
+
+   The hole is one shape, not five: **a layer chosen by the harness's working
+   directory**. Gate Connect is a windowed process and does not know which repo
+   `codex` was started in, so a per-project config is not reachable from here -
+   and O1's own case, a repo-local `opencode.json`, is exactly that. Closing it
+   needs per-tool traffic attribution in the relay, or the harness's cwd from the
+   process table, both larger than this item. Until then the app under-claims
+   rather than over-claims, which is the direction that was wrong before.
 6. **The OpenRouter ALB fix is mock-tested only**; it asserts our side of the
    contract, not Gate's reassembly.
 7. O3: Zen provider IDs.
@@ -683,6 +778,10 @@ crates/core/src/proxy/
   manager*.rs         enable/disable/crash/reconcile orchestration
   ca_bundle.rs        platform roots + our CA, for tools that replace the store
   relay.rs            loopback reverse proxy for base-URL integrations
+crates/core/src/
+  routing_health.rs   the per-tool verdict: what a tool is *doing*
+  verdict_log.rs      what the last sweep concluded, kept across launches
+  recovery.rs         what an interrupted restore did, entry by entry
 crates/core/src/integrations/
   dotenv.rs           shared managed .env edits (never clobbers a user value)
 crates/core/tests/proxy_e2e.rs   engine + exported-env end-to-end

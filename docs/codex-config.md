@@ -98,13 +98,14 @@ model_provider = "gate"
 
 [model_providers.gate]
 name = "Constellation Gate"
-base_url = "http://127.0.0.1:8977/chatgpt/codex"
+base_url = "http://127.0.0.1:8977/__gate/t/codex/chatgpt/codex"
 wire_api = "responses"
 requires_openai_auth = true
 ```
 
-- Codex sends `/chatgpt/codex/responses`.
-- The relay strips `/chatgpt`, looks that slug up in its built-in catalog, and
+- Codex sends `/__gate/t/codex/chatgpt/codex/responses`.
+- The relay strips `/__gate/t/codex`, records `codex` as the client tool for
+  attribution, strips `/chatgpt`, looks that slug up in its built-in catalog, and
   forwards `/codex/responses` to the gateway with
   `X-Gate-Upstream-Url: https://chatgpt.com/backend-api` attached.
 
@@ -115,14 +116,55 @@ model_provider = "gate"
 
 [model_providers.gate]
 name = "Constellation Gate"
-base_url = "http://127.0.0.1:8977/openai/v1"
+base_url = "http://127.0.0.1:8977/__gate/t/codex/openai/v1"
 wire_api = "responses"
 requires_openai_auth = true
 ```
 
-- Codex sends `/openai/v1/responses`.
-- The relay strips `/openai` and forwards `/v1/responses` with
+- Codex sends `/__gate/t/codex/openai/v1/responses`.
+- The relay strips `/__gate/t/codex` and `/openai`, and forwards `/v1/responses`
+  with
   `X-Gate-Upstream-Url: https://api.openai.com`.
+
+## Gate models
+
+Choosing Gate models for Codex in the app's model card writes them into this
+file, so Codex itself shows and runs them:
+
+```toml
+model = "openai/gpt-5.6-luna"
+model_catalog_json = "<app-support>/codex-gate-models.json"
+model_provider = "gate"
+
+[model_providers.gate]
+name = "Constellation Gate"
+base_url = "http://127.0.0.1:8977/__gate/t/codex/gate/v1"
+wire_api = "responses"
+
+[_gate_connect]
+gate_models = ["openai/gpt-5.6-luna", "anthropic/claude-opus-5"]
+previous_model = "gpt-5.6-sol"
+previous_model_catalog_json_absent = true
+```
+
+- `model` is the first of the chosen models, under its Gate id. A model you
+  then pick in Codex from the same set is kept across reconnects.
+- `model_catalog_json` **replaces** Codex's model list, so `/model` offers
+  exactly the chosen set. Each entry is cloned from a model Codex already knows
+  (its own `models_cache.json`), keeping Codex's agent instructions, with the
+  name and context window from Gate's catalogue.
+- `base_url` is the relay's Gate models route. Everything sent there is served
+  by Gate on your organization's credits, and a model outside the chosen set is
+  refused with an error naming it rather than swapped for another. There is no
+  `requires_openai_auth`: Gate is the provider, so your Codex login is not sent.
+- `previous_model` / `previous_model_catalog_json` record what Gate replaced.
+  Going back to App default, or disconnecting, puts them back, unless you have
+  changed the model in Codex since, in which case your change stays.
+- If you move Codex off the chosen models yourself (a model outside the set, or
+  another provider), the app notices, shows Codex back on App default, and
+  takes its catalog and route back out of this file.
+- Codex reads this file when a conversation starts, so a change reaches new
+  conversations. The app offers to restart running Codex sessions.
 
 ## Notes
 

@@ -182,8 +182,11 @@ fn claude_code_connect_then_disconnect() {
         )),
         "forward proxy URL missing (expected port {proxy_port}): {body}"
     );
+    // The `env` block only: `_gateConnect.wrote` names the key too, as `null`,
+    // to record that Gate keeps it absent.
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(
-        !body.contains(r#""ANTHROPIC_BASE_URL":"#),
+        parsed["env"].get("ANTHROPIC_BASE_URL").is_none(),
         "a custom Anthropic base URL would disable first-party capabilities: {body}"
     );
     assert!(
@@ -229,7 +232,7 @@ fn codex_connect_then_disconnect() {
         "pointer not set: {body}"
     );
     assert!(
-        body.contains(&format!("{RELAY_URL}/openai/v1")),
+        body.contains(&format!("{RELAY_URL}/__gate/t/codex/openai/v1")),
         "relay base URL missing: {body}"
     );
     assert!(
@@ -299,7 +302,7 @@ wire_api = "responses"
 
     let body = read(&config);
     assert!(
-        body.contains(&format!("{RELAY_URL}/openai/v1")),
+        body.contains(&format!("{RELAY_URL}/__gate/t/codex/openai/v1")),
         "managed relay base URL missing: {body}"
     );
     assert!(

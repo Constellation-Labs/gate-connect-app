@@ -31,6 +31,9 @@ fn main() {
         "GATE_COGNITO_HOSTED_DOMAIN_STAGING",
         "GATE_COGNITO_CLIENT_ID_STAGING",
         "GATE_COGNITO_SCOPES_STAGING",
+        "GATE_COGNITO_HOSTED_DOMAIN_DEV",
+        "GATE_COGNITO_CLIENT_ID_DEV",
+        "GATE_COGNITO_SCOPES_DEV",
     ] {
         println!("cargo:rerun-if-env-changed={var}");
     }

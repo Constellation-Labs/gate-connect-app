@@ -1,0 +1,5 @@
+
+# The vendored harness manifest is checked against a recorded SHA-256, so it must
+# reach every checkout byte for byte: no CRLF conversion on Windows.
+crates/core/vendor/harnesses.json -text
+crates/core/vendor/harnesses.json.sha256 -text

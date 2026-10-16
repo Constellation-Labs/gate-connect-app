@@ -1,0 +1,328 @@
+//! A diagnostic log, for local and staging builds only.
+//!
+//! Gate Connect wrote nothing to disk until this existed. Backend output went to
+//! stdout, which only a `tauri dev` terminal ever sees, and the front end logged
+//! to a webview console nobody can read after the fact - so a failure in the UI
+//! left no trace at all. A routing switch that silently stopped responding was
+//! undiagnosable without devtools open at the moment it happened, which is not a
+//! thing you can ask a user to have done.
+//!
+//! ## Off in production, by two independent gates
+//!
+//! This app mediates people's API traffic and holds their credentials. A log
+//! file is a liability in that setting, so it is written **only** when the
+//! configured gateway is not production - and, failing that, only in a debug
+//! build. Both conditions are checked; either one alone would be enough to keep
+//! it out of a shipped, production-pointed app, which is the belt-and-braces
+//! `config.ts` already uses for the localhost gateway entry.
+//!
+//! ## What may be written
+//!
+//! Callers pass a finished message and this writes it verbatim. Nothing here
+//! inspects headers, bodies or account state, so the rule is the caller's to
+//! keep: **never pass a credential, a prompt, or a request body.** [`redact`] is
+//! a backstop for the one shape that would otherwise slip through by accident -
+//! a Gate key pasted into an error string - not a licence to log secrets and
+//! rely on scrubbing.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+use crate::env;
+
+/// Where production points. Anything else is local or staging.
+const PRODUCTION_GATEWAY: &str = "https://gateway.constellationgate.ai";
+
+/// Biggest the log may get before it is rotated, in bytes.
+///
+/// One rotation, not a series: this exists to explain the last session, and a
+/// developer machine does not need a month of history. Two files bound the disk
+/// cost at twice this and make "the log" an unambiguous thing to ask someone for.
+const MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+impl Level {
+    fn label(self) -> &'static str {
+        match self {
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Level {
+        match s {
+            "error" => Level::Error,
+            "warn" => Level::Warn,
+            // Anything unrecognised is information rather than an error: a
+            // mislabelled line is a nuisance, an invented error is a false alarm.
+            _ => Level::Info,
+        }
+    }
+}
+
+/// Whether anything is written at all, decided once per process.
+///
+/// Once, because the answer is about which deployment this is, and that does not
+/// meaningfully change while the app runs. A gateway switched at runtime keeps
+/// the startup decision until restart - which errs towards *not* starting to
+/// write in a session that began pointed at production.
+pub fn enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        // `load_base_url` rather than `load`: it reads the file and never the
+        // keychain. This runs on every logging path, and a decision about
+        // whether to write a log file must never be the thing that raises a
+        // credential prompt.
+        //
+        // No account yet (first run) falls back to the build kind, so a dev
+        // build still records what happened before anyone signed in. A stored
+        // URL that does not parse is treated the same way, rather than as "not
+        // production": nothing can be concluded from it, and a release build
+        // should not start writing on the strength of a typo.
+        crate::account::load_base_url()
+            .ok()
+            .flatten()
+            .and_then(|url| names_production(&url))
+            .map(|production| !production)
+            .unwrap_or(cfg!(debug_assertions))
+    })
+}
+
+/// Whether `url` is the production gateway, or `None` if it does not parse.
+///
+/// Compared by origin (scheme, host and port), not as a string. `login
+/// --base-url` stores what the user typed, and `config.ts`'s `isListedGateway`
+/// already treats `https://Gateway.constellationgate.ai/` as the same gateway,
+/// so a string compare turned the log on in a production install for nothing
+/// more than a capital letter or an explicit `:443`. The parser lowercases the
+/// host and drops a default port; the path, including a trailing slash, is not
+/// part of an origin.
+fn names_production(url: &str) -> Option<bool> {
+    let url = reqwest::Url::parse(url).ok()?;
+    let production = reqwest::Url::parse(PRODUCTION_GATEWAY).expect("static production URL");
+    Some(url.origin() == production.origin())
+}
+
+fn log_path() -> Option<PathBuf> {
+    if writes_to_real_log_from_a_test() {
+        return None;
+    }
+    env::app_support_dir()
+        .ok()
+        .map(|d| d.join("gate-connect.log"))
+}
+
+/// A test binary with no redirected home, which would otherwise append to the
+/// developer's real `gate-connect.log`.
+///
+/// It did, for every run of a suite that sets only `GATE_CONNECT_TEST_SECRETS`
+/// (`keychain_partial_write` among them): about twenty keychain warnings a day
+/// on one machine, burying the lines that explain a real outage (AG-1096).
+/// Either data-dir seam makes a run hermetic, so a test that sets one still
+/// logs, into its own directory.
+///
+/// Cargo puts every test executable, unit and integration alike, in
+/// `target/<profile>/deps`, and nothing else there runs. The app and the CLI
+/// are one level up, so `pnpm app:local` keeps its log.
+fn writes_to_real_log_from_a_test() -> bool {
+    !env::data_dir_redirected() && in_test_binary()
+}
+
+fn in_test_binary() -> bool {
+    static IN_TEST: OnceLock<bool> = OnceLock::new();
+    *IN_TEST.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent()?.file_name().map(|d| d == "deps"))
+            .unwrap_or(false)
+    })
+}
+
+/// Blunt scrub for the one secret shape that reaches a message by accident: a
+/// Gate key interpolated into an error string.
+///
+/// Deliberately not clever. It is a backstop, and a thorough redactor would
+/// invite callers to treat logging as safe for anything - see the module note.
+fn redact(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    for word in message.split_inclusive(char::is_whitespace) {
+        let trimmed = word.trim_end();
+        if trimmed.starts_with("sk-gw-") || trimmed.starts_with("sk-ant-") {
+            out.push_str("<redacted>");
+            out.push_str(&word[trimmed.len()..]);
+        } else {
+            out.push_str(word);
+        }
+    }
+    out
+}
+
+/// Append one line, or do nothing.
+///
+/// Infallible by design. Every caller is on a path doing something the user
+/// asked for, and a log that cannot be written is not a reason to fail their
+/// work - the same trade [`crate::primitives::install_id_cached`] makes.
+pub fn log(level: Level, message: &str) {
+    if !enabled() {
+        return;
+    }
+    let Some(path) = log_path() else { return };
+    rotate_if_large(&path);
+
+    let stamp = time::OffsetDateTime::now_utc().unix_timestamp();
+    let line = format!("{stamp} {} {}\n", level.label(), redact(message));
+    let _ = append(&path, &line);
+}
+
+/// Append `line` to `path`, creating it owner-only.
+///
+/// 0600 like every other file here that holds activity (`activity_cache`,
+/// `config_changes`): the log carries gateway error snippets, paths and error
+/// chains, which are nobody else's business on a shared machine. The mode
+/// applies only when the file is created; Windows keeps its default ACL, which
+/// already confines a file under the user's profile to that user.
+fn append(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(line.as_bytes())
+}
+
+/// A failure the caller is swallowing, to both places it can be read.
+///
+/// stderr for a developer watching `pnpm app:local`, and the log file for
+/// everything after the fact - which is the file the diagnostics report names
+/// and the one somebody can be asked to send. Both, because neither alone
+/// covers the case: a shipped staging build has no terminal attached, and a
+/// terminal line is gone the moment the window is closed.
+///
+/// The gap this closes is narrow and was real. A restore that could not write a
+/// tool's config printed its reason here and nowhere else, so the only account
+/// of *why* lived in a terminal - and the surface asking about it, the recovery
+/// summary, could name the failed step and never the reason. That summary now
+/// journals the message too; this is the other half, for the failures no surface
+/// reports at all.
+///
+/// `Warn`, not `Error`: every caller is continuing past this. Something the
+/// operation recovered from should not read like something that stopped it, in
+/// a file people open to find what stopped it.
+///
+/// Same rule as [`log`] on what may be passed: no credential, prompt or request
+/// body. [`redact`] is a backstop, not a licence.
+pub fn failure(message: &str) {
+    // Prefixed on stderr only. The file stamps its own level, so `[gate]` there
+    // would be noise on every line; on a shared terminal it is what marks the
+    // line as ours.
+    eprintln!("[gate] {message}");
+    log(Level::Warn, message);
+}
+
+fn rotate_if_large(path: &std::path::Path) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() < MAX_BYTES {
+        return;
+    }
+    // Replaces the previous rotation rather than accumulating. Errors are
+    // ignored: a failed rotation means the file keeps growing, which is a much
+    // smaller problem than a failed write on a path the user is waiting on.
+    let _ = std::fs::rename(path, path.with_extension("log.1"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AG-1096: a test with no redirected home must not reach the real log.
+    #[test]
+    fn a_test_without_a_test_home_never_names_the_real_log() {
+        let _guard = env::path_env_lock();
+        let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        std::env::remove_var("GATE_CONNECT_TEST_HOME");
+        let without = log_path();
+        let dir = std::env::temp_dir().join(format!("gate-log-seam-{}", std::process::id()));
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
+        let with = log_path();
+        match prev {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+
+        assert!(
+            in_test_binary(),
+            "cargo runs this from target/<profile>/deps"
+        );
+        assert_eq!(without, None);
+        assert!(
+            with.is_some_and(|p| p.starts_with(&dir)),
+            "a test home keeps the log, inside it"
+        );
+    }
+
+    #[test]
+    fn production_is_recognised_by_origin_not_spelling() {
+        for url in [
+            "https://gateway.constellationgate.ai",
+            "https://gateway.constellationgate.ai/",
+            "https://Gateway.ConstellationGate.ai",
+            "HTTPS://gateway.constellationgate.ai/",
+            "https://gateway.constellationgate.ai:443",
+            "https://gateway.constellationgate.ai:443/",
+        ] {
+            assert_eq!(names_production(url), Some(true), "{url}");
+        }
+    }
+
+    #[test]
+    fn other_gateways_are_not_production() {
+        for url in [
+            "https://staging.gateway.constellationgate.ai",
+            "http://gateway.constellationgate.ai",
+            "https://gateway.constellationgate.ai:8443",
+            "http://localhost:3000",
+        ] {
+            assert_eq!(names_production(url), Some(false), "{url}");
+        }
+    }
+
+    #[test]
+    fn an_unparseable_url_decides_nothing() {
+        assert_eq!(names_production("gateway.constellationgate.ai"), None);
+        assert_eq!(names_production(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_log_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "gate-connect-logging-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gate-connect.log");
+        append(&path, "one\n").unwrap();
+        append(&path, "two\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

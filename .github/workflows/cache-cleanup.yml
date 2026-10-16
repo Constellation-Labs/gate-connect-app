@@ -1,0 +1,34 @@
+name: Cache cleanup
+
+# A PR's caches are scoped to `refs/pull/<n>/merge`, which nothing can restore
+# from once the PR closes, yet they hold their share of the repo's 10 GB budget
+# until they age out a week later. The Rust jobs no longer save on PRs (see
+# `save-if` in ci.yml); this clears what is still saved there, such as pnpm's.
+#
+# Listed by ref and deleted by id, because `gh cache delete --ref` is newer
+# than some runners' gh.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    name: Delete the PR's caches
+    # A fork's PR gets a read-only token whatever `permissions:` asks for, so
+    # the delete would 403 and leave a red check on a closed PR. Its caches age
+    # out on their own a week later.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          gh cache list --ref "$REF" --limit 100 --json id --jq '.[].id' |
+            while read -r id; do gh cache delete "$id"; done

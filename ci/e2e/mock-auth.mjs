@@ -16,6 +16,9 @@
 // Env: MOCK_AUTH_PORT, MOCK_AUDIT_LOG.
 import http from 'node:http';
 import fs from 'node:fs';
+import { exitWithPid } from './exit-with-pid.mjs';
+
+exitWithPid();
 
 const port = Number(process.env.MOCK_AUTH_PORT || 8455);
 const auditLog = process.env.MOCK_AUDIT_LOG || '';

@@ -1,5 +1,6 @@
 import type {
   Account,
+  CheckEvidence,
   Diagnostics,
   LaunchAtLoginStatus,
   OAuthStatus,
@@ -39,6 +40,25 @@ import type { AnalyticsId } from "./analytics";
  *  that a value still gets room on one line in a 360px popover. */
 const LABEL_WIDTH = 16;
 
+/**
+ * What to print after a tool's status about which build it is.
+ *
+ * Three outcomes, three strings, because they send a support thread to three
+ * different places. A version is the answer. `version unreadable` means the
+ * executable was found and would not say - a broken or unusual install. Silence
+ * means no executable was found at all, which for a tool detected through its
+ * config directory is itself the finding: Gate can see its config and not its
+ * binary.
+ */
+function versionSuffix(
+  slug: string,
+  versions: Record<string, string | null> | null,
+): string {
+  if (!versions || !(slug in versions)) return "";
+  const version = versions[slug];
+  return version ? ` (v${version})` : " (version unreadable)";
+}
+
 export interface DiagnosticsInput {
   /** Stamped into the report. Injected so tests aren't clock-dependent. */
   now: Date;
@@ -52,6 +72,10 @@ export interface DiagnosticsInput {
   /** Null when the backend snapshot failed. The report still renders - a
    *  missing section is itself a finding. */
   backend: Diagnostics | null;
+  /** Each tool's version, or null if the probe was never run. A slug absent
+   *  from the map is a tool whose executable was not found; a slug mapped to
+   *  null is one that would not say. See `versionSuffix`. */
+  versions: Record<string, string | null> | null;
   account: Account | null;
   oauth: OAuthStatus | null;
   proxy: ProxyState | null;
@@ -141,6 +165,8 @@ export function toolStatusLine(status: Status): string {
       return "routed";
     case "drifted":
       return `drifted: ${status.reason}`;
+    case "overridden":
+      return `overridden: ${status.source}`;
     case "error":
       return `error: ${status.message}`;
   }
@@ -166,6 +192,7 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     platform,
     analyticsId,
     backend,
+    versions,
     account,
     oauth,
     proxy,
@@ -227,17 +254,58 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     if (backend && proxy.ca_trusted && !backend.ca_cert_present) {
       lines.push(row("cert file", "MISSING on disk"));
     }
-    // Linux only: browsers read per-user NSS stores rather than the system
-    // one, so the certificate above reading "trusted" while this line appears
-    // is the whole of "curl works, the browsers don't". Silent when the
-    // question does not apply.
-    if (backend?.ca_nss_trusted === false) {
+    // Linux only: browsers read per-user NSS stores rather than the system one
+    // (Chromium's database, each Firefox profile's), so the certificate above
+    // reading "trusted" while this line appears is the whole of "curl works,
+    // the browsers don't". Silent when
+    // the question does not apply, and silent when the store holds it - that is
+    // what the line above already says.
+    //
+    // `unreadable` is its own line rather than folded into the one above it.
+    // "CA MISSING" is a claim about the user's store, and printing it for a
+    // database Gate never managed to open manufactures that claim out of the
+    // absence of a reading - which is the one thing this report must not do,
+    // because it is the sentence a support engineer acts on.
+    if (backend?.ca_nss_trusted === "absent") {
       lines.push(row("browser store", "CA MISSING"));
+    } else if (backend?.ca_nss_trusted === "unreadable") {
+      lines.push(row("browser store", "could not be read"));
     }
-    // Which store, since "missing" alone cannot tell a Chrome with no database
-    // from a Firefox profile that refused the write.
+    // Which store, Chromium's or a Firefox profile's, and what it holds. The
+    // line above is a fold, and a store the user changed in the browser is not
+    // a fault in it, so this is the only place that one shows.
     for (const store of backend?.ca_nss_stores ?? []) {
       lines.push(row("  store", store));
+    }
+    // What the write itself saw, which is the only place the cause lives. The
+    // line above is `all()` over the stores and probed now, so it cannot
+    // separate "certutil is not installed" from "one database refused" - and
+    // the note the app raises on a failed write tells the reader this report
+    // names which store and why. Silent before any write in this process, and
+    // silent on a clean one: `trusted` is what the line above already says.
+    const nssWrite = backend?.ca_nss_write ?? null;
+    // No record is not a clean write, and printing nothing for both made the
+    // two identical on the page. Said in words rather than left blank, per
+    // principle 6: a section that was never read says so. Only where the
+    // question applies at all - `ca_nss_trusted` is null off Linux and on a
+    // machine with no Chromium store, and a "no record" line there would be
+    // answering a question nobody asked.
+    if (!nssWrite && backend?.ca_nss_trusted != null) {
+      lines.push(row("browser write", "no record for this certificate"));
+    } else if (nssWrite && nssWrite.outcome !== "trusted") {
+      lines.push(
+        row(
+          "browser write",
+          nssWrite.outcome === "tools_missing"
+            ? "FAILED - certutil not installed"
+            : "FAILED - a store refused",
+        ),
+      );
+      // One line per store, because the fix differs per store and a count would
+      // send the reader back to guessing. `reason` is certutil's own words.
+      for (const refusal of nssWrite.refusals) {
+        lines.push(row("  refused", `${refusal.store} (${refusal.reason})`));
+      }
     }
     lines.push(
       row(
@@ -312,7 +380,35 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
   if (tools.length === 0) {
     lines.push("none");
   } else {
-    for (const tool of tools) lines.push(row(tool.slug, toolStatusLine(tool.status)));
+    for (const tool of tools) {
+      // Same three facts as the domain rows below, in the same order, so the
+      // two sections can be read against each other - which is the whole point
+      // of a tool row and a domain row sharing a client.
+      lines.push(
+        row(
+          tool.slug,
+          `${toolStatusLine(tool.status)}${versionSuffix(tool.slug, versions)} - ${tool.client}, ${tool.scope}, ${tool.credential}`,
+        ),
+      );
+    }
+  }
+
+  // The history a snapshot cannot give: what each tool's checks concluded,
+  // when that changed, and what the check saw each time. Without it a row
+  // that read "Not protected" an hour ago, or flickered, could not be
+  // explained from the report (AG-1056, AG-1096).
+  const checks = backend?.checks ?? [];
+  if (checks.length > 0) {
+    lines.push("", "[checks]");
+    for (const check of checks) {
+      lines.push(row(check.slug, `${verdictWords(check.state, check.reason)} at ${unixStamp(check.at_unix)}${evidenceSuffix(check.evidence)}`));
+      if (check.verified_state) {
+        lines.push(row("", `last verified ${check.verified_state} at ${unixStamp(check.verified_unix)}`));
+      }
+      for (const change of check.recent) {
+        lines.push(row("", `${unixStamp(change.at_unix)} -> ${verdictWords(change.state, change.reason)}${evidenceSuffix(change.evidence)}`));
+      }
+    }
   }
 
   if (proxy) {
@@ -321,9 +417,17 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
       lines.push("none");
     } else {
       for (const domain of proxy.domains) {
-        lines.push(
-          row(domain.slug, domain.supported ? onOff(domain.enabled) : `${onOff(domain.enabled)} (unsupported)`),
-        );
+        const state = domain.supported
+          ? onOff(domain.enabled)
+          : `${onOff(domain.enabled)} (unsupported)`;
+        // The taxonomy beside the flag, because on/off alone is what sent the
+        // report that prompted this: a reader saw `claude-web off` and could
+        // not tell from the report whether that meant their desktop app was
+        // uncovered, whether anything else was covering the host, or what
+        // turning it on would touch. Client, scope and credential answer all
+        // three, and they cost one line each in a report that is already read
+        // by whoever is debugging it.
+        lines.push(row(domain.slug, `${state} - ${domain.client}, ${domain.scope}, ${domain.credential}`));
       }
     }
   }
@@ -334,4 +438,19 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
   lines.push("", "No keys, tokens or passwords are included in this report.");
 
   return `${lines.join("\n")}\n`;
+}
+
+function verdictWords(state: string, reason: string | null): string {
+  return reason ? `${state} (${reason})` : state;
+}
+
+/** An ISO time, or unknown for the 0 the log writes when the clock failed. */
+function unixStamp(seconds: number): string {
+  return seconds > 0 ? new Date(seconds * 1000).toISOString() : UNKNOWN;
+}
+
+function evidenceSuffix(evidence: CheckEvidence | null): string {
+  if (!evidence) return "";
+  const reopen = evidence.reopen_pending ? ", reopen pending" : "";
+  return ` [config ${evidence.config}, relay ${evidence.relay}, local proxy ${evidence.local_proxy}, session ${evidence.session}${reopen}]`;
 }

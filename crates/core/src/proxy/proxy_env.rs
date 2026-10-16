@@ -27,6 +27,12 @@
 //! no PAC equivalent, so every request from a tool that honours them reaches the
 //! engine, which MITMs the intercepted domains and blind-tunnels the rest. That
 //! is exactly what Linux has always done.
+//!
+//! There are two lists, not one. [`NO_PROXY_VALUE`] is what Gate means to keep
+//! off the engine: GNOME's `ignore-hosts` carries it, and [`no_proxy_exempts`]
+//! reads it to decide which hosts are local. [`ENV_NO_PROXY_VALUE`] is that
+//! list in a shape every client can parse, and is the base of every process
+//! environment Gate writes.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -61,9 +67,92 @@ use std::collections::BTreeMap;
 /// engine blind-tunnels what it does not route either way - so this lists what
 /// the clients that *do* honour it need, rather than trimming to the lowest
 /// common denominator.
+///
+/// **Ignored is not the same as unparseable**, though, and an environment gets
+/// [`ENV_NO_PROXY_VALUE`] instead: `httpx` cannot read the IPv6 CIDRs at all.
 pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
 fc00::/7,fe80::/10,.local,.ts.net,.internal";
+
+/// [`NO_PROXY_VALUE`] as a process environment carries it: the same list
+/// without its IPv6 CIDRs.
+///
+/// Those two entries do not merely go unread by `httpx`, they stop it working.
+/// It parses every `NO_PROXY` entry as a URL while building a client and fails
+/// on `fc00::/7` with "Invalid port: ':'" (httpx 0.28.1), before any request is
+/// made and whatever the request's host. With the export on, that was every
+/// `openai.OpenAI()` and `anthropic.Anthropic()` started from a terminal. Go
+/// and curl did honour them, so a local IPv6 host now rides the engine from
+/// there: blind-tunnelled, uninspected, working while Gate runs. A bracketed
+/// address (`[fd00::1]`) fails the same way; a bare one (`::1`) is fine.
+///
+/// Every environment Gate writes takes this: the shell export and Claude Code's
+/// settings (inherited by its Bash tool and stdio MCP servers, which is where
+/// the Python is) as it stands, and Hermes' `.env` as its base, with the local
+/// addresses Hermes' config names added. Only GNOME's ignore list keeps the
+/// full list, and `httpx` never reads it.
+pub(crate) const ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
+10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
+.local,.ts.net,.internal";
+
+/// The `NO_PROXY` Claude Code's settings and Hermes' `.env` were given before
+/// [`ENV_NO_PROXY_VALUE`]: the full list, IPv6 CIDRs and all.
+///
+/// Frozen on purpose rather than derived from [`NO_PROXY_VALUE`]: it is what
+/// is on disk, and that does not change when the list next grows. Claude
+/// Code's `status` reads exactly this value as its own stale write, so the
+/// startup reconcile rewrites it - which is the only thing that would on
+/// Linux, where no quit sweep reconnects anything. Exactly this value and no
+/// other, so a `NO_PROXY` the user edited is never mistaken for Gate's.
+///
+/// Hermes does not need it by name: its `status` compares Gate's recorded
+/// line with what a connect would write now, and this value is one case of
+/// that.
+pub(crate) const LEGACY_ENV_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
+10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
+fc00::/7,fe80::/10,.local,.ts.net,.internal";
+
+/// Whether [`NO_PROXY_VALUE`] means `host` to be reached directly, read the way
+/// the clients that honour every entry read it: a name exactly, a `.suffix` as
+/// any name under it, a CIDR as any address inside it.
+///
+/// What the list *intends*, which is not what every client does: Python's
+/// `urllib` ignores the CIDR entries (see the note above), so a caller asking
+/// what a Python tool will actually bypass has to ask that question instead.
+/// Hermes uses this to find the addresses it must spell out for its own client.
+pub(crate) fn no_proxy_exempts(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    // An IPv4-mapped IPv6 address is the IPv4 address, for routing purposes.
+    let addr = host.parse::<std::net::IpAddr>().ok().map(|a| match a {
+        std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(a, std::net::IpAddr::V4),
+        v4 => v4,
+    });
+    NO_PROXY_VALUE.split(',').any(|entry| {
+        if let Some((net, bits)) = entry.split_once('/') {
+            let (Some(addr), Ok(net), Ok(bits)) =
+                (addr, net.parse::<std::net::IpAddr>(), bits.parse::<u32>())
+            else {
+                return false;
+            };
+            return match (addr, net) {
+                (std::net::IpAddr::V4(a), std::net::IpAddr::V4(n)) if bits <= 32 => {
+                    let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+                    u32::from(a) & mask == u32::from(n) & mask
+                }
+                (std::net::IpAddr::V6(a), std::net::IpAddr::V6(n)) if bits <= 128 => {
+                    let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+                    u128::from(a) & mask == u128::from(n) & mask
+                }
+                _ => false,
+            };
+        }
+        if entry.starts_with('.') {
+            host.ends_with(entry)
+        } else {
+            host == entry
+        }
+    })
+}
 
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set
@@ -103,8 +192,8 @@ pub(crate) fn case_sensitive(port: u16) -> Result<Vec<(&'static str, String)>> {
         endpoint.clone(),
         endpoint.clone(),
         endpoint,
-        NO_PROXY_VALUE.to_string(),
-        NO_PROXY_VALUE.to_string(),
+        ENV_NO_PROXY_VALUE.to_string(),
+        ENV_NO_PROXY_VALUE.to_string(),
         ca,
     ];
     Ok(VARS_CASE_SENSITIVE.into_iter().zip(values).collect())
@@ -116,7 +205,12 @@ pub(crate) fn case_sensitive(port: u16) -> Result<Vec<(&'static str, String)>> {
 pub(crate) fn case_insensitive(port: u16) -> Result<Vec<(&'static str, String)>> {
     let endpoint = format!("http://127.0.0.1:{port}");
     let ca = super::ca_cert_path()?.display().to_string();
-    let values = [endpoint.clone(), endpoint, NO_PROXY_VALUE.to_string(), ca];
+    let values = [
+        endpoint.clone(),
+        endpoint,
+        ENV_NO_PROXY_VALUE.to_string(),
+        ca,
+    ];
     Ok(VARS_CASE_INSENSITIVE.into_iter().zip(values).collect())
 }
 
@@ -310,7 +404,7 @@ mod tests {
         );
         assert_eq!(
             sensitive.get("NO_PROXY").map(String::as_str),
-            Some(NO_PROXY_VALUE)
+            Some(ENV_NO_PROXY_VALUE)
         );
         assert!(
             sensitive
@@ -375,13 +469,66 @@ mod tests {
     }
 
     #[test]
+    fn no_proxy_exempts_reads_names_suffixes_and_ranges() {
+        for host in [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "100.101.102.103",
+            "100.64.0.1",
+            "100.127.255.255",
+            "192.168.1.20",
+            "10.0.0.5",
+            "fd7a:115c:a1e0::1",
+            "model-box.tail1234.ts.net",
+            "nas.local",
+            "MODEL-BOX.TS.NET",
+            "::ffff:192.168.1.20",
+        ] {
+            assert!(no_proxy_exempts(host), "{host} should be exempt");
+        }
+        for host in [
+            "openrouter.ai",
+            "100.63.255.255",
+            "100.128.0.1",
+            "8.8.8.8",
+            "2001:4860::1",
+            "notlocal",
+            "ts.net.example.com",
+        ] {
+            assert!(!no_proxy_exempts(host), "{host} should not be exempt");
+        }
+    }
+
+    #[test]
+    fn the_env_list_is_the_full_list_without_ipv6_cidrs() {
+        // Derived rather than trusted: a range added to one list and not the
+        // other is the drift this pins.
+        let expected: Vec<&str> = NO_PROXY_VALUE
+            .split(',')
+            .filter(|entry| !(entry.contains(':') && entry.contains('/')))
+            .collect();
+        assert_eq!(ENV_NO_PROXY_VALUE.split(',').collect::<Vec<_>>(), expected);
+        // The two shapes httpx 0.28.1 cannot parse, whatever the full list
+        // grows to hold: an IPv6 CIDR, and a bracketed IPv6 address.
+        for entry in ENV_NO_PROXY_VALUE.split(',') {
+            assert!(
+                !(entry.contains(':') && (entry.contains('/') || entry.contains('['))),
+                "{entry} breaks httpx"
+            );
+        }
+    }
+
+    #[test]
     fn loopback_is_always_bypassed() {
         // OpenCode's TUI reaches its own local server; proxying that loops.
-        for host in ["localhost", "127.0.0.1", "::1"] {
-            assert!(
-                NO_PROXY_VALUE.split(',').any(|h| h == host),
-                "{host} must be in NO_PROXY"
-            );
+        for list in [NO_PROXY_VALUE, ENV_NO_PROXY_VALUE] {
+            for host in ["localhost", "127.0.0.1", "::1"] {
+                assert!(
+                    list.split(',').any(|h| h == host),
+                    "{host} must be in {list}"
+                );
+            }
         }
     }
 }

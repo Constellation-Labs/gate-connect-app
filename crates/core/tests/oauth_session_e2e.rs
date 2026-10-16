@@ -201,6 +201,11 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
         "no bundle => fall back to the API key"
     );
     assert_eq!(
+        oauth::access_token_update_for_injection().as_deref(),
+        Some(""),
+        "no bundle is a sign-out, which a running relay must be told"
+    );
+    assert_eq!(
         mock.hits.load(Ordering::SeqCst),
         0,
         "a missing bundle must not hit the token endpoint"
@@ -212,6 +217,10 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
     assert_eq!(session.access_token, "at-valid");
     assert_eq!(session.refresh_token, "rt-valid", "left untouched");
     assert_eq!(oauth::access_token_for_injection(), "at-valid");
+    assert_eq!(
+        oauth::access_token_update_for_injection().as_deref(),
+        Some("at-valid")
+    );
     assert_eq!(
         mock.hits.load(Ordering::SeqCst),
         0,
@@ -280,6 +289,14 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
         oauth::current().expect("read").is_some(),
         "a failed refresh must not clear the stored bundle"
     );
+    // But a holder that already has a bearer keeps it: an identity provider
+    // that could not be reached says nothing about the session, and `""`
+    // would refuse every request as signed out (AG-1130).
+    assert_eq!(
+        oauth::access_token_update_for_injection(),
+        None,
+        "an unreachable identity provider is not a sign-out"
+    );
 
     // 5. Auth mode gates injection independently of the session. A valid OAuth
     //    session persists (so the user can switch back without re-authenticating),
@@ -296,6 +313,11 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
         oauth::access_token_for_injection(),
         "",
         "ApiKey mode must not inject the OAuth bearer"
+    );
+    assert_eq!(
+        oauth::access_token_update_for_injection().as_deref(),
+        Some(""),
+        "ApiKey mode takes the OAuth bearer out of a running relay"
     );
     gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
         .expect("restore oauth mode");
@@ -358,6 +380,26 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
         "at-relogin",
         "a new login stores fresh tokens and lifts the rejection"
     );
+
+    // 8. A token read before a sign-out never reaches the engine after it
+    //    (AG-1130). A refresh does not count as a change of session - the
+    //    token it mints is the same person's - but a sign-out does, and a
+    //    push of the old token is dropped rather than landing over the
+    //    sign-out's own empty one.
+    let before = oauth::sign_in_epoch();
+    oauth::store(&tokens("at-refresh-like", "rt-relogin", now + 3600)).expect("store");
+    let mut pushed = Vec::new();
+    assert!(
+        oauth::push_for_sign_in(before, || pushed.push("at-refresh-like")),
+        "a refresh is not a change of session"
+    );
+    let read_before_sign_out = oauth::sign_in_epoch();
+    oauth::clear().expect("sign out");
+    assert!(
+        !oauth::push_for_sign_in(read_before_sign_out, || pushed.push("at-stale-push")),
+        "a token read before the sign-out must not be pushed after it"
+    );
+    assert_eq!(pushed, vec!["at-refresh-like"]);
 
     // Clean up the seams and temp dir.
     oauth::clear().ok();

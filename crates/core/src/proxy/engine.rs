@@ -30,11 +30,12 @@ use hyper_rustls::ConfigBuilderExt;
 use rand::Rng;
 use tokio::sync::{oneshot, watch};
 
+use crate::account::BillingMode;
 use crate::proxy::cert_authority::GateCa;
 use crate::proxy::{
     browser_ua_without_product_token, classify_client, decide, domain_claiming_host,
-    is_non_browser_ua, rules_for_client, should_decline_upgrade, should_intercept_host,
-    ClientClass, Decision, ProxyDomain,
+    effective_billing_mode, is_non_browser_ua, rules_for_client, should_decline_upgrade,
+    should_intercept_host, ClientClass, Decision, ProxyDomain,
 };
 
 /// Everything the engine needs to run one session. The account + CA are
@@ -59,6 +60,11 @@ pub struct EngineConfig {
     /// org is selected or in legacy API-key mode. Hot-swappable via
     /// [`RunningEngine::update_org`].
     pub org_id: String,
+    /// Who pays the upstream provider. `Payg` drops `X-Gate-Upstream-Url` and
+    /// the client's own credential on the rewrite path, so the gateway bills
+    /// the org's balance instead of the tool's provider account.
+    /// Hot-swappable via [`RunningEngine::update_mode`].
+    pub billing_mode: BillingMode,
     /// Full domain catalog; the engine routes only the `enabled` ones.
     pub domains: Vec<ProxyDomain>,
     /// PEM of the local root CA cert (public).
@@ -88,13 +94,14 @@ pub struct EngineConfig {
     /// `preferred_port`: CLI tools bake this port into their config, so reusing
     /// it across restarts keeps that config valid. Ephemeral if taken/`None`.
     pub preferred_relay_port: Option<u16>,
-    /// When `Some(uid)`, only connections from that local UID are intercepted
-    /// (MITM'd + rewritten with the Gate key injected); traffic from any other
-    /// local user is blind-tunnelled. The loopback listener is plain TCP and
-    /// reachable by every local user, so this stops a *different* account from
-    /// spending the owner's Gate key through the proxy. Linux sets the daemon's
-    /// own UID; macOS/Windows pass `None` (out of scope for this release).
-    pub owner_uid: Option<u32>,
+    /// When `Some(owner)`, only connections from that local user are
+    /// intercepted (MITM'd + rewritten with the Gate key injected); traffic
+    /// from any other local user is blind-tunnelled. The loopback listener is
+    /// plain TCP and reachable by every local user, so this stops a *different*
+    /// account from spending the owner's Gate key through the proxy. Linux sets
+    /// the daemon's own UID, macOS the app's, Windows this process's own user
+    /// ([`PeerOwner`]).
+    pub owner_uid: Option<PeerOwner>,
     /// The user's pre-existing upstream proxy , used as the
     /// PAC fallback so non-Gate traffic keeps flowing through it instead of
     /// going DIRECT while routing is on. Only read on PAC-driven platforms
@@ -127,6 +134,7 @@ pub struct RunningEngine {
     key_tx: watch::Sender<Arc<str>>,
     token_tx: watch::Sender<Arc<str>>,
     org_tx: watch::Sender<Arc<str>>,
+    mode_tx: watch::Sender<BillingMode>,
     /// Captured chatgpt.com `cf_clearance` cookie for app turns; empty when
     /// none is held. See [`update_cf_clearance`](Self::update_cf_clearance).
     cf_clearance_tx: watch::Sender<Arc<str>>,
@@ -239,6 +247,14 @@ impl RunningEngine {
     /// Cheap - no restart; this is how an org switch reaches in-flight routing.
     pub fn update_org(&self, org_id: &str) {
         let _ = self.org_tx.send(Arc::from(org_id));
+    }
+
+    /// Push a changed billing mode to the live engine (and the relay it hosts).
+    /// Cheap - no restart; this is how flipping BYOK/PAYG reaches in-flight
+    /// routing, and it is the only way the shape of subsequent requests changes
+    /// without reconnecting every tool.
+    pub fn update_mode(&self, mode: BillingMode) {
+        let _ = self.mode_tx.send(mode);
     }
 
     /// Push a captured chatgpt.com `cf_clearance` cookie to the live engine.
@@ -673,6 +689,9 @@ struct GateHandler {
     /// Live-updatable selected org UUID. Empty string means "none selected";
     /// injected as `X-Gate-Org-Id` only when an OAuth token is present.
     org: watch::Receiver<Arc<str>>,
+    /// Live-updatable billing mode. Resolved per domain before it is applied -
+    /// see [`effective_billing_mode`].
+    mode: watch::Receiver<BillingMode>,
     /// Live-updatable chatgpt.com `cf_clearance` cookie, captured by the GUI's
     /// challenge-solve webview. Empty string means "none held"; merged into
     /// the `cookie` header on every intercepted chatgpt.com app request,
@@ -708,9 +727,12 @@ struct GateHandler {
     /// can name the token it refused (`record_refused_bearer`) rather than
     /// whatever the watch holds by then.
     sent_token: Option<Arc<str>>,
-    /// When `Some`, only intercept connections from this local UID (see
+    /// When `Some`, only intercept connections from this local user (see
     /// [`EngineConfig::owner_uid`]).
-    owner_uid: Option<u32>,
+    owner_uid: Option<PeerOwner>,
+    /// The MITM listener's own address: the other end of every peer's
+    /// connection, which Windows needs to find the peer's row in the TCP table.
+    listen_addr: std::net::SocketAddr,
     /// Per-connection memo of the owner-UID verdict, keyed by peer address.
     /// hudsucker clones the handler per connection, so this is resolved once -
     /// while the peer's socket is definitely still in `/proc/net/tcp` - instead
@@ -765,8 +787,8 @@ impl GateHandler {
     }
 
     /// Whether the peer behind `ctx` may be intercepted. `true` when no owner
-    /// restriction is set; otherwise the peer's UID (resolved from its loopback
-    /// socket) must match the owner. Fails **closed**: if the UID can't be
+    /// restriction is set; otherwise the peer's user (resolved from its
+    /// loopback socket) must be the owner. Fails **closed**: if the UID can't be
     /// resolved we decline interception (blind-tunnel) rather than risk
     /// injecting the Gate key for an unverified peer. Memoized per peer.
     fn peer_allowed(&mut self, ctx: &HttpContext) -> bool {
@@ -779,7 +801,7 @@ impl GateHandler {
                 return verdict;
             }
         }
-        let verdict = peer_uid_for(ctx.client_addr) == Some(owner);
+        let verdict = peer_is_owner(ctx.client_addr, self.listen_addr, owner);
         self.peer_verdict = Some((ctx.client_addr, verdict));
         verdict
     }
@@ -932,12 +954,59 @@ fn route_rules<'a>(
     Cow::Owned(rules)
 }
 
+/// Who a loopback peer must run as to be served ([`EngineConfig::owner_uid`]).
+/// A UID on unix.
+#[cfg(unix)]
+pub type PeerOwner = u32;
+
+/// Who a loopback peer must run as to be served ([`EngineConfig::owner_uid`]).
+/// Windows has no UIDs, and the only owner there is the user this process runs
+/// as, compared by SID (`gate_connect_paths::peer`, which the forwarder in
+/// front of the engine gates on too).
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerOwner;
+
+/// Whether the peer holding the client end of `client` -> `listener` runs as
+/// `owner`. Fails **closed**: a peer whose user can't be resolved is not the
+/// owner. Shared with the relay (`super::relay`), which gates its accept loop
+/// the same way the MITM path gates interception.
+///
+/// Blocking, like the `/proc/net/tcp` read it does on Linux: on macOS it reads
+/// the kernel's TCP socket list, on Windows the TCP table and the peer
+/// process's token.
+#[cfg(target_os = "linux")]
+pub(crate) fn peer_is_owner(
+    client: std::net::SocketAddr,
+    _listener: std::net::SocketAddr,
+    owner: PeerOwner,
+) -> bool {
+    peer_uid_for(client) == Some(owner)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn peer_is_owner(
+    client: std::net::SocketAddr,
+    listener: std::net::SocketAddr,
+    owner: PeerOwner,
+) -> bool {
+    gate_connect_paths::peer::peer_uid(client, listener) == Some(owner)
+}
+
+#[cfg(windows)]
+pub(crate) fn peer_is_owner(
+    client: std::net::SocketAddr,
+    listener: std::net::SocketAddr,
+    _owner: PeerOwner,
+) -> bool {
+    gate_connect_paths::peer::verdict(client, listener) == gate_connect_paths::peer::Verdict::Owner
+}
+
 /// Resolve the local UID that owns the socket whose *local* address is `addr`
 /// (i.e. the connecting peer's socket) by scanning the kernel's TCP table.
-/// Linux-only; other platforms never set `owner_uid`, so this just reports
-/// "unknown". Returns `None` if the socket isn't found or can't be parsed.
-/// Shared with the relay (`super::relay`), which gates its accept loop the
-/// same way the MITM path gates interception.
+/// Linux-only; macOS and Windows resolve peers through
+/// `gate_connect_paths::peer` instead ([`peer_is_owner`]).
+/// Returns `None` if the socket isn't found or can't be parsed.
 #[cfg(target_os = "linux")]
 pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
     use std::net::{Ipv4Addr, SocketAddr};
@@ -971,11 +1040,6 @@ pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
             return uid.parse::<u32>().ok();
         }
     }
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
     None
 }
 
@@ -1192,7 +1256,7 @@ impl HttpHandler for GateHandler {
             //
             // The other two are withheld for their own reasons, both given at
             // [`withhold_rewrite`].
-            if let (Decision::Rewrite { upstream_url }, true, false) = (
+            if let (Decision::Rewrite { upstream_url, slug }, true, false) = (
                 decide(&rules, host, &path),
                 self.peer_allowed(ctx),
                 navigation,
@@ -1270,13 +1334,18 @@ impl HttpHandler for GateHandler {
                     let oauth_token = (!token.is_empty()).then(|| token.as_ref());
                     let org = self.org.borrow().clone();
                     let org_id = (!org.is_empty()).then(|| org.as_ref());
+                    let mode = effective_billing_mode(*self.mode.borrow(), &slug);
                     match apply_rewrite(
                         &mut req,
                         &self.gateway,
-                        &upstream_url,
+                        MatchedRoute {
+                            upstream_url: &upstream_url,
+                            slug: Some(slug.as_str()),
+                        },
                         &api_key,
                         oauth_token,
                         org_id,
+                        mode,
                     ) {
                         Ok(injected_oauth) => {
                             action = "rewrite->gateway";
@@ -1676,26 +1745,6 @@ impl HttpHandler for GateHandler {
     }
 }
 
-/// Repoint a request at the gateway: swap scheme + authority for the
-/// gateway's, strip the upstream's own path prefix, and inject the Gate
-/// headers. The app's own auth header (bearer / `x-api-key`) is left intact -
-/// Gate validates the Gate credential and forwards the rest. The credential
-/// precedence (a caller-supplied `x-gate-api-key` is respected, else OAuth
-/// token wins over the legacy key) lives in [`super::inject_gate_credential`],
-/// shared with the relay so the two paths can't drift.
-///
-/// The path strip is what keeps a provider whose API lives under a reserved
-/// prefix routable: Gate appends the forwarded path to `X-Gate-Upstream-Url`,
-/// so moving `/api` from the request line into the upstream URL reassembles to
-/// the same provider URL while sending Gate a path its ALB won't divert. See
-/// the `openrouter` catalog entry in [`super::default_domains`].
-/// True when the request is asking to leave HTTP for another protocol.
-///
-/// Reads `Connection: upgrade` AND an `Upgrade` header, which is what RFC 9110
-/// requires a real upgrade to carry, rather than keying on the WebSocket-specific
-/// `Sec-WebSocket-*` set: the reason we bail applies to any upgrade, not just
-/// WebSocket. `Connection` is a comma-separated list and its tokens are
-/// case-insensitive.
 /// The response sent in place of a declined upgrade.
 ///
 /// Shaped like the provider's own error envelope so a client that surfaces the
@@ -1975,6 +2024,13 @@ fn is_json_response<T>(res: &hudsucker::hyper::Response<T>) -> bool {
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
 }
 
+/// True when the request is asking to leave HTTP for another protocol.
+///
+/// Reads `Connection: upgrade` AND an `Upgrade` header, which is what RFC 9110
+/// requires a real upgrade to carry, rather than keying on the WebSocket-specific
+/// `Sec-WebSocket-*` set: the reason we bail applies to any upgrade, not just
+/// WebSocket. `Connection` is a comma-separated list and its tokens are
+/// case-insensitive.
 pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
     let headers = req.headers();
     if !headers.contains_key(hudsucker::hyper::header::UPGRADE) {
@@ -2284,17 +2340,57 @@ fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) -> bool {
     true
 }
 
-/// Rewrite a request to the gateway. Returns whether *our* OAuth bearer went
-/// on it, which is what makes a 401 on the way back evidence about the
-/// session (see [`GateHandler::injected_oauth`]).
+/// The catalog entry a request resolved to, as `decide` returned it.
+///
+/// One parameter rather than two loose `&str`s because they are one fact - the
+/// entry that claimed this path - and they are read for different reasons: the
+/// upstream rewrites the URL, the slug says which entry it was. The slug is
+/// carried only for attribution today: the ChatGPT app identifies itself in a
+/// generically-named header, so believing it safely needs the routing decision
+/// rather than the request alone.
+#[derive(Clone, Copy)]
+pub(crate) struct MatchedRoute<'a> {
+    pub upstream_url: &'a str,
+    /// `None` where the caller has no decision to hand - the test seams, and
+    /// any path that rewrites without having matched an entry. Attribution that
+    /// depends on it declines rather than guessing.
+    pub slug: Option<&'a str>,
+}
+
+/// Repoint a request at the gateway: swap scheme + authority for the
+/// gateway's, strip the upstream's own path prefix, and inject the Gate
+/// headers. In BYOK the app's own auth header (bearer / `x-api-key`) is left
+/// intact - Gate validates the Gate credential and forwards the rest. In PAYG
+/// both that header and the upstream hint are dropped, which is what tells the
+/// gateway to bill the org and forward under its own provider account; the
+/// credential precedence and the strip both live in
+/// [`super::inject_gate_credential`], shared with the relay so the two paths
+/// can't drift.
+///
+/// The path strip is what keeps a provider whose API lives under a reserved
+/// prefix routable: Gate appends the forwarded path to `X-Gate-Upstream-Url`,
+/// so moving `/api` from the request line into the upstream URL reassembles to
+/// the same provider URL while sending Gate a path its ALB won't divert. See
+/// the `openrouter` catalog entry in [`super::default_domains`]. In PAYG there
+/// is no upstream URL to reassemble against, and the strip is what leaves the
+/// gateway-native path (`/v1/chat/completions`) its reseller router expects.
+///
+/// Returns whether *our* OAuth bearer went on the request, which is what makes
+/// a 401 on the way back evidence about the session (see
+/// [`GateHandler::injected_oauth`]).
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
-    upstream_url: &str,
+    route: MatchedRoute<'_>,
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
+    mode: BillingMode,
 ) -> Result<bool> {
+    let MatchedRoute {
+        upstream_url,
+        slug: domain,
+    } = route;
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
     parts.scheme = gw.scheme;
@@ -2318,12 +2414,43 @@ pub(crate) fn apply_rewrite<T>(
 
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
+    // Credential and attribution in one call (`inject_gate_credential` runs
+    // `inject_attribution`), which is also what strips a caller's `x-gate-model`
+    // before anything reaches the gateway.
+    // The engine's half of the established-tool pair. There is no base URL here
+    // to carry a marker - this is a forward proxy - so the tool names itself in
+    // a header Gate wrote into its own config instead. Read before the call,
+    // because `inject_attribution` removes it on the way past.
+    let established = super::header_tool(req.headers());
+    let injected_oauth = super::inject_gate_credential(
+        req.headers_mut(),
+        api_key,
+        oauth_token,
+        org_id,
+        mode,
+        domain,
+        established,
+    )?;
+
+    // Serving is the ABSENCE of the upstream hint: with it the gateway forwards
+    // under the caller's own credential (BYOK), without it the gateway resolves
+    // one of the org's provider accounts and debits its balance. Nothing else in
+    // the request says which it is, and on this path only the org's billing mode
+    // decides it. A Gate model the user chose for a tool is written into that
+    // tool's own config and reaches Gate on the relay's served route
+    // (`gate_served`); it never turns on anything this engine reads.
     let headers = req.headers_mut();
-    let injected_oauth = super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
-    headers.insert(
-        super::UPSTREAM_URL_HEADER,
-        HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
-    );
+    if mode == BillingMode::Byok {
+        headers.insert(
+            super::UPSTREAM_URL_HEADER,
+            HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
+        );
+    } else {
+        // REMOVED, not merely left unwritten: a caller cannot smuggle BYOK back
+        // in on a served rewrite, which would both escape PAYG and aim the
+        // gateway at a host of the caller's choosing.
+        headers.remove(super::UPSTREAM_URL_HEADER);
+    }
     Ok(injected_oauth)
 }
 
@@ -2804,6 +2931,7 @@ where
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
     let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
+    let (mode_tx, mode_rx) = watch::channel(cfg.billing_mode);
     // Seeded from whatever the last solve captured this run, and empty until
     // one has: the cookie outlives the engine that was using it, so a restart
     // (a domain toggled, the crash fail-safe reverting) must not send the
@@ -2822,7 +2950,8 @@ where
     let relay_key_rx = key_rx.clone();
     let relay_token_rx = token_rx.clone();
     let relay_org_rx = org_rx.clone();
-    // The relay gates its accept loop on the same owner UID the MITM path uses.
+    let relay_mode_rx = mode_rx.clone();
+    // The relay gates its accept loop on the same owner the MITM path uses.
     let relay_owner_uid = cfg.owner_uid;
     let handler = GateHandler {
         rules: rules_rx,
@@ -2830,11 +2959,13 @@ where
         api_key: key_rx,
         token: token_rx,
         org: org_rx,
+        mode: mode_rx,
         cf_clearance: cf_clearance_rx,
         chatgpt_turn: None,
         injected_oauth: false,
         sent_token: None,
         owner_uid: cfg.owner_uid,
+        listen_addr: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         peer_verdict: None,
         claude_code_route: false,
         intercept: intercept_rx.clone(),
@@ -3000,6 +3131,7 @@ where
                     relay_key_rx,
                     relay_token_rx,
                     relay_org_rx,
+                    relay_mode_rx,
                     intercept_rx,
                     relay_owner_uid,
                 ) {
@@ -3047,6 +3179,7 @@ where
             key_tx,
             token_tx,
             org_tx,
+            mode_tx,
             cf_clearance_tx,
             intercept_tx,
             stopping,
@@ -3072,9 +3205,23 @@ mod tests {
     use super::*;
     use crate::proxy::ClientClass;
 
-    /// Cowork's turn, as captured: a GET on a path the `chatgpt` entry claims,
+    /// Work's turn, as captured: a GET on a path the `chatgpt` entry claims,
     /// upgraded to a WebSocket.
-    fn cowork_upgrade() -> Request<()> {
+    ///
+    /// **This was called `cowork_upgrade`, and that name sent a later change
+    /// looking in the wrong place.** Work is a mode inside the ChatGPT desktop
+    /// app; Cowork is a mode inside the Claude desktop app. The two names are
+    /// one letter apart and belong to different vendors, so reading this
+    /// capture as Cowork's put Anthropic traffic on chatgpt.com - and
+    /// `AGENT_PROCESSES` in `src-tauri/src/lib.rs` then recorded that Cowork
+    /// "is" the ChatGPT app, which is the wrong app for it. Both names
+    /// confirmed with the product 2026-09-11.
+    ///
+    /// Nothing about the request changed; only what it is understood to be.
+    /// The capture is still real and still exercises the upgrade path on the
+    /// entry that claims it - which is the right entry either way, since Work
+    /// is the ChatGPT app and this is its host.
+    fn work_upgrade() -> Request<()> {
         Request::builder()
             .method("GET")
             .uri("https://chatgpt.com/backend-api/codex/responses")
@@ -3129,7 +3276,7 @@ mod tests {
 
     #[test]
     fn a_websocket_upgrade_is_recognised_whatever_the_casing() {
-        assert!(is_upgrade_request(&cowork_upgrade()));
+        assert!(is_upgrade_request(&work_upgrade()));
         // Real clients send `Connection: keep-alive, Upgrade`; the tokens are a
         // comma-separated, case-insensitive list.
         let multi = Request::builder()
@@ -3170,7 +3317,7 @@ mod tests {
             .filter(|d| d.slug == "chatgpt")
             .collect();
         relay[0].enabled = true;
-        let req = cowork_upgrade();
+        let req = work_upgrade();
         assert_eq!(
             decide(
                 &rules_for_client(&relay, ClientClass::App),
@@ -3178,7 +3325,8 @@ mod tests {
                 req.uri().path()
             ),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: "chatgpt".into()
             },
         );
     }
@@ -3282,7 +3430,8 @@ mod tests {
                 req.uri().path()
             ),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai/api".into()
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             },
         );
     }
@@ -3402,7 +3551,8 @@ mod tests {
                 req.uri().path()
             ),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai/api".into()
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             },
         );
     }
@@ -3983,10 +4133,14 @@ mod tests {
         apply_rewrite(
             &mut req,
             &gateway,
-            "https://api.anthropic.com",
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
             "sk-gw-test",
             None,
             None,
+            BillingMode::Byok,
         )
         .unwrap();
 
@@ -4022,10 +4176,14 @@ mod tests {
         apply_rewrite(
             &mut req,
             &gateway,
-            "https://api.anthropic.com",
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
             "sk-gw-test",
             Some("cognito-access-token"),
             Some("org-uuid-1"),
+            BillingMode::Byok,
         )
         .unwrap();
 
@@ -4048,6 +4206,88 @@ mod tests {
         );
     }
 
+    /// PAYG is defined by what is NOT on the request: no upstream hint (the
+    /// gateway's switch into reseller routing) and no credential of the app's
+    /// own (which the gateway would classify as a passthrough token, forcing
+    /// BYOK and then refusing the request for want of an upstream URL).
+    #[test]
+    fn payg_rewrite_drops_the_upstream_hint_and_the_apps_own_credential() {
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .unwrap();
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages?beta=true")
+            .header("authorization", "Bearer sk-ant-oat01-app-token")
+            .header("x-api-key", "sk-ant-api03-app-key")
+            .body(())
+            .unwrap();
+
+        apply_rewrite(
+            &mut req,
+            &gateway,
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
+            "sk-gw-test",
+            None,
+            None,
+            BillingMode::Payg,
+        )
+        .unwrap();
+
+        // Still repointed at the gateway, path and query intact.
+        assert_eq!(
+            req.uri().to_string(),
+            "https://gateway-staging.constellationgate.ai/v1/messages?beta=true"
+        );
+        // Our own credential still identifies the workspace.
+        assert_eq!(req.headers().get("x-gate-api-key").unwrap(), "sk-gw-test");
+        // The two absences that ARE pay-as-you-go.
+        assert!(
+            req.headers().get("x-gate-upstream-url").is_none(),
+            "the upstream hint's absence is what selects reseller routing"
+        );
+        assert!(
+            req.headers().get("authorization").is_none(),
+            "a provider token here would be read as passthrough and force BYOK"
+        );
+        assert!(req.headers().get("x-api-key").is_none());
+    }
+
+    /// A caller that sets the upstream hint itself must not be able to force
+    /// BYOK - and so spend the tool's own provider credential - on an account
+    /// that is in PAYG.
+    #[test]
+    fn payg_rewrite_removes_a_caller_supplied_upstream_hint() {
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .unwrap();
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages")
+            .header("x-gate-upstream-url", "https://api.anthropic.com")
+            .body(())
+            .unwrap();
+
+        apply_rewrite(
+            &mut req,
+            &gateway,
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
+            "sk-gw-test",
+            None,
+            None,
+            BillingMode::Payg,
+        )
+        .unwrap();
+
+        assert!(req.headers().get("x-gate-upstream-url").is_none());
+    }
+
     /// Exercises the `/proc/net/tcp` parse (incl. the address byte-swap) against
     /// a real loopback socket owned by this test process: the resolved UID must
     /// be our own.
@@ -4068,6 +4308,28 @@ mod tests {
         assert_eq!(peer_uid_for(unused), None);
     }
 
+    /// The gate the engine and relay ask, against a real loopback connection:
+    /// the owner (this test process) passes, any other UID does not, and a
+    /// socket nobody holds fails closed. On macOS this is what proves the
+    /// socket-list parse reads the right UID - a wrong struct layout fails the
+    /// first assertion rather than passing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn peer_is_owner_resolves_own_loopback_connection() {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let server_addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(server_addr).expect("connect loopback");
+        let _accepted = listener.accept().expect("accept loopback");
+        let peer = client.local_addr().unwrap();
+        // SAFETY: geteuid never fails.
+        let me = unsafe { libc::geteuid() };
+        assert!(peer_is_owner(peer, server_addr, me));
+        assert!(!peer_is_owner(peer, server_addr, u32::MAX));
+        let unused = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+        assert!(!peer_is_owner(unused, server_addr, me));
+    }
+
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[test]
     fn pac_routes_only_listed_hosts_to_proxy() {
@@ -4081,6 +4343,11 @@ mod tests {
             rewrite_suffixes: Vec::new(),
             enabled: true,
             supported: true,
+            // The real `anthropic` row's classification, which `pac_script`
+            // never reads: the PAC is built from `hosts` alone.
+            client: crate::taxonomy::Client::ClaudeDesktop,
+            credential: crate::taxonomy::Credential::Brokered,
+            scope: crate::taxonomy::Scope::Host,
         }];
 
         // No prior proxy: listed hosts hit the engine, everything else DIRECT.
@@ -4132,6 +4399,9 @@ mod tests {
             rewrite_suffixes: Vec::new(),
             enabled: true,
             supported: true,
+            client: crate::taxonomy::Client::ClaudeDesktop,
+            credential: crate::taxonomy::Credential::Brokered,
+            scope: crate::taxonomy::Scope::Host,
         }];
 
         for hostile in [

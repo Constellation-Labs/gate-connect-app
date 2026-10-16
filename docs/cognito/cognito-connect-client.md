@@ -15,8 +15,8 @@ Terraform consumes its id through the `cognito_desktop_client_id` variable:
 - each env's tfvars supplies the value (see `staging.tfvars.example`)
 
 This runbook is the source of truth for creating and re-creating that client per
-environment. Run it once per environment (staging, production), and again if the
-client is ever rebuilt.
+environment. Run it once per environment (staging, production, dev), and again if
+the client is ever rebuilt.
 
 ## Why out-of-band and not a Terraform resource
 
@@ -47,12 +47,21 @@ takes the client id as an input.
 
 ## Reference values
 
-| Item | Staging value |
-|---|---|
-| Region | `us-east-1` |
-| User pool id | `us-east-1_GPcJkAGzM` |
-| Hosted domain | `swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com` |
-| Domain prefix | `swarm-deck-staging-ue1` |
+| Item | Staging value | Dev value |
+|---|---|---|
+| Region | `us-east-1` | `us-east-1` |
+| User pool id | `us-east-1_GPcJkAGzM` | resolve with step 1 |
+| Hosted domain | `swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com` | `swarm-deck-dev-ue1.auth.us-east-1.amazoncognito.com` |
+| Domain prefix | `swarm-deck-staging-ue1` | `swarm-deck-dev-ue1` |
+| Connect client id | `63aafqa8oc0lo631v4cho4lmmv` | `7jr537ea8g5i8os72nt3312g7f` |
+| Gateway | `gateway-staging.constellationgate.ai` | `gateway-dev.constellationgate.ai` |
+
+The dev client was created on 2026-10-05, and the dev Hosted UI accepts it on all
+three loopback callbacks. Gate's `dev.tfvars` gains it in
+Constellation-Labs/gate#1139; until that is merged and applied, the dev gateway
+rejects its tokens, so a dev sign-in succeeds and the org picker then 401s. The
+repo Variables `GATE_COGNITO_HOSTED_DOMAIN_DEV` and
+`GATE_COGNITO_CLIENT_ID_DEV` are set.
 
 App-side constants (from `crates/core/src/oauth.rs`):
 
@@ -62,7 +71,9 @@ App-side constants (from `crates/core/src/oauth.rs`):
 | Callback path | `/callback` (host `localhost`, scheme `http`) |
 | Scopes (default) | `openid email profile aws.cognito.signin.user.admin` |
 
-For production, resolve the equivalent pool id and domain with step 1 against the
+The commands in steps 1-4 are written against staging. For another environment,
+substitute its values: the Dev column above (dev's pool id comes from step 1),
+or, for production, the pool id and domain step 1 resolves against the
 production account and region.
 
 ## Step 1: Confirm the pool behind the hosted domain
@@ -242,15 +253,20 @@ new client. Until this is set, sign-in captures a token but `GET /v1/me/orgs`
 ## Step 5: Wire the client id into the Connect build
 
 The app reads its OAuth client config, baked at compile time via `option_env!`
-in `crates/core/src/oauth.rs`, with process env overriding at runtime. They are
+in `crates/core/src/oauth.rs`, with process env overriding at runtime in debug
+builds only (a release build ignores the override). They are
 public client config, not secrets.
 
-**Two pools, picked at runtime.** Both the production and staging Cognito pools
-are baked into a single binary. `OAuthConfig::from_build_env()` selects the pair
-matching the active gateway: if `account.gateway_base_url`'s host equals
+**Three pools, picked at runtime.** The production, staging and dev Cognito
+pools are baked into a single binary. `OAuthConfig::for_gateway(url)` selects
+the pair matching a gateway URL, and `OAuthConfig::from_build_env()` calls it
+with the one in `account.json`. The CLI's `login --oauth` passes the gateway it
+is about to save, so it signs in to that gateway's pool and not the previous
+one's. If the host equals
 `STAGING_GATEWAY_HOST` (`gateway-staging.constellationgate.ai`, kept in sync with
-`GATEWAY_SERVERS` in `src/lib/config.ts`) it uses the `_STAGING` values;
-every other host (production, self-hosted, unknown, or no account yet) uses the
+`GATEWAY_SERVERS` in `src/lib/config.ts`) it uses the `_STAGING` values; if it
+equals `DEV_GATEWAY_HOST` (`gateway-dev.constellationgate.ai`) it uses the `_DEV`
+values; every other host (production, self-hosted, unknown, or no account yet) uses the
 prod values.
 
 Release builds: set as repo Variables (Settings, Secrets and variables, Actions,
@@ -263,30 +279,46 @@ Variables), consumed by `.github/workflows/release.yml`:
 - `GATE_COGNITO_CLIENT_ID_STAGING` = the staging connect client id
 - `GATE_COGNITO_HOSTED_DOMAIN_STAGING` = the staging hosted domain
 - `GATE_COGNITO_SCOPES_STAGING` = optional; same default as prod
+- `GATE_COGNITO_CLIENT_ID_DEV` = the dev connect client id
+- `GATE_COGNITO_HOSTED_DOMAIN_DEV` = the dev hosted domain
+- `GATE_COGNITO_SCOPES_DEV` = optional; same default as prod
 
-`crates/core/build.rs` declares `rerun-if-env-changed` for all six so a cached
+`crates/core/build.rs` declares `rerun-if-env-changed` for all nine so a cached
 `target/` cannot ship a stale value.
 
-Local testing (no rebuild needed, runtime env wins over the baked value). Set
-the pair matching the gateway you'll select in Settings → Dev mode:
+Local testing (no rebuild needed: in a debug build, the runtime env wins over
+the baked value; a release build ignores it). Export the pair for the gateway
+you will use, then start the app with `pnpm app:local`, which also keeps the OS
+keychain out of the loop (see the repo's `CLAUDE.md`). Pass the gateway to start
+on it, or pick it at first run or in Settings → Gateway → Change server. These
+are public client values, already baked into every release binary:
 
 ```bash
-# Production gateway (default):
-export GATE_COGNITO_HOSTED_DOMAIN=<PROD_HOSTED_DOMAIN>
-export GATE_COGNITO_CLIENT_ID=<PROD_CONNECT_CLIENT_ID>
+# Production gateway:
+export GATE_COGNITO_HOSTED_DOMAIN=swarm-deck-production-ue1.auth.us-east-1.amazoncognito.com
+export GATE_COGNITO_CLIENT_ID=4clteokot0t9rlnr5vkj5j2ar5
 
-# Staging gateway (select "Staging" in Settings → Dev mode):
+# Staging gateway (the `pnpm app:local` default):
 export GATE_COGNITO_HOSTED_DOMAIN_STAGING=swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com
-export GATE_COGNITO_CLIENT_ID_STAGING=<STAGING_CONNECT_CLIENT_ID>
+export GATE_COGNITO_CLIENT_ID_STAGING=63aafqa8oc0lo631v4cho4lmmv
 
-pnpm tauri dev
+# Dev gateway:
+export GATE_COGNITO_HOSTED_DOMAIN_DEV=swarm-deck-dev-ue1.auth.us-east-1.amazoncognito.com
+export GATE_COGNITO_CLIENT_ID_DEV=7jr537ea8g5i8os72nt3312g7f
+
+pnpm app:local                                          # staging
+pnpm app:local https://gateway-dev.constellationgate.ai # dev
 ```
 
 ## Production setup checklist
 
-The condensed run-through of steps 1-5 against the production account. Staging
-is already done; production is not. Each item links back to the step with the
-full command and flag rationale.
+The condensed run-through of steps 1-5 against the production account, kept for
+rebuilding a client or adding an environment (substitute its values). Each item
+links back to the step with the full command and flag rationale.
+
+Status (2026-10-05): production and staging are done. Dev has its client,
+branding and repo Variables, and waits only on Constellation-Labs/gate#1139
+being merged and applied.
 
 - [ ] **Prod AWS credentials.** `aws sts get-caller-identity` shows the
   production account; `export AWS_PAGER=""`. (Prerequisites)
@@ -310,14 +342,16 @@ full command and flag rationale.
 - [ ] **Release variables.** Set the GitHub Actions repo Variables
   `GATE_COGNITO_CLIENT_ID` (prod client id) and `GATE_COGNITO_HOSTED_DOMAIN`
   (prod hosted domain, no scheme); leave `GATE_COGNITO_SCOPES` unset unless
-  hardening. The `_STAGING` variables stay as they are. (Step 5)
+  hardening. The `_STAGING` and `_DEV` variables stay as they are. (Step 5)
 - [ ] **Cut a release** so the new values are baked into the binary
   (`build.rs` re-runs on env change, so no stale cache).
 - [ ] **Verify end to end.** Fresh install pointing at the production gateway:
   sign in via the branded Hosted UI, org picker loads (`GET /v1/me/orgs`
-  returns 200), a proxied tool call succeeds. Then flip Settings → Dev mode to
-  Staging and confirm staging login still works (the runtime pool selection
-  picks the `_STAGING` pair only for `gateway-staging.constellationgate.ai`).
+  returns 200), a proxied tool call succeeds. Then, in a pre-release build, switch
+  to Staging and to Dev (Settings → Gateway → Change server) and confirm both
+  logins still work (the runtime pool selection picks the `_STAGING` pair only
+  for `gateway-staging.constellationgate.ai`, and `_DEV` only for
+  `gateway-dev.constellationgate.ai`). A stable build lists production alone.
 
 ## Gotchas
 

@@ -6,6 +6,9 @@
 // Env: MOCK_PORT, MOCK_CERT (PEM), MOCK_KEY (PEM), CAPTURE_LOG (output path).
 import fs from 'node:fs';
 import https from 'node:https';
+import { exitWithPid } from './exit-with-pid.mjs';
+
+exitWithPid();
 
 const port = Number(process.env.MOCK_PORT || 8443);
 const log = process.env.CAPTURE_LOG;

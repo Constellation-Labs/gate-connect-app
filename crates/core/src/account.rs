@@ -35,10 +35,28 @@ pub enum AuthMode {
     OAuth,
 }
 
+/// Who pays the upstream provider for the traffic Gate Connect routes.
+///
+/// `Byok` (the default, and every install predating this field) sends
+/// `X-Gate-Upstream-Url` and lets the tool's own credential through, so the
+/// provider bills the user directly. `Payg` omits that header and strips the
+/// tool's credential, so the gateway forwards under one of the org's own
+/// provider accounts and debits its prepaid balance. The gateway infers the
+/// mode from the request shape alone - there is no flag on the Gate key - so
+/// this only ever decides which shape the relay and the MITM engine emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BillingMode {
+    #[default]
+    Byok,
+    Payg,
+}
+
 pub struct Account {
     pub gateway_base_url: String,
     pub api_key: String,
     pub auth_mode: AuthMode,
+    pub billing_mode: BillingMode,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -56,6 +74,11 @@ struct AccountFile {
     /// as `ApiKey`, preserving the legacy behavior.
     #[serde(default)]
     auth_mode: AuthMode,
+    /// Who pays the upstream provider. Absent in files written before PAYG
+    /// support existed; `#[serde(default)]` loads those as `Byok`, which is
+    /// what they have always been.
+    #[serde(default)]
+    billing_mode: BillingMode,
     /// Selected organization (OAuth mode only). `org_id` is the UUID injected
     /// on `X-Gate-Org-Id`; `org_name` is cached for display. Non-secret. Absent
     /// until the user picks an org after signing in.
@@ -63,6 +86,15 @@ struct AccountFile {
     org_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     org_name: Option<String>,
+    /// A fresh random value written on every sign-in, by [`save`] with a key
+    /// and by [`stamp_sign_in`] after an OAuth login, once the secret is stored.
+    /// Non-secret, and carries no meaning of its own: it exists so this file's
+    /// bytes move on every sign-in, which is what makes them a sound
+    /// [`keychain::get_cached`] witness. Without it, signing in again with the
+    /// same gateway, mode and org wrote identical bytes, `write_file` skipped
+    /// the write, and another process holding a cached read never looked again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential_stamp: Option<String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -91,14 +123,13 @@ pub fn load() -> Result<Option<Account>> {
     // Witnessed by `account.json` rather than read outright: on Linux the
     // proxy manager calls this every 30 seconds to re-push the intercept
     // config, and a plain read there costs the secret-store daemon ~8 KB a
-    // time, permanently. `save` writes the file and the key in one breath, so
-    // in practice an unchanged file means an unchanged key - including a key
-    // written by the CLI while the app is running, which is the case a bare
-    // cache would miss. Not a proof: the file records only the key's first 12
-    // characters, so a rotation that collides on those and changes nothing
-    // else would go unseen until the next in-process write. Pick a stronger
-    // witness if you reuse this pattern on a value whose file records less.
-    // See `keychain::get_cached`.
+    // time, permanently. `save` writes the key and then the file, with a fresh
+    // `credential_stamp`, so an unchanged file means an unchanged key -
+    // including a key written by the CLI while the app is running, which is
+    // the case a bare cache would miss. Key first, file second: a read landing
+    // between them sees the old witness and is corrected when the file moves,
+    // where the other order could cache the old key under the new witness for
+    // good. See `keychain::get_cached`.
     let api_key = match file.auth_mode {
         AuthMode::OAuth => String::new(),
         AuthMode::ApiKey => {
@@ -113,6 +144,7 @@ pub fn load() -> Result<Option<Account>> {
         gateway_base_url: file.gateway_base_url,
         api_key,
         auth_mode: file.auth_mode,
+        billing_mode: file.billing_mode,
     }))
 }
 
@@ -123,39 +155,32 @@ pub fn load_base_url() -> Result<Option<String>> {
     Ok(read_account_file()?.map(|f| f.gateway_base_url))
 }
 
-/// The gateway host that marks the **staging** environment. Every other host
-/// (production, self-hosted, unknown, or no account yet) is treated as
-/// production. Keep in sync with `GATEWAY_SERVERS` in `src/lib/config.ts`.
+/// The production gateway host. With [`STAGING_GATEWAY_HOST`] and
+/// [`DEV_GATEWAY_HOST`] it is the whole of `GATEWAY_SERVERS` in
+/// `src/lib/config.ts` outside a dev build, which is the list the desktop app's
+/// release build holds a gateway change to (AG-1137). Keep in sync with it.
+pub const PRODUCTION_GATEWAY_HOST: &str = "gateway.constellationgate.ai";
+
+/// The gateway host that marks the **staging** environment, which has its own
+/// Cognito pool (see [`crate::oauth::OAuthConfig::for_gateway`]). Every host
+/// other than this and [`DEV_GATEWAY_HOST`] (production, self-hosted, unknown,
+/// or no account yet) is treated as production, the choice that offers less
+/// rather than more. Keep in sync with `GATEWAY_SERVERS` in
+/// `src/lib/config.ts`.
 pub const STAGING_GATEWAY_HOST: &str = "gateway-staging.constellationgate.ai";
 
-/// Whether the currently-selected gateway is the known staging host.
-///
-/// Two callers, for the same reason: staging is where a Gate-side capability
-/// lands before production has it, so the app has to resolve which environment
-/// it is pointed at before offering anything that depends on one.
-/// [`crate::oauth::OAuthConfig::from_build_env`] picks a Cognito pool with it,
-/// and [`crate::proxy::config`] gates the chat surfaces on it.
-///
-/// Reads the gateway URL from `account.json` (no keychain touch); a missing
-/// account or any parse failure falls back to production, which is the choice
-/// that offers less rather than more.
-pub fn gateway_is_staging() -> bool {
-    load_base_url()
-        .ok()
-        .flatten()
-        .as_deref()
-        .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|u| u.host_str().map(str::to_owned))
-        .map(|h| h == STAGING_GATEWAY_HOST)
-        .unwrap_or(false)
-}
+/// The gateway host that marks the **dev** environment, which has its own
+/// Cognito pool. Keep in sync with `GATEWAY_SERVERS` in `src/lib/config.ts`.
+pub const DEV_GATEWAY_HOST: &str = "gateway-dev.constellationgate.ai";
 
 /// Read and parse `account.json`, or `None` when no account is on disk. The
 /// on-disk half of the account (gateway URL + key prefix) that both the UI
 /// state helpers and [`save`] read without touching the keychain.
 /// The bytes of `account.json`, or `""` when there is no account file, for use
-/// as a [`keychain::get_cached`] witness. Login rewrites this file (URL, then
-/// auth mode, then org) and sign-out removes it, so it moves on exactly the
+/// as a [`keychain::get_cached`] witness. Every sign-in rewrites this file with
+/// a fresh `credential_stamp` after storing its secret ([`save`] with a key,
+/// [`stamp_sign_in`] after an OAuth login), even one that changes nothing else,
+/// and sign-out removes it, so it moves on exactly the
 /// transitions a cached credential must not outlive - including ones made by
 /// the CLI in another process. A token refresh does not touch it, which is the
 /// case [`crate::oauth::current`] documents as safe to miss.
@@ -183,6 +208,35 @@ fn read_account_file_raw() -> Result<Option<(AccountFile, String)>> {
     Ok(Some((parsed, raw)))
 }
 
+/// Is this a gateway URL we accept?
+///
+/// Production rule: `https://` only. The key travels on every request and the
+/// proxy exports this host machine-wide, so plaintext is never acceptable for a
+/// real gateway.
+///
+/// Debug builds additionally accept `http://localhost` and `http://127.0.0.1`,
+/// so a developer can point the app at a gateway running on their own machine
+/// (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
+/// `#[cfg(debug_assertions)]` means this cannot reach a release build: `tauri
+/// build` compiles with `--release`, so the shipped app enforces https for every
+/// URL including loopback.
+fn is_acceptable_gateway_url(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    {
+        // Host-exact, not a prefix match: `http://localhost.evil.test` must not
+        // pass. Port and path are free-form, so `http://127.0.0.1:3000` works.
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if parsed.scheme() == "http" {
+                return matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+            }
+        }
+    }
+    false
+}
+
 /// Persist account state.
 ///
 /// `api_key = Some(value)` writes the key to keychain (creating or
@@ -194,7 +248,16 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if gateway_base_url.len() > 2048 {
         anyhow::bail!("gateway base URL is unexpectedly long (>2048 bytes)");
     }
-    if !gateway_base_url.starts_with("https://") {
+    if !is_acceptable_gateway_url(gateway_base_url) {
+        // Two messages, because the two builds enforce different rules and the
+        // debug one is where this is most likely to be read: a developer who
+        // typos `http://localhos:3000`, or points at a LAN address, is otherwise
+        // told https is required and goes off to change the wrong thing.
+        #[cfg(debug_assertions)]
+        anyhow::bail!(
+            "gateway base URL must be https://, or http:// on localhost or 127.0.0.1 exactly"
+        );
+        #[cfg(not(debug_assertions))]
         anyhow::bail!("gateway base URL must be https://");
     }
     // Recompute the prefix from a new key; otherwise preserve the one already
@@ -207,27 +270,55 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         None => existing.as_ref().and_then(|f| f.api_key_prefix.clone()),
     };
     // Preserve the auth mode and selected org - both are chosen via their own
-    // setters, not by saving a URL/key.
+    // setters, not by saving a URL/key. Same for the billing mode
+    // ([`set_billing_mode`]).
     let auth_mode = existing.as_ref().map(|f| f.auth_mode).unwrap_or_default();
+    let billing_mode = existing
+        .as_ref()
+        .map(|f| f.billing_mode)
+        .unwrap_or_default();
     let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
     let org_name = existing.as_ref().and_then(|f| f.org_name.clone());
+    // The key goes in before the file that witnesses it, and a new key always
+    // gets a new stamp, so the file moves even when the same key is pasted
+    // again. A reader in another process that lands between the two writes
+    // sees the old witness and is corrected by the second; in the other order
+    // it could cache the old key under the new witness, and nothing would
+    // ever move it again. See `keychain::get_cached`.
+    let credential_stamp = match api_key {
+        Some(key) => {
+            let user = env::current_user()?;
+            keychain::set(&service(), &user, key)?;
+            Some(primitives::simple_uuid_v4()?)
+        }
+        None => existing.as_ref().and_then(|f| f.credential_stamp.clone()),
+    };
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
         auth_mode,
+        billing_mode,
         org_id,
         org_name,
+        credential_stamp,
     })?;
 
     if let Some(key) = api_key {
-        let user = env::current_user()?;
-        keychain::set(&service(), &user, key)?;
-
         // Best-effort audit of the rotation. `key` is passed as the caller's
         // already-in-hand credential, not as the bearer: in OAuth mode the
         // gateway wants the Cognito token, and `audit::credential` picks by mode.
         let new_prefix = key.chars().take(12).collect::<String>();
         audit::api_key_saved(gateway_base_url, Some(key), old_prefix, &new_prefix);
+
+        // A new key can mean a new org, and the held activity reading belongs to
+        // whichever org the *previous* key resolved to. The cache scope carries the
+        // key prefix now, so a stale entry would simply never match - but leaving
+        // one org's figures on disk under a credential that can no longer read them
+        // is not something to rely on a scope check for. Best-effort, and last: a
+        // cache that will not clear must not fail a key replace.
+        if old_prefix != Some(new_prefix.as_str()) {
+            let _ = crate::activity_cache::clear();
+        }
     }
     Ok(())
 }
@@ -243,8 +334,8 @@ fn write_account_file(file: &AccountFile) -> Result<()> {
 }
 
 /// Dev-mode environment switch: point the account at a different gateway and
-/// forget the current Gate key so the user must enter an environment-appropriate
-/// one. Managed tools are disconnected by the command layer first (same as
+/// forget the current Gate key and OAuth session so the user must sign in to the
+/// new environment. Managed tools are disconnected by the command layer first (same as
 /// [`clear`]), since their config embeds the old gateway+key.
 pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     // Audit the repoint *before* anything is written, so the record lands at
@@ -262,20 +353,46 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
-    let auth_mode = read_account_file()?
-        .map(|f| f.auth_mode)
-        .unwrap_or_default();
+                                          // And the OAuth bundle (AG-1137). Its token was issued by the old
+                                          // environment's pool, and kept it would be injected on every request to the
+                                          // new gateway, a host that has no business holding it. A delete, not a
+                                          // read, and the file write below moves the bundle's `get_cached` witness.
+    crate::oauth::clear()?;
+    let file = read_account_file()?;
+    let auth_mode = file.as_ref().map(|f| f.auth_mode).unwrap_or_default();
+    // The billing mode is not environment-specific - it says who pays, not
+    // where - so a repoint carries it over the same way the auth mode does.
+    let billing_mode = file.as_ref().map(|f| f.billing_mode).unwrap_or_default();
     // The stored prefix named the key we just deleted, so drop it too. The org
     // is environment-specific, so a gateway switch clears it - the user re-picks
     // against the new environment after re-authenticating.
+    let credential_stamp = file.as_ref().and_then(|f| f.credential_stamp.clone());
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix: None,
         auth_mode,
+        billing_mode,
         org_id: None,
         org_name: None,
+        credential_stamp,
     })?;
     Ok(())
+}
+
+/// Give `account.json` a fresh `credential_stamp`, so its bytes move on a
+/// sign-in that changes nothing else in it - the same gateway, mode and org as
+/// before. Called by [`crate::oauth::login`] once the new bundle is stored: the
+/// file is the [`keychain::get_cached`] witness for that bundle, and another
+/// process holding a cached read (the app, after `gate-connect login --oauth`)
+/// only looks again when it moves. Not on a token refresh, which
+/// [`crate::oauth::current`] documents as safe to miss. Nothing to do when no
+/// account file exists yet: the write that creates it moves the witness.
+pub(crate) fn stamp_sign_in() -> Result<()> {
+    let Some(mut file) = read_account_file()? else {
+        return Ok(());
+    };
+    file.credential_stamp = Some(primitives::simple_uuid_v4()?);
+    write_account_file(&file)
 }
 
 /// Persist the selected organization (OAuth mode). `org_id` is the UUID
@@ -345,6 +462,39 @@ pub fn set_auth_mode(mode: AuthMode) -> Result<()> {
     Ok(())
 }
 
+/// Switch the persisted billing mode, preserving everything else. Mirrors
+/// [`set_auth_mode`]: a mode is chosen by its own setter, never as a side
+/// effect of saving a URL or key. Requires an existing `account.json`.
+///
+/// Changing this changes the *shape* of every subsequent routed request, but
+/// nothing that is already running: the caller pushes the new mode into a live
+/// engine (`proxy::manager().refresh_mode`) and re-applies the tool configs
+/// that depend on it.
+pub fn set_billing_mode(mode: BillingMode) -> Result<()> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    file.billing_mode = mode;
+    write_account_file(&file)
+}
+
+/// Current persisted billing mode, defaulting to `Byok` when no account exists
+/// yet. A cheap disk read that never touches the keychain.
+pub fn billing_mode() -> Result<BillingMode> {
+    Ok(read_account_file()?
+        .map(|f| f.billing_mode)
+        .unwrap_or_default())
+}
+
+/// The billing mode to route by right now, falling back to `Byok` when the
+/// account cannot be read at all. The single source of truth the proxy managers
+/// seed the engine/relay from (mirrors [`org_id_for_injection`]).
+///
+/// Fails towards `Byok` deliberately: that shape carries the tool's own
+/// credential, so an unreadable account degrades to "the provider bills the
+/// user", never to spending an org's balance by accident.
+pub fn billing_mode_for_injection() -> BillingMode {
+    billing_mode().unwrap_or_default()
+}
+
 /// Current persisted auth mode, defaulting to `ApiKey` when no account exists
 /// yet. A cheap disk read that never touches the keychain.
 pub fn auth_mode() -> Result<AuthMode> {
@@ -359,9 +509,8 @@ pub fn has_api_key() -> Result<bool> {
 
 /// The stored Gate key, read straight from the keychain.
 ///
-/// Distinct from [`backfill_api_key_prefix`], which is gated behind an explicit
-/// confirmation: that one *reveals* the secret to the user, while this hands it
-/// to code that is about to authenticate with it. This is the same read [`load`]
+/// It hands the secret to code that is about to authenticate with it, never to
+/// the user. This is the same read [`load`]
 /// already performs on every proxy enable, provider enable, and startup
 /// reconcile, against an item this app created in [`save`] - so on macOS the
 /// per-(item, application) ACL already covers it, and no caller pays a dialog
@@ -379,24 +528,6 @@ pub fn stored_api_key() -> Result<Option<String>> {
 /// the stored-prefix field .
 pub fn api_key_prefix() -> Result<Option<String>> {
     Ok(read_account_file()?.and_then(|f| f.api_key_prefix))
-}
-
-/// Fallback reveal for accounts saved before the prefix was recorded on disk:
-/// read the key from the keychain (which may trigger an OS authorization
-/// prompt), record its prefix in `account.json` so later reveals are free, and
-/// return it. Gated behind an explicit user confirmation in the UI because of
-/// the keychain read. Returns `None` when no key is stored.
-pub fn backfill_api_key_prefix() -> Result<Option<String>> {
-    let user = env::current_user()?;
-    let Some(key) = keychain::get(&service(), &user)? else {
-        return Ok(None);
-    };
-    let prefix: String = key.chars().take(12).collect();
-    if let Some(mut file) = read_account_file()? {
-        file.api_key_prefix = Some(prefix.clone());
-        write_account_file(&file)?;
-    }
-    Ok(Some(prefix))
 }
 
 pub fn clear() -> Result<()> {
@@ -428,6 +559,14 @@ pub fn clear() -> Result<()> {
     // A full disconnect forgets every credential, so any OAuth tokens go too -
     // nothing is left behind in the secret store .
     crate::oauth::clear()?;
+    // So is any pending restore: it names the tools the account being cleared
+    // had routed, and the next sign-in's routing-on would reconnect them.
+    crate::provider::discard_restore()?;
+    // The held activity reading belongs to the org that just went away. Best
+    // effort, and after the credentials on purpose: a cache file that will not
+    // delete must not be the reason a disconnect reports failure, and without a
+    // credential it can no longer be read anyway.
+    let _ = crate::activity_cache::clear();
     Ok(())
 }
 

@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "onboarding-commands",
+  "description": "The application commands the intro window may call. The intro itself only asks the platform and reveals the main window; the rest are the boot code every window runs from main.tsx (analytics consent and identity, the error context, the log sink) and ErrorBoundary's proxy status read and Quit button. Plugin permissions stay on `default`.",
+  "windows": [
+    "onboarding"
+  ],
+  "permissions": [
+    "allow-analytics-identity",
+    "allow-analytics-milestone-claim",
+    "allow-app-platform",
+    "allow-get-preferences",
+    "allow-install-id",
+    "allow-log-message",
+    "allow-os-name",
+    "allow-proxy-status",
+    "allow-quit-app",
+    "allow-reveal-popover",
+    "allow-set-analytics-identity"
+  ]
+}
