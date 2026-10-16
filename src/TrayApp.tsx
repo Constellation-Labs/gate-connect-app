@@ -697,32 +697,42 @@ export function TrayApp() {
     () =>
       tools
         .filter((t) => t.status.kind !== "not_installed" && !isSettingsManaged(t.slug))
-        .map((t) => ({
-          slug: t.slug,
-          name: t.name,
-          status: verdictStatus(verdicts.get(t.slug), {
-            // Only a failed turn-OFF: the tool is still routed and the click
-            // did not land. A failed turn-on leaves a tool that was never
-            // routed, so the sweep's own reading (Not routed) is the true one;
-            // the pane's alert says the write failed.
-            writeFailed: routing.writeFailures.get(t.slug) === false,
-            // Same reading the window's rail takes, so the two surfaces
-            // cannot disagree about whether a row is inspected. AG-932.
-            coverage: t.coverage,
-          }),
-          on:
+        .map((t) => {
+          // Intent, not observation: a drifted tool is still one the user asked
+          // to route. See the note on SidebarApp.
+          const on =
             t.status.kind === "connected" ||
             t.status.kind === "drifted" ||
-            t.status.kind === "overridden",
-          logo: brandMarkFor(t.slug),
-          busy: routingBusy,
-          hint: hintForMember(t.slug),
-          // A held figure outranks the pending state, so a look that re-reads
-          // keeps the last number on the row instead of blanking it for the
-          // length of a fetch. The skeleton is the first read only.
-          messages: messageFigure(messagesByKey, messagesPending, t.slug),
-          alerts: alertFigure(alertCounts, alertsPending, [t.slug]),
-        })),
+            t.status.kind === "overridden" ||
+            (t.status.kind === "error" && t.status.intended);
+          return {
+            slug: t.slug,
+            name: t.name,
+            status: verdictStatus(verdicts.get(t.slug), {
+              // Only a failed turn-OFF: the tool is still routed and the click
+              // did not land. A failed turn-on leaves a tool that was never
+              // routed, so the sweep's own reading (Not routed) is the true one;
+              // the pane's alert says the write failed.
+              writeFailed: routing.writeFailures.get(t.slug) === false,
+              // Same reading the window's rail takes, so the two surfaces
+              // cannot disagree about whether a row is inspected. AG-932.
+              coverage: t.coverage,
+              // A switched-off row reads Not routed with or without a verdict.
+              on,
+              // An unreadable config outranks the sweep. AG-1120.
+              readFailed: t.status.kind === "error",
+            }),
+            on,
+            logo: brandMarkFor(t.slug),
+            busy: routingBusy,
+            hint: hintForMember(t.slug),
+            // A held figure outranks the pending state, so a look that re-reads
+            // keeps the last number on the row instead of blanking it for the
+            // length of a fetch. The skeleton is the first read only.
+            messages: messageFigure(messagesByKey, messagesPending, t.slug),
+            alerts: alertFigure(alertCounts, alertsPending, [t.slug]),
+          };
+        }),
     [
       tools,
       verdicts,

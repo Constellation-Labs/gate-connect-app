@@ -86,15 +86,10 @@ describe("AppPane model card", () => {
   });
 
   /**
-   * The multi-provider tools - OpenCode, OpenClaw, Hermes - route whichever of
-   * their configured providers Gate covers, so "what does this app use on Gate
-   * model" has no single answer for them. `main` never asks it: it has no model
-   * UI at all and these appear only as routing targets.
-   *
-   * The Figma's answer is a multi-select picker, which needs a model list no
-   * endpoint reports yet and a selection shape `ModelChoice` cannot hold. Until
-   * then the card is withheld, which is a decision and not an oversight -
-   * regressing it looks like "the model card is missing on OpenCode".
+   * A tool whose config Gate cannot write a model into - OpenClaw, the
+   * environment channel, the chat domains - gets no card: the caller omits
+   * `onChooseModel`. Which tools those are is `GATE_MODEL_TOOLS`' business;
+   * this pins only that an omitted handler omits the card, and nothing else.
    */
   it("omits it entirely when there is no single model family", () => {
     render(pane({ onChooseModel: undefined }));

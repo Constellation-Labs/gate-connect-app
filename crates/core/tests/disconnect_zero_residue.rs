@@ -489,6 +489,86 @@ fn claude_code_reconnect_with_our_values_in_place_leaves_the_file_alone() {
     );
 }
 
+/// A connect and a disconnect hand the user's `settings.json` back as it was:
+/// the same bytes, keys in the user's order rather than sorted, and the
+/// file's own mode rather than Gate's 0600.
+///
+/// The keys are deliberately out of alphabetical order, so a sorted write
+/// shows up as different bytes. Claude Code then adds two settings of its own
+/// while connected, after Gate's marker: `Map::remove` fills the marker's gap
+/// with the last of them, so taking the marker out on disconnect would swap
+/// the pair.
+#[test]
+fn claude_code_connect_then_disconnect_keeps_the_users_key_order_and_mode() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original = r#"{
+  "permissions": {
+    "deny": [],
+    "allow": [
+      "Bash(ls)"
+    ]
+  },
+  "model": "opus",
+  "env": {
+    "FOO": "bar",
+    "ANTHROPIC_BETAS": "some-user-owned-beta"
+  },
+  "alwaysThinkingEnabled": true
+}
+"#;
+    fs::write(&settings, original).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+    let connected = fs::read_to_string(&settings).unwrap();
+    let positions: Vec<usize> = [
+        "\"permissions\"",
+        "\"model\"",
+        "\"env\"",
+        "\"alwaysThinkingEnabled\"",
+    ]
+    .iter()
+    .map(|key| connected.find(key).unwrap())
+    .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "connect must keep the user's key order:\n{connected}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "connect must keep the file's own mode");
+    }
+
+    let added = "  \"outputStyle\": \"Explanatory\",\n  \"cleanupPeriodDays\": 30\n}\n";
+    let tool_edited = format!("{},\n{added}", connected.strip_suffix("\n}\n").unwrap());
+    fs::write(&settings, &tool_edited).unwrap();
+
+    claude.disconnect().unwrap();
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        format!("{},\n{added}", original.strip_suffix("\n}\n").unwrap()),
+        "disconnect must hand the file back as the user and the tool wrote it"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "disconnect must keep the file's own mode");
+    }
+}
+
 /// No CA on disk, no write at all.
 ///
 /// The pair is what makes this integration work, so half of it is not a
@@ -753,6 +833,66 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     assert!(
         after.contains("user-openrouter-key"),
         "the user's own apiKey must survive: {after}"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("opencode-state.json")
+            .exists(),
+        "sidecar must be removed"
+    );
+}
+
+/// The same round trip on Gate models: Gate's own provider and the `model`
+/// naming it come out with the rest, and the user's default comes back.
+#[test]
+fn opencode_on_gate_models_disconnect_leaves_no_gate_residue() {
+    use gate_connect_core::preferences::{self, ModelSource};
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    preferences::reset_cache_for_tests();
+    seed_relay_port(9977);
+    let _relay = bind_seeded_port(9977);
+    seed_routing_intent();
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    let original = r#"{
+  "model": "openrouter/z-ai/glm-5.2",
+  "provider": {
+    "openrouter": { "options": { "apiKey": "user-openrouter-key" } }
+  }
+}
+"#;
+    fs::write(&cfg, original).unwrap();
+    preferences::set_tool_model(
+        "opencode",
+        ModelSource::Gate,
+        vec!["openai/gpt-5.6-luna".into()],
+        true,
+        vec![],
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    let connected = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        connected.contains("http://127.0.0.1:9977/__gate/t/opencode/gate/v1"),
+        "Gate's provider is on the Gate models route: {connected}"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::Connected));
+
+    integ.disconnect().unwrap();
+    preferences::reset_cache_for_tests();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    let before: serde_json::Value = serde_json::from_str(original).unwrap();
+    assert_eq!(
+        after, before,
+        "nothing of Gate's survives, nothing of the user's is lost"
     );
     assert!(
         !env::app_support_dir()
@@ -1531,4 +1671,212 @@ fn a_reinstalled_opencode_does_not_inherit_the_old_sidecar() {
         "disconnect must restore the reinstalled config, not the deleted one: {after}"
     );
     assert!(!sidecar.exists());
+}
+
+fn read_json(path: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A Claude Code Gate never connected carries no marker, and its proxy and CA
+/// keys are the user's own - a corporate egress proxy and bundle. Disconnect,
+/// which every quit runs, must leave them exactly as they are (AG-1117).
+#[test]
+fn claude_code_disconnect_without_a_marker_leaves_the_users_keys_alone() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original = r#"{
+  "env": {
+    "HTTPS_PROXY": "http://corp.example:3128",
+    "NODE_EXTRA_CA_CERTS": "/etc/corp/ca.pem",
+    "NO_PROXY": "intranet.example"
+  }
+}
+"#;
+    fs::write(&settings, original).unwrap();
+
+    find(ToolId::ClaudeCode).unwrap().disconnect().unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        original,
+        "a settings.json Gate never wrote must not be touched"
+    );
+}
+
+/// A key the user changed while connected is theirs: disconnect puts back only
+/// the keys still holding what Gate wrote (AG-1117).
+#[test]
+fn claude_code_disconnect_keeps_a_key_the_user_changed_while_connected() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{"env":{"HTTPS_PROXY":"http://corp.example:3128","NODE_EXTRA_CA_CERTS":"/etc/corp/ca.pem"}}"#,
+    )
+    .unwrap();
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    // While connected, the user repoints the CA and widens the bypass list.
+    let mut edited = read_json(&settings);
+    let env_block = edited["env"].as_object_mut().unwrap();
+    env_block.insert("NODE_EXTRA_CA_CERTS".into(), "/etc/new-corp/ca.pem".into());
+    let no_proxy = format!("{},build.example", env_block["NO_PROXY"].as_str().unwrap());
+    env_block.insert("NO_PROXY".into(), no_proxy.clone().into());
+    fs::write(&settings, serde_json::to_string(&edited).unwrap()).unwrap();
+
+    claude.disconnect().unwrap();
+
+    let after = read_json(&settings);
+    let env_block = after["env"].as_object().unwrap();
+    assert_eq!(
+        env_block["NODE_EXTRA_CA_CERTS"].as_str(),
+        Some("/etc/new-corp/ca.pem"),
+        "the CA the user set while connected must survive, not be overwritten by the snapshot"
+    );
+    assert_eq!(
+        env_block["NO_PROXY"].as_str(),
+        Some(no_proxy.as_str()),
+        "the hosts the user added to NO_PROXY must survive"
+    );
+    assert_eq!(
+        env_block["HTTPS_PROXY"].as_str(),
+        Some("http://corp.example:3128"),
+        "a key still holding Gate's value goes back to the user's own"
+    );
+    assert!(after.get("_gateConnect").is_none());
+}
+
+/// A reconnect over a key the user changed re-snapshots it, so the following
+/// disconnect hands back the user's newer value rather than the one from the
+/// first connect (AG-1117).
+#[test]
+fn claude_code_reconnect_resnapshots_a_key_the_user_changed() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{"env":{"HTTPS_PROXY":"http://corp.example:3128"}}"#,
+    )
+    .unwrap();
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    let mut edited = read_json(&settings);
+    edited["env"]
+        .as_object_mut()
+        .unwrap()
+        .insert("HTTPS_PROXY".into(), "http://new-corp.example:8080".into());
+    fs::write(&settings, serde_json::to_string(&edited).unwrap()).unwrap();
+
+    claude.connect(&connect_input(9977)).unwrap();
+    assert_eq!(
+        read_json(&settings)["env"]["HTTPS_PROXY"].as_str(),
+        Some("http://gate-claude-code:route@127.0.0.1:9977"),
+        "the reconnect routes Claude Code again"
+    );
+
+    claude.disconnect().unwrap();
+    assert_eq!(
+        read_json(&settings)["env"]["HTTPS_PROXY"].as_str(),
+        Some("http://new-corp.example:8080"),
+        "the user's newer proxy is the one to hand back"
+    );
+}
+
+/// A `model_provider` the user moved off `gate` while connected stays where
+/// they put it on disconnect, and a reconnect over it records it as the value
+/// to hand back (AG-1117).
+#[test]
+fn codex_disconnect_keeps_a_model_provider_the_user_changed() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let config = env::codex_config_toml_path().unwrap();
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "model_provider = \"openai\"\n").unwrap();
+
+    let input = ConnectInput {
+        billing_mode: gate_connect_core::account::BillingMode::Payg,
+        ..connect_input(9977)
+    };
+    let codex = find(ToolId::Codex).unwrap();
+    let provider = || {
+        let doc: toml_edit::DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+        doc.get("model_provider")
+            .and_then(|i| i.as_str())
+            .map(str::to_owned)
+    };
+    let set_provider = |p: &str| {
+        let mut doc: toml_edit::DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+        doc["model_provider"] = toml_edit::value(p);
+        fs::write(&config, doc.to_string()).unwrap();
+    };
+
+    codex.connect(&input).unwrap();
+    assert_eq!(provider().as_deref(), Some("gate"));
+    set_provider("ollama");
+    codex.disconnect().unwrap();
+    assert_eq!(
+        provider().as_deref(),
+        Some("ollama"),
+        "the provider the user picked while connected must not be overwritten"
+    );
+
+    // Connected again from there, then moved again: the reconnect snapshots
+    // the user's latest choice, and disconnect hands that one back.
+    codex.connect(&input).unwrap();
+    set_provider("lmstudio");
+    codex.connect(&input).unwrap();
+    assert_eq!(provider().as_deref(), Some("gate"));
+    codex.disconnect().unwrap();
+    assert_eq!(provider().as_deref(), Some("lmstudio"));
+}
+
+/// A proxy the user repointed while OpenClaw was connected is theirs, and
+/// stays switched on (AG-1117).
+#[test]
+fn openclaw_disconnect_keeps_a_proxy_the_user_repointed() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    seed_engine_port(9977);
+
+    let cfg = env::openclaw_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(&cfg, r#"{"models":{}}"#).unwrap();
+
+    let integ = find(ToolId::OpenClaw).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    let mut edited = read_json(&cfg);
+    edited["proxy"]["proxyUrl"] = "http://mitm.example:8080".into();
+    fs::write(&cfg, serde_json::to_string(&edited).unwrap()).unwrap();
+
+    integ.disconnect().unwrap();
+
+    let after = read_json(&cfg);
+    assert_eq!(
+        after["proxy"]["proxyUrl"].as_str(),
+        Some("http://mitm.example:8080"),
+        "the user's proxy must survive disconnect"
+    );
+    assert_eq!(
+        after["proxy"]["enabled"].as_bool(),
+        Some(true),
+        "and stay switched on, since it is what that proxy runs on"
+    );
 }

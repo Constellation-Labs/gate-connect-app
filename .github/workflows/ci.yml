@@ -284,7 +284,11 @@ jobs:
     name: Web (frontend)
     runs-on: ubuntu-latest
     steps:
+      # No credentials left in .git/config: nothing below needs git auth, and
+      # this job runs third-party install code that could read them (AG-1139).
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
 
@@ -415,7 +419,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
+      # No credentials left in .git/config: nothing below needs git auth, and
+      # this job runs third-party install code that could read them (AG-1139).
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Linux deps
         if: matrix.os == 'ubuntu-22.04'
@@ -569,7 +577,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
+      # No credentials left in .git/config: nothing below needs git auth, and
+      # this job runs third-party install code that could read them (AG-1139).
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20

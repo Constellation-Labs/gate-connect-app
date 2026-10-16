@@ -125,8 +125,12 @@ enum StatusDto {
     Overridden {
         source: String,
     },
+    /// The status read failed. `intended` is what the tool's switch last said
+    /// (`preferences::tool_intent`), because a failed read has no answer of its
+    /// own and the switch must not render off for want of one (AG-1120).
     Error {
         message: String,
+        intended: bool,
     },
 }
 
@@ -139,17 +143,6 @@ impl From<Status> for StatusDto {
             Status::Drifted(reason) => StatusDto::Drifted { reason },
             Status::Overridden(source) => StatusDto::Overridden { source },
         }
-    }
-}
-
-fn status_for(integ: &dyn gate_connect_core::Integration) -> StatusDto {
-    match integ.status() {
-        Ok(s) => s.into(),
-        Err(e) => StatusDto::Error {
-            // `{e:#}` prints the whole anyhow context chain; bare Display
-            // would stop at the outermost context and drop the root cause.
-            message: format!("{e:#}"),
-        },
     }
 }
 
@@ -1613,10 +1606,16 @@ fn poll_restore_after_repair<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// the frontend after the update download completes, right before it kicks
 /// off the install (not around the whole download: a quit while the download
 /// is still running is a genuine user exit and must complete the opt-out as
-/// usual); reset if the install fails. If the relaunch itself fails after a
-/// successful install the flag stays set, which at worst defers the opt-out
-/// completion to the next safe point.
+/// usual); reset if the install fails. The mark alone does not make an exit a
+/// relaunch: `RESTART_REQUESTED` has to agree, so a quit between a
+/// successful install and the relaunch is treated as the user quit it is.
 static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the coming exit is a restart: set by the `ExitRequested` that
+/// carries `RESTART_EXIT_CODE`, which only `request_restart` sends. See
+/// `commands::exit_requested`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the startup auto-enable brought the engine back on a *different*
 /// loopback port than the previous session persisted (including "nothing
@@ -3338,6 +3337,10 @@ const CODEX_IDLE_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(
 struct CodexIdleRefresh {
     /// Why it is owed: the trigger, for the log line.
     owed: Option<&'static str>,
+    /// When the latest owe landed. The cap counts from here, so a change made
+    /// just before a long wait runs out gets a full wait of its own rather
+    /// than being dropped with the old one.
+    since: Option<std::time::Instant>,
     worker: bool,
 }
 
@@ -3345,6 +3348,7 @@ struct CodexIdleRefresh {
 static CODEX_IDLE_REFRESH: std::sync::Mutex<CodexIdleRefresh> =
     std::sync::Mutex::new(CodexIdleRefresh {
         owed: None,
+        since: None,
         worker: false,
     });
 
@@ -3395,13 +3399,15 @@ fn refresh_codex_daemon_when_idle(why: &'static str) {
 fn owe_codex_refresh(state: &std::sync::Mutex<CodexIdleRefresh>, why: &'static str) -> bool {
     let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
     st.owed = Some(why);
+    st.since = Some(std::time::Instant::now());
     !std::mem::replace(&mut st.worker, true)
 }
 
 /// The worker: refresh as soon as no session is open, checking first and then
-/// every `poll`, until nothing is owed or `cap` has passed. A refresh owed
-/// again while one runs is made after it. Generic over the session check and
-/// the refresh so the hand-off can be tested without processes.
+/// every `poll`, until nothing is owed or `cap` has passed since the latest
+/// owe. A refresh owed again while one runs is made after it. Generic over the
+/// session check and the refresh so the hand-off can be tested without
+/// processes.
 fn wait_for_codex_idle(
     state: &std::sync::Mutex<CodexIdleRefresh>,
     sessions_open: impl Fn() -> bool,
@@ -3409,12 +3415,12 @@ fn wait_for_codex_idle(
     poll: std::time::Duration,
     cap: std::time::Duration,
 ) {
-    let started = std::time::Instant::now();
     loop {
         let why = {
             let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+            let expired = st.since.is_some_and(|since| since.elapsed() >= cap);
             match st.owed {
-                Some(why) if started.elapsed() < cap => why,
+                Some(why) if !expired => why,
                 Some(why) => {
                     eprintln!("[gate] {why}: Codex stayed open, gave up waiting to refresh its app server");
                     *st = CodexIdleRefresh::default();
@@ -3907,13 +3913,20 @@ fn recheck_gate_session(
         use_stored_api_key();
         return SessionHealth::Valid;
     }
+    // Read before the re-check, which can take seconds of network: a sign-out
+    // in that time must not be overwritten by the token it recovers (AG-1130).
+    let epoch = gate_connect_core::oauth::sign_in_epoch();
     match gate_connect_core::startup::reverify_session() {
         // The session was alive and the local clock was simply wrong about it.
         // The forced refresh minted a token that works; push it into the
         // running engine so in-flight tools recover without a restart, and take
         // back any dead-session signal.
         gate_connect_core::startup::Recheck::Recovered(token) => {
-            gate_connect_core::proxy::manager().refresh_token(&token);
+            if !gate_connect_core::oauth::push_for_sign_in(epoch, || {
+                gate_connect_core::proxy::manager().refresh_token(&token)
+            }) {
+                return SessionHealth::Unknown;
+            }
             if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
                 let running = gate_connect_core::proxy::manager()
                     .status()
@@ -5818,8 +5831,13 @@ pub fn run() {
                     // for the re-check's renewed token (`bearer_needs_recovery`),
                     // which is what recovers a machine whose network comes
                     // back between ticks.
+                    //
+                    // Either push is dropped when a sign-in or sign-out lands
+                    // after the epoch is read (AG-1130): the reading belongs to
+                    // the session that ended, and that path pushed its own.
+                    let epoch = gate_connect_core::oauth::sign_in_epoch();
                     let reading = gate_connect_core::oauth::session_reading();
-                    match &reading {
+                    gate_connect_core::oauth::push_for_sign_in(epoch, || match &reading {
                         gate_connect_core::oauth::SessionReading::Live(t) => {
                             gate_connect_core::proxy::manager().refresh_token(&t.access_token)
                         }
@@ -5827,7 +5845,7 @@ pub fn run() {
                             gate_connect_core::proxy::manager().refresh_token("")
                         }
                         gate_connect_core::oauth::SessionReading::Unavailable => {}
-                    }
+                    });
 
                     // Raise (or clear) the tray attention signal on the
                     // signed-in↔dead edge. "Dead" means a stored session was
@@ -6077,6 +6095,13 @@ pub fn run() {
             // proxy reverted, a deferred launch-at-login opt-out finished, and
             // the routing intent left alone. The body and its reasons are
             // `commands::exit`, where a test pins all four.
+            //
+            // Before that, a restart is noted, so the updater's relaunch can
+            // be told from a quit (`commands::exit_requested`).
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if let tauri::RunEvent::ExitRequested { code, .. } = &event {
+                commands::exit_requested(&TauriPlatform, *code);
+            }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
                 commands::exit(&TauriApp {
@@ -6490,6 +6515,31 @@ mod tests {
                 owe_codex_refresh(&state, "next change"),
                 "a later owe starts a new worker"
             );
+        }
+
+        #[test]
+        fn a_fresh_owe_gets_a_full_wait_of_its_own() {
+            let cap = Duration::from_millis(400);
+            let state = Mutex::new(CodexIdleRefresh::default());
+            assert!(owe_codex_refresh(&state, "set model"));
+            let start = std::time::Instant::now();
+            let reowed = std::sync::atomic::AtomicBool::new(false);
+            let refreshed = Mutex::new(Vec::new());
+            wait_for_codex_idle(
+                &state,
+                || {
+                    let t = start.elapsed();
+                    if t >= Duration::from_millis(200) && !reowed.swap(true, Ordering::SeqCst) {
+                        assert!(!owe_codex_refresh(&state, "routing on"));
+                    }
+                    // Open past the first owe's cap, closed inside the second's.
+                    t < Duration::from_millis(500)
+                },
+                |why| refreshed.lock().unwrap().push(why),
+                POLL,
+                cap,
+            );
+            assert_eq!(*refreshed.lock().unwrap(), vec!["routing on"]);
         }
     }
 

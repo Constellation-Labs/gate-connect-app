@@ -22,7 +22,10 @@ authors = ["Constellation Network"]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order`: a tool's own config (Claude Code's `settings.json`,
+# OpenCode's, OpenClaw's) goes back out with the keys in the user's order,
+# rather than sorted. See `integrations::json_config::follow_order`.
+serde_json = { version = "1", features = ["preserve_order"] }
 # OpenClaw's config (`~/.openclaw/openclaw.json`) is JSON5 — comments and
 # trailing commas are allowed — so the OpenClaw integration parses it with
 # `json5` (writing back is plain `serde_json`, which is valid JSON5).
