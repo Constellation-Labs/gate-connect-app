@@ -40,7 +40,7 @@ const AGENT_RESTART_TIMEOUT: Duration = Duration::from_secs(15);
 /// slower than that. Spawning straight after the bootout is what moved the
 /// forwarder from 47100 to 47101 and left every running tool on a dead port
 /// (AG-1098).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Say what the forwarder lifecycle did, on stderr and in `gate-connect.log`.
@@ -133,7 +133,12 @@ fn marker_body() -> Option<Vec<u8>> {
 ///
 /// Held across a spawn and its answer-poll, so an ensure can own it for
 /// [`SPAWN_TIMEOUT`] - and on macOS, where the launch agent is tried first,
-/// restarted in place and only then given up on, for up to about 30s. Two consequences worth knowing rather than fixing: a `stop` on the
+/// restarted in place and only then given up on, for up to about 35s: 5s
+/// for the agent to answer, 15s after its restart, 5s for its port to come
+/// free and 5s for the direct spawn, plus 5s more when a foreground ensure
+/// first hands a stray forwarder back to the agent. An ensure that is adding
+/// the relay socket can run the agent's ladder twice, for about 55s. Two
+/// consequences worth knowing rather than fixing: a `stop` on the
 /// quit path waits that long in the worst case, which is the price of it being
 /// airtight, and a user-facing `enable` can wait behind a supervisory pass
 /// that is mid-spawn. The reverse cannot happen, because a supervisor takes
@@ -710,6 +715,15 @@ mod launch_agent {
         launchctl(&["print", &format!("{}/{LABEL}", domain())])
     }
 
+    /// Whether this process has what [`install`] and the direct spawn after it
+    /// need before anything is touched: the forwarder binary beside it, and a
+    /// home to put the plist in.
+    pub(super) fn preflight() -> Result<()> {
+        forwarder_binary()?;
+        plist_path()?;
+        Ok(())
+    }
+
     /// Whether the agent's plist is on disk.
     pub(super) fn installed() -> bool {
         plist_path().is_ok_and(|p| p.exists())
@@ -876,7 +890,7 @@ fn ensure_running_locked(adopt_stray: bool) -> Result<u16> {
             Some(_) if adopt_stray && !was_draining && adopt_stray_once(port) => {}
             Some(_) => return Ok(port),
             None => note(
-                crate::logging::Level::Warn,
+                crate::logging::Level::Info,
                 &format!("nothing answered as the forwarder on port {port}"),
             ),
         }
@@ -920,6 +934,11 @@ fn ensure_running_locked(adopt_stray: bool) -> Result<u16> {
     // What the exported variables and tool configs name now. A forwarder that
     // comes up anywhere else strands every process that read them at launch.
     let wanted_port = persisted_port();
+    // The agent did not work for this process, so a forwarder started here is
+    // one it must not later adopt: that would retire it and run the whole
+    // ladder again on every launch. See [`ADOPT_SPENT`].
+    #[cfg(target_os = "macos")]
+    ADOPT_SPENT.store(true, std::sync::atomic::Ordering::SeqCst);
     spawn_detached()?;
     // On macOS this is the fallback, and worth a warning: the agent did not
     // work. Elsewhere it is the only way a forwarder starts.
@@ -1004,6 +1023,17 @@ fn abandon_agent(port: u16, why: &str) {
     }
 }
 
+/// Whether this process has used up its one adopt ([`adopt_stray_once`]),
+/// either by trying it or by starting a forwarder outside launchd itself.
+///
+/// The second half is what keeps the fallback in place: [`abandon_agent`]
+/// gives up on the agent and the direct spawn follows, and without this mark
+/// the next foreground ensure (`restore_all` -> `tool_proxy_url`) found that
+/// forwarder outside launchd, retired it and ran the whole ladder again, on
+/// every launch of a Mac where the agent does not work.
+#[cfg(target_os = "macos")]
+static ADOPT_SPENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Hand a forwarder running outside launchd back to the launch agent, on the
 /// port it holds. `true` when the caller should go on to install the agent.
 ///
@@ -1016,11 +1046,11 @@ fn abandon_agent(port: u16, why: &str) {
 ///
 /// Costs new connections about one marker poll (2s) with nothing on the port.
 /// Connections already open are drained, not cut. So it runs only from a
-/// foreground ensure, at most once per process, and never over a drained
-/// forwarder (whose agent is loaded and kept on purpose).
+/// foreground ensure, at most once per process, never in a process that
+/// started a forwarder directly itself, and never over a drained forwarder
+/// (whose agent is loaded and kept on purpose).
 #[cfg(target_os = "macos")]
 fn adopt_stray_once(port: u16) -> bool {
-    static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     // `loaded` asks the real launchd about the real label, so under the test
     // seam a test forwarder would always look stray. The same seam that keeps
     // tests from spawning one keeps them from retiring one.
@@ -1030,7 +1060,34 @@ fn adopt_stray_once(port: u16) -> bool {
     if launch_agent::installed() || launch_agent::loaded() {
         return false;
     }
-    if TRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    hand_back_stray(port, &ADOPT_SPENT, launch_agent::preflight)
+}
+
+/// The body of [`adopt_stray_once`], past the questions only launchd can
+/// answer. `spent` is [`ADOPT_SPENT`]; `preflight` checks that this process
+/// could install the agent, or spawn directly, once the forwarder lets go.
+///
+/// Asked before the marker goes, because removing it is what makes a working
+/// forwarder give up its port: a caller with no forwarder binary beside it,
+/// such as the CLI, would otherwise retire it and then fail to start any,
+/// leaving tools with nothing on the port until the app's supervisor came by.
+#[cfg(any(target_os = "macos", test))]
+fn hand_back_stray(
+    port: u16,
+    spent: &std::sync::atomic::AtomicBool,
+    preflight: impl FnOnce() -> Result<()>,
+) -> bool {
+    if spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    if let Err(e) = preflight() {
+        note(
+            crate::logging::Level::Info,
+            &format!(
+                "the forwarder on port {port} runs outside launchd; keeping it, because this \
+                 process could not replace it ({e:#})"
+            ),
+        );
         return false;
     }
     note(
@@ -1579,6 +1636,89 @@ mod tests {
         assert!(!await_port_free(port, Duration::from_millis(300)));
         assert!(started.elapsed() >= Duration::from_millis(300));
         drop(listener);
+    }
+
+    /// A marker in a hermetic home and a listener standing in for a forwarder
+    /// outside launchd, which lets go of its port once the marker goes, as
+    /// the real one does on its next poll.
+    fn stray_forwarder() -> (u16, std::thread::JoinHandle<()>) {
+        let marker = marker_path().unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        crate::primitives::write_file(&marker, b"", 0o600).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let watcher = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while marker.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            drop(listener);
+        });
+        (port, watcher)
+    }
+
+    /// AG-1098 review: a process that started the forwarder outside launchd
+    /// itself, because the agent did not work, must not adopt it on its next
+    /// ensure: that retired the fallback and reran the ladder on every launch.
+    #[test]
+    fn an_adopt_in_a_process_that_spawned_directly_leaves_the_forwarder_alone() {
+        let _home = TestHome::set("adopt-spent");
+        let (port, watcher) = stray_forwarder();
+        // What the direct spawn in `ensure_running_locked` leaves behind.
+        let spent = std::sync::atomic::AtomicBool::new(true);
+
+        assert!(!hand_back_stray(port, &spent, || Ok(())));
+
+        assert!(marker_path().unwrap().exists(), "the forwarder was retired");
+        assert!(gate_connect_paths::port_is_live(port));
+        std::fs::remove_file(marker_path().unwrap()).unwrap();
+        watcher.join().unwrap();
+    }
+
+    /// AG-1098 review: a caller that cannot start a replacement (the CLI has
+    /// no forwarder binary beside it) must not retire the running forwarder.
+    #[test]
+    fn an_adopt_that_could_not_replace_the_forwarder_leaves_it_alone() {
+        let _home = TestHome::set("adopt-preflight");
+        let (port, watcher) = stray_forwarder();
+        let spent = std::sync::atomic::AtomicBool::new(false);
+
+        let adopted = hand_back_stray(port, &spent, || {
+            anyhow::bail!("the forwarder binary is not installed beside the cli")
+        });
+
+        assert!(!adopted);
+        assert!(marker_path().unwrap().exists(), "the forwarder was retired");
+        assert!(gate_connect_paths::port_is_live(port));
+        assert!(
+            spent.load(std::sync::atomic::Ordering::SeqCst),
+            "once per process"
+        );
+        std::fs::remove_file(marker_path().unwrap()).unwrap();
+        watcher.join().unwrap();
+    }
+
+    /// The adopt itself: the stray forwarder is asked to let go, the port
+    /// comes free for the agent, and the marker is back for the forwarder the
+    /// agent starts. Once per process.
+    #[test]
+    fn an_adopt_frees_the_port_and_puts_the_marker_back_once() {
+        let _home = TestHome::set("adopt-ok");
+        let (port, watcher) = stray_forwarder();
+        let spent = std::sync::atomic::AtomicBool::new(false);
+
+        assert!(hand_back_stray(port, &spent, || Ok(())));
+
+        watcher.join().unwrap();
+        assert!(!gate_connect_paths::port_is_live(port));
+        assert!(
+            wanted(),
+            "the marker must be back for the agent's forwarder"
+        );
+        assert!(
+            !hand_back_stray(port, &spent, || Ok(())),
+            "once per process"
+        );
     }
 
     /// The restart window has to outlast launchd's respawn throttle, or a
