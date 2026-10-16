@@ -12,11 +12,16 @@
 //   wait-window <secs>         wait for a window of the app to exist
 //   dump                       print the app's accessibility tree
 //   wait-text <secs> <text>    wait for an element whose text contains <text>
-//   click <secs> <text>        AXPress the button (or link) whose text is <text>
+//   click <secs> <text>        AXPress the control whose text is <text>: a
+//                              button, link, switch or menu item
+//   click-prefix <secs> <text> the same, for a control whose text starts with
+//                              <text> (a rail row reads its name, then status)
+//   wait-checked <secs> <label> wait for the switch labelled <label> to be on
 //   type <secs> <label> <text> focus the field labelled <label> and type <text>
+//   running                    exit 0 while the app is running, 1 otherwise
 //
 // Exit 0 on success, 1 on a failed step (with the reason on stderr), 2 on
-// usage. Matching is exact on a button's own text and substring elsewhere.
+// usage. Matching is exact on a control's own text and substring elsewhere.
 
 ObjC.import("stdlib");
 
@@ -114,6 +119,17 @@ function poll(secs, match) {
   }
 }
 
+// What a click can press. WebKit publishes role="switch" as an AXCheckBox
+// (subrole AXSwitch) and role="menuitem" as an AXMenuItem; both take AXPress.
+const PRESSABLE = ["AXButton", "AXLink", "AXCheckBox", "AXSwitch", "AXMenuItem"];
+
+function press(secs, text, matches) {
+  const hit = poll(Number(secs), (n) => PRESSABLE.includes(n.role) && texts(n).some((s) => matches(s.trim())));
+  if (!hit) fail(`no control "${text}" within ${secs}s`);
+  hit.el.actions.byName("AXPress").perform();
+  console.log("pressed: " + describeNode(hit).trim());
+}
+
 function describeNode(n) {
   return `${"  ".repeat(n.depth)}${n.role} ${JSON.stringify({
     name: n.name,
@@ -169,13 +185,26 @@ function run(argv) {
     }
     case "click": {
       const [, secs, text] = argv;
+      press(secs, text, (s) => s === text);
+      return;
+    }
+    case "click-prefix": {
+      const [, secs, text] = argv;
+      press(secs, text, (s) => s.startsWith(text));
+      return;
+    }
+    case "wait-checked": {
+      // An AXCheckBox reads 1 when checked, which is aria-checked="true".
+      const [, secs, label] = argv;
       const hit = poll(
         Number(secs),
-        (n) => (n.role === "AXButton" || n.role === "AXLink") && texts(n).some((s) => s.trim() === text),
+        (n) =>
+          (n.role === "AXCheckBox" || n.role === "AXSwitch") &&
+          texts(n).some((s) => s.trim() === label) &&
+          (n.value === "1" || n.value === "true"),
       );
-      if (!hit) fail(`no button "${text}" within ${secs}s`);
-      hit.el.actions.byName("AXPress").perform();
-      console.log("pressed: " + describeNode(hit).trim());
+      if (!hit) fail(`switch "${label}" was not on within ${secs}s`);
+      console.log("on: " + describeNode(hit).trim());
       return;
     }
     case "type": {
@@ -195,8 +224,12 @@ function run(argv) {
       console.log("typed into: " + describeNode(hit).trim());
       return;
     }
+    case "running": {
+      if (!proc()) $.exit(1);
+      return;
+    }
     default:
-      console.log("usage: macos-ax.js probe|wait-window|dump|wait-text|click|type ...");
+      console.log("usage: macos-ax.js probe|wait-window|dump|wait-text|click|click-prefix|wait-checked|type|running ...");
       $.exit(2);
   }
 }

@@ -18,7 +18,11 @@
 //   windows                     list the window handles with title and URL
 //   dump                        print every window's text, buttons and fields
 //   wait-text <secs> <text>     wait for a window whose page contains <text>
-//   click <secs> <text>         click the button (or link) whose text is <text>
+//   click <secs> <text>         click the control whose text is <text>: a
+//                               button, link, switch or menu item
+//   click-prefix <secs> <text>  the same, for a control whose text starts with
+//                               <text> (a rail row reads its name, then status)
+//   wait-checked <secs> <label> wait for the switch labelled <label> to be on
 //   type <secs> <label> <text>  type <text> into the field labelled <label>
 //   screenshot <file.png>       save the current window's page as a PNG
 //   quit                        end the session (the driver closes the app)
@@ -229,15 +233,18 @@ async function main(argv) {
       console.log(`found "${text}" in window ${hit.handle}`);
       return;
     }
-    case 'click': {
+    case 'click':
+    case 'click-prefix': {
       const [secs, text] = args;
       const t = lit(text);
-      const xpath = `//*[self::button or self::a or @role="button"][normalize-space(.)=${t} or @aria-label=${t}]`;
+      const named =
+        cmd === 'click' ? `normalize-space(.)=${t} or @aria-label=${t}` : `starts-with(normalize-space(.), ${t}) or starts-with(@aria-label, ${t})`;
+      const xpath = `//*[self::button or self::a or @role="button" or @role="switch" or @role="menuitem"][${named}]`;
       const hit = await poll(Number(secs), async (h) => {
         const id = await findShown(xpath);
         return id ? { handle: h, id } : null;
       });
-      if (!hit || hit.miss !== undefined) fail(`no button "${text}" within ${secs}s ${hit && hit.miss ? '(' + hit.miss + ')' : ''}`);
+      if (!hit || hit.miss !== undefined) fail(`no control "${text}" within ${secs}s ${hit && hit.miss ? '(' + hit.miss + ')' : ''}`);
       // Element Click: the driver scrolls it into view and clicks its centre
       // with a pointer, rather than a synthetic click() from the page.
       try {
@@ -251,6 +258,17 @@ async function main(argv) {
         return;
       }
       console.log(`clicked "${text}" in window ${hit.handle}`);
+      return;
+    }
+    case 'wait-checked': {
+      const [secs, label] = args;
+      const xpath = `//*[@role="switch"][@aria-label=${lit(label)}][@aria-checked="true"]`;
+      const hit = await poll(Number(secs), async (h) => {
+        const id = await findShown(xpath);
+        return id ? { handle: h, id } : null;
+      });
+      if (!hit || hit.miss !== undefined) fail(`switch "${label}" was not on within ${secs}s ${hit && hit.miss ? '(' + hit.miss + ')' : ''}`);
+      console.log(`switch "${label}" is on in window ${hit.handle}`);
       return;
     }
     case 'type': {
@@ -285,7 +303,7 @@ async function main(argv) {
       return;
     }
     default:
-      console.log('usage: webdriver.mjs start|windows|dump|wait-text|click|type|screenshot|quit ...');
+      console.log('usage: webdriver.mjs start|windows|dump|wait-text|click|click-prefix|wait-checked|type|screenshot|quit ...');
       process.exit(2);
   }
 }

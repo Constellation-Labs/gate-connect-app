@@ -21,11 +21,19 @@
 #   wait-window <secs>         wait for a window of the app to exist
 #   dump                       print the app's accessibility tree
 #   wait-text <secs> <text>    wait for an element whose name contains <text>
-#   click <secs> <text>        Invoke the button (or link) named <text>
+#   click <secs> <text>        press the control named <text>: a button, link,
+#                              switch or menu item
+#   click-prefix <secs> <text> the same, for a control whose name starts with
+#                              <text> (a rail row reads its name, then status)
+#   wait-checked <secs> <label> wait for the switch named <label> to be on
 #   type <secs> <label> <text> focus the field labelled <label> and type <text>
+#   answer <secs> <title> <button>
+#                              press <button> in a window titled <title> of
+#                              ANY process: the OS's own dialogs (the
+#                              certificate "Security Warning") are not the app's
 #
 # Exit 0 on success, 1 on a failed step (with the reason on stdout), 2 on
-# usage. Matching is exact on a button's own name and substring elsewhere.
+# usage. Matching is exact on a control's own name and substring elsewhere.
 param([Parameter(Position = 0)][string]$Command, [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest)
 
 $ErrorActionPreference = 'Stop'
@@ -85,6 +93,26 @@ function Poll([double]$secs, [scriptblock]$find) {
   }
 }
 
+# What a click can press. Chromium publishes role="switch" as a Button with
+# a TogglePattern (or a CheckBox) and role="menuitem" as a MenuItem.
+$Pressable = @('Button', 'Hyperlink', 'CheckBox', 'MenuItem')
+
+# The control's default action: Invoke where it has one (UIA's AXPress, which
+# Chromium dispatches as a click on the element), else Toggle.
+function Press($el) {
+  $p = $null
+  if ($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$p)) { $p.Invoke(); return 'invoke' }
+  if ($el.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$p)) { $p.Toggle(); return 'toggle' }
+  Fail "control `"$($el.Current.Name)`" has neither Invoke nor Toggle"
+}
+
+function PressNamed([double]$secs, [string]$text, [scriptblock]$test) {
+  $hit = Poll $secs { param($t) $t | Where-Object { ($Pressable -contains $_.Type) -and (& $test $_.Name.Trim()) -and $_.Enabled -and -not $_.Offscreen } | Select-Object -First 1 }
+  if (-not $hit) { Fail "no control `"$text`" within ${secs}s" }
+  $how = Press $hit.El
+  Write-Output "pressed ($how): $((Describe $hit).Trim())"
+}
+
 function Describe($n) {
   $help = if ($n.Help) { " help=`"$($n.Help)`"" } else { '' }
   $state = if (-not $n.Enabled) { ' (disabled)' } elseif ($n.Offscreen) { ' (offscreen)' } else { '' }
@@ -121,12 +149,51 @@ switch ($Command) {
   }
   'click' {
     $secs = [double]$Rest[0]; $text = $Rest[1]
-    $hit = Poll $secs { param($t) $t | Where-Object { ($_.Type -eq 'Button' -or $_.Type -eq 'Hyperlink') -and $_.Name.Trim() -eq $text -and $_.Enabled -and -not $_.Offscreen } | Select-Object -First 1 }
-    if (-not $hit) { Fail "no button `"$text`" within ${secs}s" }
-    # InvokePattern is UIA's AXPress: the control's default action, which
-    # Chromium dispatches as a click on the element.
-    $hit.El.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-    Write-Output "pressed: $((Describe $hit).Trim())"
+    PressNamed $secs $text { param($name) $name -eq $text }
+  }
+  'click-prefix' {
+    $secs = [double]$Rest[0]; $text = $Rest[1]
+    PressNamed $secs $text { param($name) $name.StartsWith($text, [StringComparison]::Ordinal) }
+  }
+  'wait-checked' {
+    $secs = [double]$Rest[0]; $label = $Rest[1]
+    $hit = Poll $secs {
+      param($t)
+      $t | Where-Object {
+        $p = $null
+        $_.Name.Trim() -eq $label -and
+          $_.El.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$p) -and
+          $p.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On
+      } | Select-Object -First 1
+    }
+    if (-not $hit) { Fail "switch `"$label`" was not on within ${secs}s" }
+    Write-Output "on: $((Describe $hit).Trim())"
+  }
+  'answer' {
+    $secs = [double]$Rest[0]; $title = $Rest[1]; $button = $Rest[2]
+    $until = (Get-Date).AddSeconds($secs)
+    while ($true) {
+      foreach ($w in $A::RootElement.FindAll($Scope::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+        $name = Safe { $w.Current.Name }
+        if (-not $name.Contains($title)) { continue }
+        $owner = Safe { (Get-Process -Id $w.Current.ProcessId).ProcessName }
+        Write-Output "window `"$name`" (process $owner):"
+        foreach ($e in $w.FindAll($Scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+          $c = $null
+          try { $c = $e.Current } catch { continue }
+          Write-Output "  $($c.ControlType.ProgrammaticName -replace '^ControlType\.', '') `"$($c.Name)`""
+        }
+        $b = $w.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.AndCondition(
+              (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::Button)),
+              (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, $button)))))
+        if (-not $b) { Fail "window `"$name`" has no button `"$button`"" }
+        $how = Press $b
+        Write-Output "pressed ($how) `"$button`" in `"$name`""
+        exit 0
+      }
+      if ((Get-Date) -gt $until) { Fail "no window titled `"$title`" within ${secs}s" }
+      Start-Sleep -Milliseconds 500
+    }
   }
   'type' {
     $secs = [double]$Rest[0]; $label = $Rest[1]; $text = $Rest[2]
@@ -155,7 +222,7 @@ switch ($Command) {
     Write-Output "typed $($text.Length) characters into: $((Describe $hit).Trim())"
   }
   default {
-    Write-Output 'usage: windows-uia.ps1 probe|wait-window|dump|wait-text|click|type ...'
+    Write-Output 'usage: windows-uia.ps1 probe|wait-window|dump|wait-text|click|click-prefix|wait-checked|type|answer ...'
     exit 2
   }
 }
