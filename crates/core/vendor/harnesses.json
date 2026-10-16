@@ -21,6 +21,10 @@
     "2026-09-21-staging-audit": {
       "window": "staging, 2026-08-22 → 2026-09-21, the weekly harness tool audit (scripts/harness-tool-audit.ts, Actions run 35569208632): 6,716 raw request bodies read from S3, capped at 2000 requests per harness. `calls` here counts tool RESULTS in sampled request prefixes — a session replays its prefix on every request — so these numbers are not comparable with the body-mining counts above, only with each other.",
       "date": "2026-09-21"
+    },
+    "2026-10-08-staging-audit": {
+      "window": "staging, 2026-09-08 → 2026-10-08, the weekly harness tool audit (scripts/harness-tool-audit.ts, Actions run 37707899804): 10,318 raw request bodies read from S3, capped at 2000 requests per harness; Hermes contributed 16 attributed requests, all from raw bodies. `calls` counts tool RESULTS in sampled request prefixes, as in the 2026-09-21 audit.",
+      "date": "2026-10-08"
     }
   },
   "shared_tool_names": [
@@ -392,31 +396,40 @@
             "name": "terminal",
             "lane": "command",
             "evidence": "documented"
+          },
+          {
+            "name": "skill_view",
+            "lane": "reader",
+            "evidence": "seen",
+            "calls": 24,
+            "sample": "2026-10-08-staging-audit"
+          },
+          {
+            "name": "memory",
+            "lane": "reader",
+            "evidence": "seen",
+            "calls": 1,
+            "sample": "2026-10-08-staging-audit"
           }
         ]
       },
       "exceptions": [
         {
           "rule": "compression.evidence",
-          "reason": "Hermes's tool names for compression come from its own documentation: we confirmed them on traffic from Anthropic's SDK, never on a request we could attribute to Hermes."
-        },
-        {
-          "rule": "surfaces.ci_e2e",
-          "reason": "Our test suite does not cover Hermes on Windows, so the Certified bar — every platform Gate ships to — is not met."
+          "reason": "Hermes's file-read and shell tool names for compression come from its own documentation: we confirmed them on traffic from Anthropic's SDK, never on a request we could attribute to Hermes."
         }
       ],
       "checked": [
         "Pointing Hermes at Gate as a custom endpoint provider works in both billing modes: paying through Gate, and bringing your own provider keys.",
-        "Gate Connect can set Hermes up for you, and our test suite drives a real Hermes install on macOS and Linux.",
+        "Gate Connect can set Hermes up for you, and our test suite drives a real Hermes install on macOS, Linux and Windows.",
         "Gate recognizes Hermes by name in your dashboard: Gate Connect adds a header to Hermes's own config, and a real Hermes install routed through Gate Connect arrives named Hermes through the proxy engine, both on Gate models and with its own provider keys."
       ],
       "not_checked": [
-        "Windows: our test suite does not cover Hermes there.",
         "Attribution off the OpenAI wire: the header Hermes sends is documented as applying to OpenAI-compatible endpoints only, so a native-Anthropic or Bedrock setup routes through Gate exactly as before but is recorded without a name.",
-        "Compression: Hermes's tool names come from its own documentation; we have never seen them on traffic we could attribute to Hermes."
+        "Compression: Hermes's skill and memory tools were seen on real traffic attributed to Hermes in our October 2026 traffic audit, and compression recognizes both. Its file-read and shell tool names still come from its own documentation; we have not yet seen them on traffic we could attribute to Hermes."
       ],
       "last_verified": null,
-      "notes": "D2 — Works, not Certified, by Julian's decision. What keeps it there: the e2e suite does not cover Windows, and the compression names are documentation-only. AG-670 verified attribution and keeps the tier. The e2e-real-tools job drives a real install on macOS and Linux and skips Windows. Gate Connect's proxy-engine integration writes ~/.hermes/.env; the Custom endpoint provider the checked list refers to lives in ~/.hermes/config.yaml. Hermes also reaches Gate by hand through the base_url in config.yaml that its guide documents; routing records the mechanism Gate Connect ships. AG-670 attribution verified 2026-10-06 on staging with Gate Connect 1.0.0-alpha.13: real Hermes requests via the relay Gate models route and via the proxy engine with `x-gate-tool: hermes` were counted under hermes, and OpenAI-SDK-shaped requests through the same engine were not; the e2e-real-tools job asserts x-gate-client=hermes on Linux and macOS on gate-connect-app feat/new-app-ui since #422 (run 38011932242), and reaches its main with #151."
+      "notes": "D2 — Works, not Certified, by Julian's decision. What keeps it there: the file-read and shell names (read_file, terminal) are documentation-only. The e2e suite covers Windows since AG-1065 (gate-connect-app #457). AG-670 verified attribution and keeps the tier. The e2e-real-tools job drives a real install on macOS, Linux and Windows. Gate Connect's proxy-engine integration writes ~/.hermes/.env; the Custom endpoint provider the checked list refers to lives in ~/.hermes/config.yaml. Hermes also reaches Gate by hand through the base_url in config.yaml that its guide documents; routing records the mechanism Gate Connect ships. AG-670 attribution verified 2026-10-06 on staging with Gate Connect 1.0.0-alpha.13: real Hermes requests via the relay Gate models route and via the proxy engine with `x-gate-tool: hermes` were counted under hermes, and OpenAI-SDK-shaped requests through the same engine were not; the e2e-real-tools job asserts x-gate-client=hermes on Linux and macOS on gate-connect-app feat/new-app-ui since #422 (run 38011932242), and reaches its main with #151. AG-1064: the 2026-10-08 staging audit (Actions run 37707899804) attributed 16 Hermes requests and found two tool names compression did not recognize, skill_view (24 results, 225.3 KB) and memory (1 result, 213 B); both were added to the reader lane, and read_file and terminal were not seen in that window."
     },
     {
       "id": "claude-desktop",
