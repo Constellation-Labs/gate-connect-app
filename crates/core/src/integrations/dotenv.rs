@@ -12,8 +12,9 @@
 //!    pre-existing `HTTPS_PROXY` may be a corporate egress proxy the rest of
 //!    their setup depends on, so we leave it and record that we did - which is
 //!    also what stops disconnect from deleting it later.
-//! 2. **Only lines we added come back out.** [`remove_vars`] takes the exact
-//!    key list [`add_vars`] reported, not the full set we would have written.
+//! 2. **Only lines we added come back out.** [`remove_owned`] takes the exact
+//!    keys [`add_vars`] reported, not the full set we would have written, and
+//!    only while each line still holds the value we left there.
 //!
 //! Rule 1 is about *ownership*, not about never writing twice, and conflating
 //! the two is what made re-connect a no-op: a key we wrote ourselves is ours to
@@ -296,27 +297,14 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
     })
 }
 
-/// Remove exactly the keys named, and the file too when we created it and
-/// nothing but blank lines is left.
-pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> Result<()> {
-    let owned: Vec<Owned> = keys
-        .iter()
-        .map(|key| Owned {
-            key: key.clone(),
-            value: None,
-        })
-        .collect();
-    remove_owned(path, &owned, file_created)
-}
-
 /// Remove the lines of ours among `owned`, and the file too when we created it
 /// and nothing but blank lines is left.
 ///
-/// A recorded value narrows it to the lines holding that value, when any does:
-/// a second assignment of the key with another value is a line somebody else
-/// added, and a last-wins reader may be using it. When none holds it - the
-/// user edited our line - every assignment goes, which is what taking back a
-/// key we added has always meant. `None` is ownership by key alone.
+/// A recorded value narrows it to the lines holding that value: a second
+/// assignment of the key with another value is a line somebody else added, and
+/// a last-wins reader may be using it. When none holds it - the user edited our
+/// line - nothing goes, because the edit is theirs and so is the line now.
+/// `None` is ownership by key alone.
 ///
 /// Line endings are kept per line, as `add_vars` keeps them: rebuilding with
 /// `lines()` turned a CRLF file into LF on every removal.
@@ -335,10 +323,7 @@ pub(crate) fn remove_owned(path: &Path, owned: &[Owned], file_created: bool) -> 
             let Some(value) = &o.value else {
                 return true;
             };
-            let held_somewhere = lines
-                .iter()
-                .any(|l| assigns(l, &o.key) && assigned_value(l).as_deref() == Some(value));
-            !held_somewhere || assigned_value(line).as_deref() == Some(value.as_str())
+            assigned_value(line).as_deref() == Some(value.as_str())
         })
     };
     let kept: Vec<&str> = lines.iter().copied().filter(|l| !doomed(l)).collect();
@@ -454,6 +439,23 @@ mod tests {
         assert!(!holds(&path, "no_proxy", "gate").unwrap());
     }
 
+    /// A line the user edited since Gate wrote it is theirs (AG-1117).
+    #[test]
+    fn remove_owned_leaves_a_line_the_user_edited() {
+        let (_store, path) = tmp();
+        fs::write(&path, "KEY=v\nHTTPS_PROXY=http://corp:3128\n").unwrap();
+        remove_owned(
+            &path,
+            &[wrote("HTTPS_PROXY", "http://127.0.0.1:9977")],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "KEY=v\nHTTPS_PROXY=http://corp:3128\n"
+        );
+    }
+
     #[test]
     fn read_var_reads_as_python_dotenv_does() {
         // Hermes loads .env with python-dotenv: the last assignment wins and
@@ -511,6 +513,17 @@ mod tests {
         }
     }
 
+    /// The keys `applied` added, with the values it left: what a caller
+    /// hands back to [`remove_owned`] on disconnect.
+    fn added(applied: &Applied) -> Vec<Owned> {
+        applied
+            .owned_values
+            .iter()
+            .filter(|(key, _)| applied.added.contains(key))
+            .map(|(key, value)| wrote(key, value))
+            .collect()
+    }
+
     #[test]
     fn adds_only_missing_keys_and_never_clobbers_the_users() {
         let (_store, path) = tmp();
@@ -544,7 +557,7 @@ mod tests {
         assert!(body.contains("NO_PROXY=localhost,127.0.0.1"));
 
         // Disconnect takes back only what we added.
-        remove_vars(&path, &applied.added, applied.file_created).unwrap();
+        remove_owned(&path, &added(&applied), applied.file_created).unwrap();
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.contains("OPENROUTER_API_KEY=sk-user"));
         assert!(after.contains("HTTPS_PROXY=http://corp:3128"));
@@ -643,7 +656,7 @@ mod tests {
         assert!(applied.file_created);
         assert!(path.exists());
 
-        remove_vars(&path, &applied.added, applied.file_created).unwrap();
+        remove_owned(&path, &added(&applied), applied.file_created).unwrap();
         assert!(
             !path.exists(),
             "a dotenv that only ever held our line must not be left behind"
@@ -665,7 +678,7 @@ mod tests {
         )
         .unwrap();
 
-        remove_vars(&path, &applied.added, applied.file_created).unwrap();
+        remove_owned(&path, &added(&applied), applied.file_created).unwrap();
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.contains("USER_KEY=value"));
         assert!(!after.contains("HTTPS_PROXY"));

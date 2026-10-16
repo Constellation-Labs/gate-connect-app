@@ -877,3 +877,27 @@ fn opencode_repointed_at_a_local_server_is_not_silently_reverted() {
         "the user's own endpoint was taken back"
     );
 }
+
+/// Disabling a provider whose tool Gate never connected must leave that tool's
+/// config alone: an installed Claude Code with the user's own proxy and CA, and
+/// no marker of Gate's, has nothing to revert (AG-1117). The quit sweep runs
+/// this for every enabled provider, so it used to strip those keys on every
+/// exit.
+#[test]
+fn disable_leaves_a_tool_gate_never_connected_alone() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    install_claude_unconfigured();
+    let settings = env::claude_code_settings_path().unwrap();
+    let original = r#"{"env":{"HTTPS_PROXY":"http://corp.example:3128","NODE_EXTRA_CA_CERTS":"/etc/corp/ca.pem"}}"#;
+    fs::write(&settings, original).unwrap();
+    assert_eq!(claude_status(), Status::Detected);
+
+    provider::disable("anthropic").unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        original,
+        "the user's own proxy and CA must survive a provider disable"
+    );
+}

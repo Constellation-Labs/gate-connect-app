@@ -821,20 +821,19 @@ fn apply_override(
     // a dependency on a key absent from OpenCode's config schema.
 }
 
-/// Reverse `apply_override` for one provider. Restores baseURL / headers
-/// to whatever the user had, and drops empty parents so the file doesn't
-/// end up with orphaned `options: {}` or empty provider stubs.
+/// Reverse `apply_override` for one provider: put back `baseURL` and `headers`
+/// while each still holds Gate's value, and drop the parents Gate created once
+/// they are empty, so the file doesn't end up with orphaned `options: {}` or
+/// empty provider stubs.
+///
+/// A value the user changed while connected is theirs and stays, and so does
+/// anything they added under a block Gate created: the snapshot is from connect
+/// time, and writing it back over a later edit would undo the user's choice.
 fn restore_provider(
     provider_map: &mut Map<String, Value>,
     provider_id: &str,
     snapshot: &ProviderSnapshot,
 ) {
-    if !snapshot.provider_existed {
-        // We created the provider entry during connect. Remove it cleanly.
-        provider_map.remove(provider_id);
-        return;
-    }
-
     let Some(provider) = provider_map
         .get_mut(provider_id)
         .and_then(|v| v.as_object_mut())
@@ -842,34 +841,55 @@ fn restore_provider(
         return;
     };
 
-    if !snapshot.options_existed {
-        provider.remove("options");
-        return;
+    if let Some(options) = provider.get_mut("options").and_then(|v| v.as_object_mut()) {
+        let base_url_is_ours = options
+            .get("baseURL")
+            .and_then(|v| v.as_str())
+            .is_some_and(|u| is_our_base_url(provider_id, u));
+        if base_url_is_ours {
+            restore_option(options, "baseURL", &snapshot.previous_base_url);
+        }
+        // Headers are written by older builds only, and carry Gate's own
+        // `X-Gate-*` names while they are still that write.
+        let headers_are_ours = options
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .is_some_and(|h| {
+                h.keys()
+                    .any(|k| k.to_ascii_lowercase().starts_with("x-gate-"))
+            });
+        if headers_are_ours {
+            restore_option(options, "headers", &snapshot.previous_headers);
+        }
+        if options.is_empty() {
+            provider.remove("options");
+        }
     }
 
-    let Some(options) = provider.get_mut("options").and_then(|v| v.as_object_mut()) else {
-        return;
-    };
+    if !snapshot.provider_existed && provider.is_empty() {
+        provider_map.remove(provider_id);
+    }
+}
 
-    match &snapshot.previous_base_url {
+fn restore_option(options: &mut Map<String, Value>, key: &str, previous: &Option<Value>) {
+    match previous {
         Some(v) => {
-            options.insert("baseURL".to_string(), v.clone());
+            options.insert(key.to_string(), v.clone());
         }
         None => {
-            options.remove("baseURL");
+            options.remove(key);
         }
     }
-    match &snapshot.previous_headers {
-        Some(v) => {
-            options.insert("headers".to_string(), v.clone());
-        }
-        None => {
-            options.remove("headers");
-        }
-    }
-    if options.is_empty() {
-        provider.remove("options");
-    }
+}
+
+/// Whether `base_url` is one connect could have written for `provider_id`, on
+/// any relay port and in the older form without the tool segment.
+fn is_our_base_url(provider_id: &str, base_url: &str) -> bool {
+    KNOWN_PROVIDERS
+        .iter()
+        .find(|p| p.id == provider_id)
+        .and_then(|target| crate::proxy::resolve_endpoint(target.endpoint))
+        .is_some_and(|resolved| resolved.is_relay_base_url(base_url, ToolId::OpenCode))
 }
 
 /// The `baseURL` connect writes for `provider_id`, given the relay's loopback
@@ -1833,12 +1853,12 @@ mod tests {
             id: "openai",
             endpoint: "https://api.openai.com/v1",
         };
-        apply_override(
-            &mut providers,
-            &mut state,
-            &target,
-            "http://127.0.0.1:9977/v1",
-        );
+        // The base URL connect really writes: disconnect only takes back one
+        // it could have written.
+        let base_url = crate::proxy::resolve_endpoint(target.endpoint)
+            .unwrap()
+            .relay_base_url("http://127.0.0.1:9977", ToolId::OpenCode);
+        apply_override(&mut providers, &mut state, &target, &base_url);
 
         // Connect mutated options.baseURL and added the upstream header - confirm.
         assert_ne!(providers["openai"], original);
@@ -1852,6 +1872,37 @@ mod tests {
         );
     }
 
+    /// A `baseURL` the user repointed while connected is theirs, and so is
+    /// anything they added under a provider Gate created (AG-1117).
+    #[test]
+    fn restore_keeps_what_the_user_changed_while_connected() {
+        let mut providers = Map::new();
+        let mut state = State::default();
+        let target = KnownProvider {
+            id: "openai",
+            endpoint: "https://api.openai.com/v1",
+        };
+        let base_url = crate::proxy::resolve_endpoint(target.endpoint)
+            .unwrap()
+            .relay_base_url("http://127.0.0.1:9977", ToolId::OpenCode);
+        apply_override(&mut providers, &mut state, &target, &base_url);
+
+        let options = providers["openai"]["options"].as_object_mut().unwrap();
+        options.insert("baseURL".into(), json!("http://127.0.0.1:11434/v1"));
+        options.insert("apiKey".into(), json!("{env:OPENAI_API_KEY}"));
+
+        let snap = state.providers["openai"].clone();
+        restore_provider(&mut providers, "openai", &snap);
+        assert_eq!(
+            providers["openai"],
+            json!({ "options": {
+                "baseURL": "http://127.0.0.1:11434/v1",
+                "apiKey": "{env:OPENAI_API_KEY}",
+            }}),
+            "the user's own base URL and key must survive disconnect"
+        );
+    }
+
     #[test]
     fn apply_override_creates_entry_then_restore_removes_it() {
         // Provider didn't exist before connect - disconnect should drop it.
@@ -1861,12 +1912,10 @@ mod tests {
             id: "openai",
             endpoint: "https://api.openai.com/v1",
         };
-        apply_override(
-            &mut providers,
-            &mut state,
-            &target,
-            "http://127.0.0.1:9977/v1",
-        );
+        let base_url = crate::proxy::resolve_endpoint(target.endpoint)
+            .unwrap()
+            .relay_base_url("http://127.0.0.1:9977", ToolId::OpenCode);
+        apply_override(&mut providers, &mut state, &target, &base_url);
 
         assert!(providers.contains_key("openai"));
         let snap = state.providers["openai"].clone();
