@@ -54,6 +54,19 @@
 //! `llamacpp`) and user-custom gateway shapes (e.g. their own `gateway`
 //! provider) are not in our well-known list and stay untouched.
 //!
+//! An OpenCode that names no provider at all - a fresh Desktop install, which
+//! sends Zen's free models anonymously - is refused unless it is on Gate models,
+//! in either billing mode: there is no key of the user's to route, and Gate
+//! models are how Gate pays for one. Zen's anonymous free tier is never routed:
+//! it refuses traffic that comes through Gate.
+//!
+//! **Gate models** are a provider of Gate's own, `provider.gate-connect`, beside
+//! the user's: the AI SDK's OpenAI-compatible package pointed at the relay's
+//! Gate models route, the chosen set under `models`, and the placeholder key the
+//! relay strips. The top-level `model` names one of them. Gate serves that route
+//! on the organization's credits whatever the billing mode, so an OpenCode on
+//! Gate models needs no provider of the user's. See `apply_gate_models`.
+//!
 //! State tracking: OpenCode's JSON schema is strict
 //! (`additionalProperties: false`), so we can't stash markers inside
 //! opencode.json. Snapshots of each gated provider's original
@@ -78,7 +91,7 @@ use std::path::PathBuf;
 use crate::env;
 use crate::integrations::binaries;
 use crate::integrations::precedence::Override;
-use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
+use crate::registry::{ConnectInput, GateModelState, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -187,6 +200,34 @@ struct State {
     /// the on-disk JSON stays deterministic.
     #[serde(default)]
     providers: BTreeMap<String, ProviderSnapshot>,
+    /// What Gate models changed in `opencode.json`, while they are applied.
+    /// `None` is OpenCode on its own models as far as Gate is concerned.
+    #[serde(default)]
+    gate_models: Option<GateModels>,
+}
+
+impl State {
+    /// Nothing of Gate's left to restore: the sidecar can go.
+    fn is_empty(&self) -> bool {
+        self.providers.is_empty() && self.gate_models.is_none()
+    }
+}
+
+/// The record behind Gate models in `opencode.json`: the set Gate wrote, and
+/// what it replaced, so going back to OpenCode's own models restores the user's
+/// values rather than a guess at them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct GateModels {
+    /// The set Gate last wrote, in the user's order.
+    written: Vec<String>,
+    /// The top-level `model` before Gate models, in whichever form the user
+    /// wrote it. `None` for a file that named no model.
+    #[serde(default)]
+    previous_model: Option<Value>,
+    /// Whether the file had a `provider` map before Gate models, so taking
+    /// Gate's provider out does not leave an empty one the user never wrote.
+    #[serde(default)]
+    provider_map_existed: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -208,15 +249,37 @@ struct ProviderSnapshot {
     previous_headers: Option<Value>,
 }
 
+/// `options.apiKey` for Gate's own provider. OpenCode only lists a provider it
+/// holds a key for, and the AI SDK refuses to send without one, so something
+/// has to be there. It is not a credential: the Gate models route is served as
+/// pay-as-you-go, and the relay strips the tool's own key on it. The value says
+/// so to anyone who reads the file.
+const PAYG_PLACEHOLDER_API_KEY: &str = "billed-through-gate";
+
 /// Likely install locations of the `opencode` binary. Detection falls
 /// back to the config dir if none match, so npm/Bun/Volta layouts that
 /// land binaries in per-user prefixes still register as installed.
+/// Windows has no fixed locations, so it adds per-user ones at runtime through
+/// [`windows_install_paths`].
 #[cfg(target_os = "macos")]
 const CLI_BIN_PATHS: &[&str] = &["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode"];
 #[cfg(all(unix, not(target_os = "macos")))]
 const CLI_BIN_PATHS: &[&str] = &["/usr/local/bin/opencode", "/usr/bin/opencode"];
 #[cfg(windows)]
 const CLI_BIN_PATHS: &[&str] = &[];
+
+/// The per-user install locations [`env::opencode_cli_candidates`] names, or
+/// none off Windows. Checked by `detect` only, never by `binary()`: one of them
+/// is the Desktop app's GUI executable, which a `--version` probe would launch.
+///
+/// They also cover a gap `PATH` cannot: a Gate Connect started before the user
+/// ran `npm i -g` or `scoop install` holds the `PATH` it was launched with.
+fn windows_install_paths() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    return env::opencode_cli_candidates().unwrap_or_default();
+    #[cfg(not(windows))]
+    Vec::new()
+}
 
 pub struct OpenCode;
 
@@ -257,6 +320,7 @@ impl Integration for OpenCode {
         // The sidecar under app support is deliberately absent: it changes
         // because `connect` wrote it, and that path already refreshes.
         let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(windows_install_paths());
         paths.extend(env::opencode_config_dir());
         paths.extend(settings_path());
         paths.extend(env::opencode_auth_path());
@@ -266,11 +330,14 @@ impl Integration for OpenCode {
     fn detect(&self) -> Result<bool> {
         // The packaged paths, then PATH, then the bin directories a login
         // shell adds and a GUI process does not inherit - see
-        // `integrations::binaries`. Failing all three, a config file or a
-        // login naming a provider Gate routes still counts: see
+        // `integrations::binaries` - and on Windows the per-user install
+        // locations of `windows_install_paths`. Failing all of them, a config
+        // file or a login naming a provider Gate routes still counts: see
         // `has_routable_setup`.
         let (well_known, names) = self.binary();
-        if binaries::resolve_binary(well_known, names).is_some() {
+        if binaries::resolve_binary(well_known, names).is_some()
+            || windows_install_paths().iter().any(|p| p.is_file())
+        {
             return Ok(true);
         }
         has_routable_setup()
@@ -287,23 +354,44 @@ impl Integration for OpenCode {
             return Ok(false);
         };
         let settings = load_settings()?.unwrap_or_default();
-        Ok(state.providers.keys().any(|provider_id| {
-            settings
-                .get("provider")
-                .and_then(|v| v.as_object())
-                .and_then(|m| m.get(provider_id))
-                .and_then(|v| v.as_object())
-                .and_then(|b| b.get("options"))
-                .and_then(|v| v.as_object())
-                .and_then(|o| o.get("baseURL"))
-                .and_then(|v| v.as_str())
-                .is_some_and(looks_local)
-        }))
+        let gate_provider = state.gate_models.is_some().then_some(GATE_PROVIDER);
+        Ok(state
+            .providers
+            .keys()
+            .map(String::as_str)
+            .chain(gate_provider)
+            .any(|provider_id| base_url_of(&settings, provider_id).is_some_and(looks_local)))
     }
 
     /// `provider.<id>.options.baseURL` names the loopback relay, which dies with the engine.
     fn mechanism(&self) -> Mechanism {
         Mechanism::Relay
+    }
+
+    fn supports_gate_models(&self) -> bool {
+        true
+    }
+
+    /// Gate's provider and the `model` naming it, and nothing else: the
+    /// providers Gate routes stay routed, and whatever the user picked stays.
+    fn leave_gate_models(&self, _input: &ConnectInput) -> Result<()> {
+        let Some(mut state) = load_state()? else {
+            return Ok(());
+        };
+        if state.gate_models.is_none() {
+            return Ok(());
+        }
+        let mut settings = load_settings()?.unwrap_or_default();
+        revert_gate_models(&mut settings, &mut state);
+        save_settings_and_state(&settings, &state)
+    }
+
+    fn gate_model_state(&self) -> Result<GateModelState> {
+        let Some(gm) = load_state()?.and_then(|s| s.gate_models) else {
+            return Ok(GateModelState::NotApplied);
+        };
+        let settings = load_settings()?.unwrap_or_default();
+        Ok(gate_model_state_of(&settings, &gm))
     }
 
     fn configured_addresses(&self) -> Result<Vec<String>> {
@@ -338,8 +426,29 @@ impl Integration for OpenCode {
         let Some(state) = load_state()? else {
             return Ok(Status::Detected);
         };
-        if state.providers.is_empty() {
+        if state.is_empty() {
             return Ok(Status::Detected);
+        }
+        // The stored choice and `opencode.json` must agree about Gate models,
+        // or the row would read Protected over an OpenCode whose Gate provider
+        // the route refuses (the choice went back to App default and the
+        // fix-up failed), or over one whose chosen models never reached its
+        // config. Hermes' rule, for the same reason.
+        let chosen = crate::preferences::gate_models_for(ToolId::OpenCode.slug()).is_some();
+        match (state.gate_models.is_some(), chosen) {
+            (true, false) => {
+                return Ok(Status::Drifted(
+                    "OpenCode is still on Gate models in opencode.json although Gate Connect \
+                     has it on its own models, so their requests are refused"
+                        .into(),
+                ))
+            }
+            (false, true) => {
+                return Ok(Status::Drifted(
+                    "the Gate models chosen for OpenCode are not in its opencode.json yet".into(),
+                ))
+            }
+            _ => {}
         }
 
         let settings = load_settings()?.unwrap_or_default();
@@ -380,6 +489,17 @@ impl Integration for OpenCode {
                 drifted.push(provider_id.clone());
             }
         }
+        // Gate's own provider, on the Gate models route rather than a catalog
+        // slug, at the same relay.
+        if state.gate_models.is_some() {
+            let expected =
+                crate::proxy::gate_served::relay_base_url(&expected_base, ToolId::OpenCode);
+            if base_url_of(&settings, GATE_PROVIDER) == Some(expected.as_str()) {
+                healthy += 1;
+            } else {
+                drifted.push(GATE_PROVIDER.to_string());
+            }
+        }
         // Neither message blames the user for the edit. A hand edit is one cause
         // of this state and the loud one, but the other is a base URL of ours
         // that has gone stale - a new relay port, or the tool marker the URL now
@@ -391,12 +511,7 @@ impl Integration for OpenCode {
         if healthy == 0 {
             return Ok(Status::Drifted(format!(
                 "no providers point at the Gate relay; expected: {}",
-                state
-                    .providers
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                drifted.join(", ")
             )));
         }
         // Liveness and routing, the same pair Codex checks and for the same
@@ -453,11 +568,47 @@ impl Integration for OpenCode {
 
         let mut settings = load_settings()?.unwrap_or_default();
         let auth = load_opencode_auth().unwrap_or_default();
+        // Load any existing state - re-connects must preserve the
+        // *original* snapshots, not overwrite them with our intermediate
+        // values from the previous connect.
+        let mut state = load_state()?.unwrap_or_default();
+
+        // Gate models are settled before anything else. Drift first: a config
+        // the user moved off them is theirs, so no Gate models apply.
+        if let Some(gm) = &state.gate_models {
+            if matches!(
+                gate_model_state_of(&settings, gm),
+                GateModelState::Drifted { .. }
+            ) {
+                crate::preferences::fall_back_to_tool_model(ToolId::OpenCode.slug())?;
+            }
+        }
+        let gate_ids = crate::preferences::gate_models_for(ToolId::OpenCode.slug());
+
+        // Gate models no longer chosen come out first, so a refusal below still
+        // takes them off the disk.
+        let changed = gate_ids.is_none() && state.gate_models.is_some();
+        if changed {
+            revert_gate_models(&mut settings, &mut state);
+        }
 
         // Figure out which well-known providers to route through Gate:
         // anything the user has either pre-configured in opencode.json OR
-        // logged into via `opencode auth login`.
+        // logged into via `opencode auth login`. With none, Gate models are the
+        // only thing to write: they need no provider of the user's.
         let candidates = known_providers_in(&settings, &auth);
+        if candidates.is_empty() && gate_ids.is_none() {
+            // Nothing of the user's and no Gate models: no key to route, in
+            // either billing mode. What the revert above took out still has to
+            // reach the disk.
+            if changed {
+                save_settings_and_state(&settings, &state)?;
+            }
+            anyhow::bail!(
+                "Sign in to a provider in OpenCode first, or put it on Gate models, then turn \
+                 this on again."
+            );
+        }
 
         // Local-protection guard: if a candidate has an existing
         // non-public `baseURL`, skip it - the user pointed it at a
@@ -506,9 +657,16 @@ impl Integration for OpenCode {
             })
             .collect();
 
-        if targets.is_empty() {
+        // Only reachable when every provider the user has points at a local
+        // endpoint: with none at all, connect has already returned above. Gate
+        // models are still worth writing then; they need no provider of theirs.
+        if targets.is_empty() && gate_ids.is_none() {
+            if changed {
+                save_settings_and_state(&settings, &state)?;
+            }
             anyhow::bail!(
-                "No supported OpenCode providers found to route through Gate. Run `opencode auth login anthropic|openai|openrouter|opencode|opencode-go` first, then re-run connect."
+                "Every OpenCode provider Gate could route points at a local endpoint ({}), so there is nothing to route.",
+                skipped_local.join(", ")
             );
         }
         if !skipped_local.is_empty() {
@@ -517,13 +675,6 @@ impl Integration for OpenCode {
                 skipped_local.join(", ")
             );
         }
-
-        // Load any existing state - re-connects must preserve the
-        // *original* snapshots, not overwrite them with our intermediate
-        // values from the previous connect.
-        let mut state = load_state()?.unwrap_or_default();
-
-        let provider_map = ensure_object(&mut settings, "provider");
 
         // Each provider gets its own baseURL: the path Gate must not swallow
         // differs per upstream (`/v1` for Anthropic and OpenAI, `/api/v1` for
@@ -539,16 +690,32 @@ impl Integration for OpenCode {
                 skipped_off_catalog.push(target.id);
                 continue;
             };
+            // Only now: a `provider` map made for a target that was skipped
+            // would reach the disk on the refusal below as one the user never
+            // wrote.
+            let provider_map = ensure_object(&mut settings, "provider");
             let base_url = resolved.relay_base_url(relay_base_url, ToolId::OpenCode);
             apply_override(provider_map, &mut state, target, &base_url);
             applied += 1;
         }
 
-        if applied == 0 {
+        if applied == 0 && gate_ids.is_none() {
+            // Nothing was written above, so only what the Gate models revert
+            // took out needs to reach the disk.
+            if changed {
+                save_settings_and_state(&settings, &state)?;
+            }
             anyhow::bail!(
                 "None of the configured OpenCode providers can route through Gate yet ({}). Gate has no upstream domain for them.",
                 skipped_off_catalog.join(", ")
             );
+        }
+
+        // After the providers above, so the snapshot of whether `provider`
+        // existed counts the ones Gate routes: taking Gate models out later
+        // must not remove a map they still live in.
+        if let Some(ids) = &gate_ids {
+            apply_gate_models(&mut settings, &mut state, ids, relay_base_url)?;
         }
 
         save_state(&state)?;
@@ -556,7 +723,7 @@ impl Integration for OpenCode {
     }
 
     fn disconnect(&self) -> Result<()> {
-        let Some(state) = load_state()? else {
+        let Some(mut state) = load_state()? else {
             return Ok(());
         };
         let Some(mut settings) = load_settings()? else {
@@ -564,6 +731,8 @@ impl Integration for OpenCode {
             return Ok(());
         };
 
+        // OpenCode's own `model` first, while the record says what it was.
+        revert_gate_models(&mut settings, &mut state);
         if let Some(provider_map) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
             for (provider_id, snapshot) in &state.providers {
                 restore_provider(provider_map, provider_id, snapshot);
@@ -652,20 +821,19 @@ fn apply_override(
     // a dependency on a key absent from OpenCode's config schema.
 }
 
-/// Reverse `apply_override` for one provider. Restores baseURL / headers
-/// to whatever the user had, and drops empty parents so the file doesn't
-/// end up with orphaned `options: {}` or empty provider stubs.
+/// Reverse `apply_override` for one provider: put back `baseURL` and `headers`
+/// while each still holds Gate's value, and drop the parents Gate created once
+/// they are empty, so the file doesn't end up with orphaned `options: {}` or
+/// empty provider stubs.
+///
+/// A value the user changed while connected is theirs and stays, and so does
+/// anything they added under a block Gate created: the snapshot is from connect
+/// time, and writing it back over a later edit would undo the user's choice.
 fn restore_provider(
     provider_map: &mut Map<String, Value>,
     provider_id: &str,
     snapshot: &ProviderSnapshot,
 ) {
-    if !snapshot.provider_existed {
-        // We created the provider entry during connect. Remove it cleanly.
-        provider_map.remove(provider_id);
-        return;
-    }
-
     let Some(provider) = provider_map
         .get_mut(provider_id)
         .and_then(|v| v.as_object_mut())
@@ -673,34 +841,55 @@ fn restore_provider(
         return;
     };
 
-    if !snapshot.options_existed {
-        provider.remove("options");
-        return;
+    if let Some(options) = provider.get_mut("options").and_then(|v| v.as_object_mut()) {
+        let base_url_is_ours = options
+            .get("baseURL")
+            .and_then(|v| v.as_str())
+            .is_some_and(|u| is_our_base_url(provider_id, u));
+        if base_url_is_ours {
+            restore_option(options, "baseURL", &snapshot.previous_base_url);
+        }
+        // Headers are written by older builds only, and carry Gate's own
+        // `X-Gate-*` names while they are still that write.
+        let headers_are_ours = options
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .is_some_and(|h| {
+                h.keys()
+                    .any(|k| k.to_ascii_lowercase().starts_with("x-gate-"))
+            });
+        if headers_are_ours {
+            restore_option(options, "headers", &snapshot.previous_headers);
+        }
+        if options.is_empty() {
+            provider.remove("options");
+        }
     }
 
-    let Some(options) = provider.get_mut("options").and_then(|v| v.as_object_mut()) else {
-        return;
-    };
+    if !snapshot.provider_existed && provider.is_empty() {
+        provider_map.remove(provider_id);
+    }
+}
 
-    match &snapshot.previous_base_url {
+fn restore_option(options: &mut Map<String, Value>, key: &str, previous: &Option<Value>) {
+    match previous {
         Some(v) => {
-            options.insert("baseURL".to_string(), v.clone());
+            options.insert(key.to_string(), v.clone());
         }
         None => {
-            options.remove("baseURL");
+            options.remove(key);
         }
     }
-    match &snapshot.previous_headers {
-        Some(v) => {
-            options.insert("headers".to_string(), v.clone());
-        }
-        None => {
-            options.remove("headers");
-        }
-    }
-    if options.is_empty() {
-        provider.remove("options");
-    }
+}
+
+/// Whether `base_url` is one connect could have written for `provider_id`, on
+/// any relay port and in the older form without the tool segment.
+fn is_our_base_url(provider_id: &str, base_url: &str) -> bool {
+    KNOWN_PROVIDERS
+        .iter()
+        .find(|p| p.id == provider_id)
+        .and_then(|target| crate::proxy::resolve_endpoint(target.endpoint))
+        .is_some_and(|resolved| resolved.is_relay_base_url(base_url, ToolId::OpenCode))
 }
 
 /// The `baseURL` connect writes for `provider_id`, given the relay's loopback
@@ -902,6 +1091,217 @@ fn known_providers_in(
         .collect()
 }
 
+/// Write what [`revert_gate_models`] left, the way `disconnect` does: a file
+/// or sidecar left empty is removed, not written.
+fn save_settings_and_state(settings: &Map<String, Value>, state: &State) -> Result<()> {
+    if settings.is_empty() {
+        crate::config_changes::remove(&env::opencode_config_path()?)?;
+    } else {
+        write_settings(settings)?;
+    }
+    if state.is_empty() {
+        remove_state()
+    } else {
+        save_state(state)
+    }
+}
+
+/// `provider.<id>.options.baseURL`, if it is a string.
+fn base_url_of<'a>(settings: &'a Map<String, Value>, provider_id: &str) -> Option<&'a str> {
+    settings
+        .get("provider")?
+        .get(provider_id)?
+        .get("options")?
+        .get("baseURL")?
+        .as_str()
+}
+
+// --- Gate models -------------------------------------------------------
+
+/// The provider Gate adds for Gate models. Hermes' id and name for the same
+/// thing, so the two read alike.
+const GATE_PROVIDER: &str = "gate-connect";
+const GATE_PROVIDER_NAME: &str = "Gate Connect";
+
+/// The AI SDK package OpenCode loads for Gate's provider. Chat completions,
+/// which the gateway serves for every model in its catalogue (Hermes reaches
+/// the same set the same way), so one package covers Claude and GPT ids alike.
+const GATE_PROVIDER_NPM: &str = "@ai-sdk/openai-compatible";
+
+/// The top-level `model`, as `provider/model`, from either form OpenCode's
+/// schema allows: the string, or `{ providerID, model }`.
+fn configured_model(settings: &Map<String, Value>) -> Option<String> {
+    match settings.get("model")? {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(o) => Some(format!(
+            "{}/{}",
+            o.get("providerID")?.as_str()?,
+            o.get("model")?.as_str()?
+        )),
+        _ => None,
+    }
+}
+
+/// The Gate model id a `provider/model` reference names, if it names Gate's
+/// provider. A `#variant` suffix is the same model.
+fn gate_id_of(model: &str) -> Option<&str> {
+    let model = model.split_once('#').map_or(model, |(m, _)| m);
+    model.strip_prefix(GATE_PROVIDER)?.strip_prefix('/')
+}
+
+/// What `opencode.json` says, given what Gate wrote. Applied means `model`
+/// names one of the set on Gate's provider, and the provider is on the Gate
+/// models route; anything else is the user moving OpenCode's default off them.
+///
+/// The config is all this reads. A model picked in OpenCode's own picker lives
+/// in its own state, not here, and does not change the default it starts with.
+fn gate_model_state_of(settings: &Map<String, Value>, gm: &GateModels) -> GateModelState {
+    let model = configured_model(settings);
+    let on_route = base_url_of(settings, GATE_PROVIDER)
+        .is_some_and(|u| crate::proxy::gate_served::is_relay_base_url(u, ToolId::OpenCode));
+    match model.as_deref().and_then(gate_id_of) {
+        Some(id) if on_route && gm.written.iter().any(|w| w == id) => GateModelState::Applied {
+            model: id.to_string(),
+        },
+        _ => GateModelState::Drifted { model },
+    }
+}
+
+/// Is `provider.gate-connect` one Gate wrote? Only Gate points a provider at
+/// the Gate models route, so a block that does is ours even when the sidecar
+/// that says so is gone.
+fn gate_block_is_ours(settings: &Map<String, Value>) -> bool {
+    base_url_of(settings, GATE_PROVIDER)
+        .is_some_and(|u| crate::proxy::gate_served::is_relay_base_url(u, ToolId::OpenCode))
+}
+
+/// `models.<id>` for one Gate model: what the catalogue said about it when it
+/// was picked, in the keys OpenCode's schema has for it. `limit` only with
+/// both halves, which the schema requires together.
+fn gate_model_entry(id: &str) -> Value {
+    let meta = crate::preferences::gate_model_meta(id).unwrap_or_default();
+    let mut entry = Map::new();
+    if let Some(name) = meta.name {
+        entry.insert("name".into(), Value::String(name));
+    }
+    if let (Some(context), Some(output)) = (meta.context_window, meta.max_tokens) {
+        entry.insert(
+            "limit".into(),
+            serde_json::json!({ "context": context, "output": output }),
+        );
+    }
+    Value::Object(entry)
+}
+
+/// The `provider.gate-connect` block: the Gate models route, the set under
+/// `models` (which is what OpenCode's model picker lists for a provider it has
+/// no catalogue entry for), and the placeholder key. The key is there because
+/// OpenCode lists no provider without one; the relay strips it on this route.
+fn gate_provider_block(relay: &str, ids: &[String]) -> Value {
+    let models: Map<String, Value> = ids
+        .iter()
+        .map(|id| (id.clone(), gate_model_entry(id)))
+        .collect();
+    serde_json::json!({
+        "npm": GATE_PROVIDER_NPM,
+        "name": GATE_PROVIDER_NAME,
+        "options": {
+            "baseURL": crate::proxy::gate_served::relay_base_url(relay, ToolId::OpenCode),
+            "apiKey": PAYG_PLACEHOLDER_API_KEY,
+        },
+        "models": models,
+    })
+}
+
+/// Write the Gate models into `settings`, snapshotting OpenCode's own `model`
+/// the first time.
+///
+/// The default is the first of the set, unless OpenCode is already on one of
+/// the set and the set has not changed: then the user picked it, and a
+/// reconnect must not take it back.
+///
+/// Refused, before anything is written, over a `gate-connect` provider of the
+/// user's own: replacing it would lose it, and restoring it is not something
+/// the record covers.
+fn apply_gate_models(
+    settings: &mut Map<String, Value>,
+    state: &mut State,
+    ids: &[String],
+    relay: &str,
+) -> Result<()> {
+    let first = ids.first().context("a Gate model set cannot be empty")?;
+    let current = configured_model(settings);
+    let current_id = current.as_deref().and_then(gate_id_of);
+    let default = match (&state.gate_models, current_id) {
+        (Some(gm), Some(c)) if gm.written.as_slice() == ids && ids.iter().any(|i| i == c) => {
+            c.to_string()
+        }
+        _ => first.clone(),
+    };
+    if state.gate_models.is_none() {
+        let has_block = settings
+            .get("provider")
+            .and_then(|p| p.get(GATE_PROVIDER))
+            .is_some();
+        if has_block && !gate_block_is_ours(settings) {
+            anyhow::bail!(
+                "opencode.json already has a provider named \"{GATE_PROVIDER}\" that Gate did \
+                 not write. Rename it in opencode.json, then choose Gate models again."
+            );
+        }
+        // A `model` on Gate's provider with no record behind it is a Gate
+        // write whose sidecar was lost: nothing of the user's to restore.
+        let previous_model = settings
+            .get("model")
+            .filter(|_| current_id.is_none())
+            .cloned();
+        state.gate_models = Some(GateModels {
+            written: Vec::new(),
+            previous_model,
+            provider_map_existed: settings.contains_key("provider"),
+        });
+    }
+    ensure_object(settings, "provider")
+        .insert(GATE_PROVIDER.into(), gate_provider_block(relay, ids));
+    settings.insert(
+        "model".into(),
+        Value::String(format!("{GATE_PROVIDER}/{default}")),
+    );
+    if let Some(gm) = state.gate_models.as_mut() {
+        gm.written = ids.to_vec();
+    }
+    Ok(())
+}
+
+/// Put OpenCode's own `model` back and take Gate's provider out, if Gate models
+/// were applied.
+///
+/// Compare-and-restore for `model`: it is put back only while it still names
+/// Gate's provider (or is gone). Anything else is the user's choice made after
+/// Gate wrote, and it stays. The provider block is Gate's alone and always goes.
+fn revert_gate_models(settings: &mut Map<String, Value>, state: &mut State) {
+    let Some(gm) = state.gate_models.take() else {
+        return;
+    };
+    let model_is_ours = configured_model(settings).is_none_or(|m| gate_id_of(&m).is_some());
+    if model_is_ours {
+        match gm.previous_model {
+            Some(v) => {
+                settings.insert("model".into(), v);
+            }
+            None => {
+                settings.remove("model");
+            }
+        }
+    }
+    if let Some(map) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
+        map.remove(GATE_PROVIDER);
+        if map.is_empty() && !gm.provider_map_existed {
+            settings.remove("provider");
+        }
+    }
+}
+
 /// The fallback for an OpenCode whose binary Gate cannot find (a Volta, asdf
 /// or npx install): the two files `connect` reads, and only when they name a
 /// provider it could route.
@@ -981,6 +1381,195 @@ pub fn switch_off_orphaned_domain() -> Result<bool> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn obj(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    fn gm(written: &[&str]) -> GateModels {
+        GateModels {
+            written: written.iter().map(|s| s.to_string()).collect(),
+            ..GateModels::default()
+        }
+    }
+
+    const SERVED: &str = "http://127.0.0.1:9977/__gate/t/opencode/gate/v1";
+
+    #[test]
+    fn a_model_reference_names_a_gate_model_only_on_gates_provider() {
+        assert_eq!(
+            gate_id_of("gate-connect/openai/gpt-5.6"),
+            Some("openai/gpt-5.6")
+        );
+        assert_eq!(
+            gate_id_of("gate-connect/openai/gpt-5.6#high"),
+            Some("openai/gpt-5.6")
+        );
+        assert_eq!(gate_id_of("openai/gpt-5.6"), None);
+        assert_eq!(gate_id_of("gate-connectx/a"), None);
+        assert_eq!(gate_id_of("gate-connect"), None);
+    }
+
+    #[test]
+    fn both_forms_of_model_are_read() {
+        let s = obj(json!({ "model": "anthropic/claude-sonnet-5" }));
+        assert_eq!(
+            configured_model(&s).as_deref(),
+            Some("anthropic/claude-sonnet-5")
+        );
+        let o = obj(json!({ "model": { "providerID": "gate-connect", "model": "a/b" } }));
+        assert_eq!(configured_model(&o).as_deref(), Some("gate-connect/a/b"));
+        assert_eq!(configured_model(&obj(json!({}))), None);
+    }
+
+    /// Applied needs all of it: `model` on Gate's provider, one of the set, and
+    /// the provider on the Gate models route. Each one moved is drift.
+    #[test]
+    fn gate_model_state_needs_the_model_the_set_and_the_route() {
+        let applied = json!({
+            "model": "gate-connect/a/one",
+            "provider": { "gate-connect": { "options": { "baseURL": SERVED } } }
+        });
+        assert_eq!(
+            gate_model_state_of(&obj(applied.clone()), &gm(&["a/one", "a/two"])),
+            GateModelState::Applied {
+                model: "a/one".into()
+            }
+        );
+
+        let mut elsewhere = applied.clone();
+        elsewhere["model"] = json!("anthropic/claude-sonnet-5");
+        assert_eq!(
+            gate_model_state_of(&obj(elsewhere), &gm(&["a/one"])),
+            GateModelState::Drifted {
+                model: Some("anthropic/claude-sonnet-5".into())
+            }
+        );
+
+        let mut outside_set = applied.clone();
+        outside_set["model"] = json!("gate-connect/a/three");
+        assert!(matches!(
+            gate_model_state_of(&obj(outside_set), &gm(&["a/one"])),
+            GateModelState::Drifted { .. }
+        ));
+
+        let mut off_route = applied.clone();
+        off_route["provider"]["gate-connect"]["options"]["baseURL"] =
+            json!("https://gate.example.com/v1");
+        assert!(matches!(
+            gate_model_state_of(&obj(off_route), &gm(&["a/one"])),
+            GateModelState::Drifted { .. }
+        ));
+
+        let mut no_model = applied;
+        no_model.as_object_mut().unwrap().remove("model");
+        assert_eq!(
+            gate_model_state_of(&obj(no_model), &gm(&["a/one"])),
+            GateModelState::Drifted { model: None }
+        );
+    }
+
+    /// Apply then revert is the identity on the file, whatever `model` and
+    /// `provider` looked like before.
+    #[test]
+    fn apply_then_revert_restores_the_file() {
+        let ids = vec!["a/one".to_string(), "a/two".to_string()];
+        for before in [
+            json!({}),
+            json!({ "model": "openrouter/z-ai/glm-5.2", "autoupdate": false }),
+            json!({ "model": { "providerID": "openrouter", "model": "x" }, "provider": {} }),
+            json!({ "provider": { "openrouter": { "options": { "apiKey": "k" } } } }),
+        ] {
+            let mut settings = obj(before.clone());
+            let mut state = State::default();
+            apply_gate_models(&mut settings, &mut state, &ids, "http://127.0.0.1:9977").unwrap();
+            assert_eq!(settings["model"], json!("gate-connect/a/one"));
+            assert_eq!(
+                settings["provider"]["gate-connect"]["options"]["baseURL"],
+                json!(SERVED)
+            );
+            revert_gate_models(&mut settings, &mut state);
+            assert_eq!(Value::Object(settings), before);
+            assert!(state.is_empty());
+        }
+    }
+
+    /// A model the user picked from the set survives a re-apply of the same
+    /// set; a changed set starts again from its first model.
+    #[test]
+    fn a_reapply_keeps_a_pick_from_an_unchanged_set() {
+        let relay = "http://127.0.0.1:9977";
+        let ids = vec!["a/one".to_string(), "a/two".to_string()];
+        let mut settings = Map::new();
+        let mut state = State::default();
+        apply_gate_models(&mut settings, &mut state, &ids, relay).unwrap();
+        settings.insert("model".into(), json!("gate-connect/a/two"));
+        apply_gate_models(&mut settings, &mut state, &ids, relay).unwrap();
+        assert_eq!(settings["model"], json!("gate-connect/a/two"));
+
+        let changed = vec!["a/two".to_string(), "a/three".to_string()];
+        apply_gate_models(&mut settings, &mut state, &changed, relay).unwrap();
+        assert_eq!(
+            settings["model"],
+            json!("gate-connect/a/two"),
+            "first of the new set"
+        );
+        let models = settings["provider"]["gate-connect"]["models"]
+            .as_object()
+            .unwrap();
+        assert_eq!(models.keys().collect::<Vec<_>>(), ["a/two", "a/three"]);
+    }
+
+    /// A default the user moved off Gate's provider is theirs and stays; Gate's
+    /// provider goes regardless.
+    #[test]
+    fn revert_keeps_a_model_the_user_chose() {
+        let mut settings = obj(json!({ "model": "openrouter/x" }));
+        let mut state = State::default();
+        apply_gate_models(
+            &mut settings,
+            &mut state,
+            &["a/one".into()],
+            "http://127.0.0.1:1",
+        )
+        .unwrap();
+        settings.insert("model".into(), json!("anthropic/claude-sonnet-5"));
+        revert_gate_models(&mut settings, &mut state);
+        assert_eq!(
+            Value::Object(settings),
+            json!({ "model": "anthropic/claude-sonnet-5" })
+        );
+    }
+
+    /// A `gate-connect` block that is on the Gate models route was written by
+    /// Gate even with the record lost, and is taken over; one elsewhere is the
+    /// user's and refused.
+    #[test]
+    fn only_a_users_own_gate_connect_provider_is_refused() {
+        let ids = vec!["a/one".to_string()];
+        let mut theirs = obj(json!({
+            "provider": { "gate-connect": { "options": { "baseURL": "https://gate.example.com" } } }
+        }));
+        assert!(apply_gate_models(
+            &mut theirs,
+            &mut State::default(),
+            &ids,
+            "http://127.0.0.1:1"
+        )
+        .is_err());
+
+        let mut orphan = obj(json!({
+            "model": "gate-connect/a/one",
+            "provider": { "gate-connect": { "options": { "baseURL": SERVED } } }
+        }));
+        let mut state = State::default();
+        apply_gate_models(&mut orphan, &mut state, &ids, "http://127.0.0.1:9977").unwrap();
+        assert_eq!(
+            state.gate_models.as_ref().unwrap().previous_model,
+            None,
+            "a model on Gate's provider is not the user's to restore"
+        );
+    }
 
     /// AG-674's disagreement case for OpenCode. Our redirect is in the global
     /// file and correct; a layer OpenCode merges over it sends `anthropic`
@@ -1067,6 +1656,69 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// An install that has never been launched still reads as installed on
+    /// Windows. OpenCode Desktop puts nothing on `PATH` and writes no config
+    /// until first run, and an npm or scoop install lands on a `PATH` this
+    /// process may have been started before, so each showed "not installed"
+    /// right after the user had installed it.
+    ///
+    /// `PATH` is emptied for the body so a real install on the machine running
+    /// the test does not decide it.
+    #[cfg(windows)]
+    #[test]
+    fn windows_detects_each_installer_before_first_launch() {
+        let _lock = env::path_env_lock();
+        let home =
+            std::env::temp_dir().join(format!("gate-opencode-detect-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
+        let prev_path = std::env::var_os("PATH");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::remove_var("OPENCODE_CONFIG_DIR");
+        std::env::remove_var("PATH");
+
+        let result = std::panic::catch_unwind(|| {
+            assert!(
+                !OpenCode.detect().unwrap(),
+                "an empty home has nothing installed"
+            );
+            for rel in [
+                r"AppData\Local\Programs\@opencodedesktop\OpenCode.exe",
+                r"AppData\Roaming\npm\opencode.cmd",
+                r"scoop\shims\opencode.exe",
+            ] {
+                let bin = home.join(rel);
+                fs::create_dir_all(bin.parent().unwrap()).unwrap();
+                fs::write(&bin, b"").unwrap();
+                assert!(
+                    OpenCode.detect().unwrap(),
+                    "{rel} alone must read as installed"
+                );
+                assert!(
+                    !home.join(".config").join("opencode").exists(),
+                    "and without the config dir that first launch creates"
+                );
+                fs::remove_file(&bin).unwrap();
+            }
+        });
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        if let Some(v) = prev_dir {
+            std::env::set_var("OPENCODE_CONFIG_DIR", v);
+        }
+        if let Some(v) = prev_path {
+            std::env::set_var("PATH", v);
+        }
+        let _ = fs::remove_dir_all(&home);
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]
@@ -1201,12 +1853,12 @@ mod tests {
             id: "openai",
             endpoint: "https://api.openai.com/v1",
         };
-        apply_override(
-            &mut providers,
-            &mut state,
-            &target,
-            "http://127.0.0.1:9977/v1",
-        );
+        // The base URL connect really writes: disconnect only takes back one
+        // it could have written.
+        let base_url = crate::proxy::resolve_endpoint(target.endpoint)
+            .unwrap()
+            .relay_base_url("http://127.0.0.1:9977", ToolId::OpenCode);
+        apply_override(&mut providers, &mut state, &target, &base_url);
 
         // Connect mutated options.baseURL and added the upstream header - confirm.
         assert_ne!(providers["openai"], original);
@@ -1220,6 +1872,37 @@ mod tests {
         );
     }
 
+    /// A `baseURL` the user repointed while connected is theirs, and so is
+    /// anything they added under a provider Gate created (AG-1117).
+    #[test]
+    fn restore_keeps_what_the_user_changed_while_connected() {
+        let mut providers = Map::new();
+        let mut state = State::default();
+        let target = KnownProvider {
+            id: "openai",
+            endpoint: "https://api.openai.com/v1",
+        };
+        let base_url = crate::proxy::resolve_endpoint(target.endpoint)
+            .unwrap()
+            .relay_base_url("http://127.0.0.1:9977", ToolId::OpenCode);
+        apply_override(&mut providers, &mut state, &target, &base_url);
+
+        let options = providers["openai"]["options"].as_object_mut().unwrap();
+        options.insert("baseURL".into(), json!("http://127.0.0.1:11434/v1"));
+        options.insert("apiKey".into(), json!("{env:OPENAI_API_KEY}"));
+
+        let snap = state.providers["openai"].clone();
+        restore_provider(&mut providers, "openai", &snap);
+        assert_eq!(
+            providers["openai"],
+            json!({ "options": {
+                "baseURL": "http://127.0.0.1:11434/v1",
+                "apiKey": "{env:OPENAI_API_KEY}",
+            }}),
+            "the user's own base URL and key must survive disconnect"
+        );
+    }
+
     #[test]
     fn apply_override_creates_entry_then_restore_removes_it() {
         // Provider didn't exist before connect - disconnect should drop it.
@@ -1229,12 +1912,10 @@ mod tests {
             id: "openai",
             endpoint: "https://api.openai.com/v1",
         };
-        apply_override(
-            &mut providers,
-            &mut state,
-            &target,
-            "http://127.0.0.1:9977/v1",
-        );
+        let base_url = crate::proxy::resolve_endpoint(target.endpoint)
+            .unwrap()
+            .relay_base_url("http://127.0.0.1:9977", ToolId::OpenCode);
+        apply_override(&mut providers, &mut state, &target, &base_url);
 
         assert!(providers.contains_key("openai"));
         let snap = state.providers["openai"].clone();

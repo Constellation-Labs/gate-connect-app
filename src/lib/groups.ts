@@ -511,7 +511,15 @@ function memberFromTool(
   // which is exactly what the user asked for. Reading it as not-connected would
   // render the switch off and make clicking it turn off the setting they were
   // trying to turn on - this module's own opening bug, one state later.
-  const connected = tool.status.kind === "connected" || tool.status.kind === "overridden";
+  //
+  // An unreadable config is the same split once more: the read failed, so the
+  // switch takes what it last said, which the backend keeps (AG-1120). Rendering
+  // it off would make turning its section off skip it, and leave Gate's values
+  // on disk under a switch that reads off.
+  const connected =
+    tool.status.kind === "connected" ||
+    tool.status.kind === "overridden" ||
+    (tool.status.kind === "error" && tool.status.intended);
   const verdict = verdicts?.get(tool.slug);
   // Verified, or not claimed. A config tool points at the loopback relay, and a
   // file naming that relay is not evidence anything is using it: the relay may

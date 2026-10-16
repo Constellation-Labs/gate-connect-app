@@ -186,6 +186,25 @@ pub struct Preferences {
     /// only ever describe the most recent departure.
     #[serde(default)]
     pub signed_out_deliberately: bool,
+    /// What each tool's switch last said, keyed by tool slug: `true` when Gate's
+    /// configuration was in place (connected, drifted or overridden), `false`
+    /// when it was not.
+    ///
+    /// A tool's switch is read off its own config, and that is right while the
+    /// config can be read. When it cannot - a permission error, a file the tool
+    /// rewrote into something unparseable - the read has no answer, and the
+    /// switch used to render off for want of one: principle 2's bug, a switch
+    /// driven by an observation that failed. This is the answer it falls back
+    /// to, so the switch keeps saying what the person asked for (AG-1120).
+    ///
+    /// Written when a status read succeeds and the answer moved, and when a
+    /// turn-off is refused because the config could not be read, so the off the
+    /// person asked for is kept even though nothing on disk changed. A tool
+    /// with no entry has never been read, and its switch reads off.
+    ///
+    /// A `BTreeMap` for the same reason as `tool_models`.
+    #[serde(default)]
+    pub tool_intent: BTreeMap<String, bool>,
 }
 
 /// The catalogue fields a tool's own model picker can use.
@@ -248,6 +267,7 @@ impl Default for Preferences {
             gate_model_paid_ack_unix: None,
             gate_model_meta: BTreeMap::new(),
             signed_out_deliberately: false,
+            tool_intent: BTreeMap::new(),
         }
     }
 }
@@ -383,6 +403,12 @@ fn servable(prefs: &Preferences, slug: &str) -> Option<Vec<String>> {
 /// to open Settings because a preferences file was hand-edited would be a worse
 /// failure than quietly showing the documented defaults. Nothing here is a
 /// credential, so there is no security consequence to the fallback.
+///
+/// **Readers only.** The setters go through [`load_for_write`] instead, because
+/// the fallback is only harmless while nothing saves it: a setter that loaded
+/// defaults here would write them back over every field it did not change,
+/// and the file now holds model choices, the paid-use acknowledgement and the
+/// domains Gate switched on (AG-1126).
 pub fn load() -> Preferences {
     let Ok(path) = config_path() else {
         return Preferences::default();
@@ -391,6 +417,33 @@ pub fn load() -> Preferences {
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
+}
+
+/// [`load`] for a read-modify-write: defaults only when there is no file yet.
+///
+/// A file that exists and cannot be read or parsed - a transient `EIO`, a
+/// typo, a variant a newer build wrote before a downgrade - is an error, so the
+/// setter fails and the file is left exactly as it was. Saving defaults over it
+/// would lose `tool_models`, `gate_model_paid_ack_unix`, the device name and
+/// `auto_enabled_domains`, and losing the last strands domains on with no
+/// record to turn them off. Failing is chosen over moving the file aside and
+/// writing anyway because the aside copy would be just as lost to every reader:
+/// the error keeps the data in force and tells the person something is wrong.
+fn load_for_write() -> Result<Preferences> {
+    let path = config_path()?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Preferences::default());
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "parsing {}; leaving it untouched rather than overwriting it with defaults",
+            path.display()
+        )
+    })
 }
 
 /// Write the preferences. 0644 - non-secret, and the CLI reads the same file.
@@ -433,7 +486,7 @@ pub fn reset_cache_for_tests() {
 /// only knows about one switch cannot clobber a field it has never heard of.
 pub fn set_notifications(enabled: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.notifications = enabled;
     save_locked(&prefs)
 }
@@ -445,7 +498,7 @@ pub fn set_notifications(enabled: bool) -> Result<()> {
 /// departure rather than accumulating.
 pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.signed_out_deliberately = deliberate;
     save_locked(&prefs)
 }
@@ -453,7 +506,7 @@ pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
 /// Turn the sound on those notifications on or off.
 pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.security_notification_sound = enabled;
     save_locked(&prefs)
 }
@@ -467,7 +520,7 @@ pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
 /// and treating it as unanswered would ask again on the next launch.
 pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.share_diagnostics = enabled;
     prefs.share_diagnostics_recorded = true;
     save_locked(&prefs)
@@ -486,7 +539,7 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
 /// not grow a row per tool that never needed one.
 pub fn record_auto_enabled_domains(tool: &str, domains: Vec<String>) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     if domains.is_empty() {
         prefs.auto_enabled_domains.remove(tool);
     } else {
@@ -516,6 +569,26 @@ pub fn read_auto_enabled_domains(tool: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Record what `tool`'s switch says. See [`Preferences::tool_intent`].
+///
+/// Called from a read path - every status read that succeeds - so an unchanged
+/// answer writes nothing: the file stays put, and so does the stamp the relay's
+/// cache keys on.
+pub fn record_tool_intent(tool: &str, on: bool) -> Result<()> {
+    let _w = write_guard();
+    let mut prefs = load();
+    if prefs.tool_intent.get(tool) == Some(&on) {
+        return Ok(());
+    }
+    prefs.tool_intent.insert(tool.to_string(), on);
+    save_locked(&prefs)
+}
+
+/// What `tool`'s switch last said, or `None` if it has never been recorded.
+pub fn tool_intent(tool: &str) -> Option<bool> {
+    load().tool_intent.get(tool).copied()
+}
+
 /// Set one tool's model choice, leaving every other tool alone.
 ///
 /// Read-modify-write on the whole file, like the switches above, so a caller
@@ -540,7 +613,7 @@ pub fn set_tool_model(
     meta: Vec<(String, GateModelMeta)>,
 ) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.gate_model_meta.extend(meta);
     if source == ModelSource::Gate
         && acknowledge_paid_use
@@ -564,7 +637,7 @@ pub fn set_tool_model(
 /// spends nothing.
 pub fn fall_back_to_tool_model(slug: &str) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     let Some(choice) = prefs.tool_models.get_mut(slug) else {
         return Ok(());
     };
@@ -587,7 +660,7 @@ pub fn gate_model_meta(id: &str) -> Option<GateModelMeta> {
 /// machine, and it is the state a user reaches by deleting the text.
 pub fn set_device_name(name: &str) -> Result<()> {
     let _w = write_guard();
-    let mut prefs = load();
+    let mut prefs = load_for_write()?;
     prefs.device_name = device_name_override(name);
     save_locked(&prefs)
 }
@@ -709,6 +782,21 @@ fn device_name_override(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file from before AG-1120 has recorded no tool's switch, so every tool
+    /// reads "never recorded" rather than off by a value someone wrote.
+    #[test]
+    fn a_file_without_tool_intent_records_none() {
+        let prefs: Preferences = serde_json::from_str("{}").expect("parses");
+        assert!(prefs.tool_intent.is_empty());
+        let raw = serde_json::to_string(&Preferences {
+            tool_intent: BTreeMap::from([("codex".to_string(), true)]),
+            ..Preferences::default()
+        })
+        .expect("serialize");
+        let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(back.tool_intent.get("codex"), Some(&true));
+    }
 
     #[test]
     fn defaults_are_everything_on() {

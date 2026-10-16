@@ -436,13 +436,99 @@ pub trait Integration: Send + Sync {
 
 pub fn registry() -> Vec<Box<dyn Integration>> {
     vec![
-        Box::new(crate::integrations::claude_code::ClaudeCode),
-        Box::new(crate::integrations::codex::Codex),
-        Box::new(crate::integrations::opencode::OpenCode),
-        Box::new(crate::integrations::openclaw::OpenClaw),
-        Box::new(crate::integrations::hermes::Hermes),
-        Box::new(crate::integrations::env_proxy::EnvProxy),
+        Box::new(Guarded(crate::integrations::claude_code::ClaudeCode)),
+        Box::new(Guarded(crate::integrations::codex::Codex)),
+        Box::new(Guarded(crate::integrations::opencode::OpenCode)),
+        Box::new(Guarded(crate::integrations::openclaw::OpenClaw)),
+        Box::new(Guarded(crate::integrations::hermes::Hermes)),
+        Box::new(Guarded(crate::integrations::env_proxy::EnvProxy)),
     ]
+}
+
+/// An integration whose writes run inside [`crate::config_changes::guarded`],
+/// so an edit the tool makes to its own file while Gate is changing it is kept
+/// rather than overwritten: the operation runs again on what the tool wrote.
+/// Everything else is passed straight through - which includes every provided
+/// method, so a method added to [`Integration`] with a default has to be
+/// added here too, or the integrations' own overrides of it go unseen.
+struct Guarded<I>(I);
+
+impl<I: Integration> Integration for Guarded<I> {
+    fn id(&self) -> ToolId {
+        self.0.id()
+    }
+    fn display_name(&self) -> &'static str {
+        self.0.display_name()
+    }
+    fn row_label(&self) -> &'static str {
+        self.0.row_label()
+    }
+    fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
+        self.0.upstream_coverage()
+    }
+    fn client(&self) -> crate::taxonomy::Client {
+        self.0.client()
+    }
+    fn scope(&self) -> crate::taxonomy::Scope {
+        self.0.scope()
+    }
+    fn credential(&self) -> crate::taxonomy::Credential {
+        self.0.credential()
+    }
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        self.0.binary()
+    }
+    fn upstream_provider_name(&self) -> &'static str {
+        self.0.upstream_provider_name()
+    }
+    fn default_upstream_url(&self) -> &'static str {
+        self.0.default_upstream_url()
+    }
+    fn mechanism(&self) -> Mechanism {
+        self.0.mechanism()
+    }
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        self.0.configured_addresses()
+    }
+    fn requires_engine(&self) -> bool {
+        self.0.requires_engine()
+    }
+    fn config_is_managed(&self) -> Result<bool> {
+        self.0.config_is_managed()
+    }
+    fn config_location(&self) -> Option<String> {
+        self.0.config_location()
+    }
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        self.0.watch_paths()
+    }
+    fn detect(&self) -> Result<bool> {
+        self.0.detect()
+    }
+    fn status(&self) -> Result<Status> {
+        self.0.status()
+    }
+    fn connect(&self, input: &ConnectInput) -> Result<()> {
+        crate::config_changes::guarded(|| self.0.connect(input))
+    }
+    fn disconnect(&self) -> Result<()> {
+        crate::config_changes::guarded(|| self.0.disconnect())
+    }
+    fn supports_gate_models(&self) -> bool {
+        self.0.supports_gate_models()
+    }
+    fn gate_model_state(&self) -> Result<GateModelState> {
+        self.0.gate_model_state()
+    }
+    fn relies_on_gate_credential(&self) -> bool {
+        self.0.relies_on_gate_credential()
+    }
+    fn leave_gate_models(&self, input: &ConnectInput) -> Result<()> {
+        crate::config_changes::guarded(|| self.0.leave_gate_models(input))
+    }
+    fn hidden_in_ui(&self) -> bool {
+        self.0.hidden_in_ui()
+    }
 }
 
 /// Integrations kept out of the popover's ledger. Present in [`registry`] so

@@ -168,6 +168,12 @@ struct State {
     /// the file only in that case, and only if removing our line empties it.
     #[serde(default)]
     ca_env_file_created: bool,
+    /// The `proxy.proxyUrl` connect last wrote. Disconnect puts the original
+    /// back only while the file still holds this, so a proxy the user repointed
+    /// while connected stays theirs. `None` on a sidecar written before this
+    /// field existed, which owns the key by name, as disconnect always did.
+    #[serde(default)]
+    written_proxy_url: Option<String>,
 }
 
 pub struct OpenClaw;
@@ -429,6 +435,7 @@ impl Integration for OpenClaw {
         let proxy = ensure_object(&mut settings, "proxy");
         proxy.insert("enabled".to_string(), Value::Bool(true));
         proxy.insert("proxyUrl".to_string(), Value::String(proxy_url.to_string()));
+        state.written_proxy_url = Some(proxy_url.to_string());
 
         save_state(&state)?;
 
@@ -454,10 +461,23 @@ impl Integration for OpenClaw {
 
         if let Some(mut settings) = load_settings()? {
             if let Some(proxy) = settings.get_mut("proxy").and_then(|v| v.as_object_mut()) {
-                for (key, previous) in [
-                    ("proxyUrl", &state.previous_proxy_url),
-                    ("enabled", &state.previous_proxy_enabled),
+                // Each key goes back only while it still holds what connect
+                // wrote: one the user changed since is theirs.
+                let url_is_ours = match &state.written_proxy_url {
+                    Some(wrote) => proxy.get("proxyUrl").and_then(|v| v.as_str()) == Some(wrote),
+                    None => true,
+                };
+                // `enabled` is what switches the URL on, so it follows the URL:
+                // a proxy the user pointed elsewhere keeps running.
+                let enabled_is_ours =
+                    url_is_ours && proxy.get("enabled") == Some(&Value::Bool(true));
+                for (key, previous, ours) in [
+                    ("proxyUrl", &state.previous_proxy_url, url_is_ours),
+                    ("enabled", &state.previous_proxy_enabled, enabled_is_ours),
                 ] {
+                    if !ours {
+                        continue;
+                    }
                     match previous {
                         Some(v) => {
                             proxy.insert(key.to_string(), v.clone());
@@ -482,9 +502,14 @@ impl Integration for OpenClaw {
         }
 
         if state.ca_env_added {
-            dotenv::remove_vars(
+            // Narrowed to the value connect left, as connect's own refresh is:
+            // a line the user repointed is theirs.
+            dotenv::remove_owned(
                 &env_file_path()?,
-                &[CA_ENV_KEY.to_string()],
+                &[dotenv::Owned {
+                    key: CA_ENV_KEY.to_string(),
+                    value: state.ca_env_value.clone(),
+                }],
                 state.ca_env_file_created,
             )?;
         }

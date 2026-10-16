@@ -55,7 +55,7 @@ import { allSettled, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
-import { classifyError, isRoutingOffRefusal } from "./lib/errors";
+import { classifyError, connectRefusalHint, isRoutingOffRefusal } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
@@ -76,6 +76,7 @@ import {
 } from "./lib/groups";
 import {
   CHECKING_DETAIL,
+  READ_FAILED_DETAIL,
   partlyProtectedCopy,
   REASON_DETAIL,
   WRITE_FAILED_DETAIL,
@@ -367,6 +368,15 @@ export function NewUiApp() {
    */
   const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
   /**
+   * The prefix read has answered at least once for the api-key account on
+   * screen, either way. `credential` below carries the prefix, so a read sent
+   * before it lands is keyed on a credential that is about to change: its answer
+   * is thrown away and every account-scoped read runs twice at launch, against a
+   * throttle shared by the whole network. Reset when there is no key, so a
+   * sign-in after a sign-out waits again.
+   */
+  const [keyPrefixRead, setKeyPrefixRead] = useState(false);
+  /**
    * This install's id and this machine's name, both read from the backend.
    *
    * Null while the read is in flight or after it failed, which the rows render as
@@ -425,6 +435,9 @@ export function NewUiApp() {
    *  not change them"), and no code we could branch on carries which rule
    *  refused. */
   const [modelError, setModelError] = useState<string | null>(null);
+  /** Bumped whenever the pane or the account changes, so a save that resolves
+   *  after either does not put its error on a pane it was not made on. */
+  const modelErrorScope = useRef(0);
   const platform = usePlatform();
   // Which account the reading belongs to. Changing it refetches: numbers read for
   // one org must not sit on screen under another org's name, and an OAuth account
@@ -441,6 +454,8 @@ export function NewUiApp() {
   const credential = account
     ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}|${keyPrefix ?? ""}`
     : "";
+  /** Nothing account-scoped is read until `credential` is final for this account. */
+  const credentialSettled = !account?.has_api_key || keyPrefixRead;
   // The live security-event feed (AG-578). Keyed on `credential` for the reason
   // every other reading here is: events belonging to the org the user just left
   // must not stay on screen under the new org's name.
@@ -448,7 +463,7 @@ export function NewUiApp() {
   // Not gated on routing. The events come from the gateway, not from local
   // traffic, and AC4 requires the feed's state to be independent of routing's -
   // a feed that only ran while routing was on would be reporting routing.
-  const securityFeed = useSecurityFeed(Boolean(credential), credential);
+  const securityFeed = useSecurityFeed(Boolean(credential) && credentialSettled, credential);
 
   // Keep the analytics error context tracking the window. Pushed from an effect
   // on the state it summarises rather than resolved when something fails:
@@ -471,7 +486,7 @@ export function NewUiApp() {
   // Held until the first account read lands and finds a credential. Before that
   // there is nothing to authenticate with, so a fetch could only fail, and the
   // pane would open on a "signed out" banner that is about to be wrong.
-  const canRead = loaded && account !== null;
+  const canRead = loaded && account !== null && credentialSettled;
   // Org-wide, always. The Overview carried an installation filter (AG-572 AC 1,
   // "shows ... selected installation") that no frame draws - the drawn header
   // `116:26487` has exactly two children, "Overview" and "Last 24 hours" - so it
@@ -876,6 +891,7 @@ export function NewUiApp() {
   // change on Codex would keep saying so over Claude Code's pane, blaming the
   // wrong app for a refusal that had nothing to do with it.
   useEffect(() => {
+    modelErrorScope.current += 1;
     setModelError(null);
   }, [openTool, credential]);
 
@@ -919,6 +935,7 @@ export function NewUiApp() {
 
   const loadKeyPrefix = useCallback(async () => {
     setKeyPrefix(await getAccountKeyPrefix().catch(() => null));
+    setKeyPrefixRead(true);
   }, []);
 
   const loadIdentity = useCallback(async () => {
@@ -1210,7 +1227,10 @@ export function NewUiApp() {
   // account only changes on a user action, so this is not a poll.
   useEffect(() => {
     if (account?.has_api_key) void loadKeyPrefix();
-    else setKeyPrefix(null);
+    else {
+      setKeyPrefix(null);
+      setKeyPrefixRead(false);
+    }
   }, [account, loadKeyPrefix]);
 
   /**
@@ -1478,6 +1498,7 @@ export function NewUiApp() {
       setModelBusy(true);
       setModelError(null);
       const tool = openTool;
+      const scope = modelErrorScope.current;
       const { failure, applied } = await toolModels.save(
         tool,
         source,
@@ -1485,7 +1506,9 @@ export function NewUiApp() {
         acknowledgePaidUse,
       );
       setModelBusy(false);
-      if (failure) setModelError(failure.message);
+      if (failure) {
+        if (scope === modelErrorScope.current) setModelError(failure.message);
+      }
       // The choice landed in the tool's own config, which a running copy only
       // reads when it starts - the same situation a routing write leaves, so
       // the same notice, scoped to this tool for the reason `routeApp` gives.
@@ -1692,29 +1715,37 @@ export function NewUiApp() {
     () =>
       tools
         .filter((t) => t.status.kind !== "not_installed" && !isSettingsManaged(t.slug))
-        .map((t) => ({
-          slug: t.slug,
-          name: t.name,
-          status: verdictStatus(verdicts.get(t.slug), {
-            // Only a failed turn-OFF: the tool is still routed and the click
-            // did not land. A failed turn-on leaves a tool that was never
-            // routed, so the sweep's own reading (Not routed) is the true one;
-            // the pane's alert says the write failed.
-            writeFailed: routing.writeFailures.get(t.slug) === false,
-            // Routed and inspected are different questions; the sweep answers
-            // only the first. See `verdictStatus`. AG-932.
-            coverage: t.coverage,
-          }),
+        .map((t) => {
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
-          on:
+          const on =
             t.status.kind === "connected" ||
             t.status.kind === "drifted" ||
-            t.status.kind === "overridden",
-          logo: brandMarkFor(t.slug),
-          busy: routingBusy,
-          hint: hintForMember(t.slug),
-        })),
+            t.status.kind === "overridden" ||
+            (t.status.kind === "error" && t.status.intended);
+          return {
+            slug: t.slug,
+            name: t.name,
+            status: verdictStatus(verdicts.get(t.slug), {
+              // Only a failed turn-OFF: the tool is still routed and the click
+              // did not land. A failed turn-on leaves a tool that was never
+              // routed, so the sweep's own reading (Not routed) is the true one;
+              // the pane's alert says the write failed.
+              writeFailed: routing.writeFailures.get(t.slug) === false,
+              // Routed and inspected are different questions; the sweep answers
+              // only the first. See `verdictStatus`. AG-932.
+              coverage: t.coverage,
+              // A switched-off row reads Not routed with or without a verdict.
+              on,
+              // An unreadable config outranks the sweep. AG-1120.
+              readFailed: t.status.kind === "error",
+            }),
+            on,
+            logo: brandMarkFor(t.slug),
+            busy: routingBusy,
+            hint: hintForMember(t.slug),
+          };
+        }),
     [tools, verdicts, routing.writeFailures, routingBusy],
   );
 
@@ -2813,6 +2844,8 @@ export function NewUiApp() {
       detail === REASON_DETAIL.configuration_changed
     )
       return undefined;
+    // The "could not be checked" card names the read error and the retry.
+    if (paneNotice?.id.startsWith("error:") && detail === READ_FAILED_DETAIL) return undefined;
     // Partly protected is the one reason with a fix this pane owns: some of the
     // app's surfaces are switched off under a switch that reads on. The app
     // switch cannot be the fix: this card exists because the switch reads On,
@@ -3739,7 +3772,13 @@ export function NewUiApp() {
               {/* First: the write the user just asked for did not happen, and
                 * the app is left where it was. The single-app alert
                 * (`1426:35788`), its switch showing that state; toggling it
-                * tries the same write again. */}
+                * tries the same write again.
+                *
+                * No switch when the tool refused for a reason only the user
+                * can change outside Gate (no provider signed in, settings of
+                * their own): the retry would fail identically, so it read as a
+                * switch that does nothing. The body says what to change, and
+                * the pane's own switch tries again once they have. */}
               {paneWriteError && (
                 <AlertBanner
                   key={`write:${paneWriteError.slug}`}
@@ -3749,8 +3788,11 @@ export function NewUiApp() {
                   on={!paneWriteError.routed}
                   switchLabel={`Try ${toolName(paneWriteError.slug) ?? "this app"} again`}
                   busy={routingBusy}
-                  onToggle={() =>
-                    void routeApp(paneWriteError.slug, paneWriteError.routed)
+                  onToggle={
+                    paneWriteError.routed &&
+                    connectRefusalHint(paneWriteError.error.raw) !== null
+                      ? undefined
+                      : () => void routeApp(paneWriteError.slug, paneWriteError.routed)
                   }
                   onDismiss={() =>
                     setToolWriteErrors((prev) => {

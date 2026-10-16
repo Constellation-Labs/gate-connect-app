@@ -94,13 +94,14 @@ pub struct EngineConfig {
     /// `preferred_port`: CLI tools bake this port into their config, so reusing
     /// it across restarts keeps that config valid. Ephemeral if taken/`None`.
     pub preferred_relay_port: Option<u16>,
-    /// When `Some(uid)`, only connections from that local UID are intercepted
-    /// (MITM'd + rewritten with the Gate key injected); traffic from any other
-    /// local user is blind-tunnelled. The loopback listener is plain TCP and
-    /// reachable by every local user, so this stops a *different* account from
-    /// spending the owner's Gate key through the proxy. Linux sets the daemon's
-    /// own UID; macOS/Windows pass `None` (out of scope for this release).
-    pub owner_uid: Option<u32>,
+    /// When `Some(owner)`, only connections from that local user are
+    /// intercepted (MITM'd + rewritten with the Gate key injected); traffic
+    /// from any other local user is blind-tunnelled. The loopback listener is
+    /// plain TCP and reachable by every local user, so this stops a *different*
+    /// account from spending the owner's Gate key through the proxy. Linux sets
+    /// the daemon's own UID, macOS the app's, Windows this process's own user
+    /// ([`PeerOwner`]).
+    pub owner_uid: Option<PeerOwner>,
     /// The user's pre-existing upstream proxy , used as the
     /// PAC fallback so non-Gate traffic keeps flowing through it instead of
     /// going DIRECT while routing is on. Only read on PAC-driven platforms
@@ -726,9 +727,12 @@ struct GateHandler {
     /// can name the token it refused (`record_refused_bearer`) rather than
     /// whatever the watch holds by then.
     sent_token: Option<Arc<str>>,
-    /// When `Some`, only intercept connections from this local UID (see
+    /// When `Some`, only intercept connections from this local user (see
     /// [`EngineConfig::owner_uid`]).
-    owner_uid: Option<u32>,
+    owner_uid: Option<PeerOwner>,
+    /// The MITM listener's own address: the other end of every peer's
+    /// connection, which Windows needs to find the peer's row in the TCP table.
+    listen_addr: std::net::SocketAddr,
     /// Per-connection memo of the owner-UID verdict, keyed by peer address.
     /// hudsucker clones the handler per connection, so this is resolved once -
     /// while the peer's socket is definitely still in `/proc/net/tcp` - instead
@@ -783,8 +787,8 @@ impl GateHandler {
     }
 
     /// Whether the peer behind `ctx` may be intercepted. `true` when no owner
-    /// restriction is set; otherwise the peer's UID (resolved from its loopback
-    /// socket) must match the owner. Fails **closed**: if the UID can't be
+    /// restriction is set; otherwise the peer's user (resolved from its
+    /// loopback socket) must be the owner. Fails **closed**: if the UID can't be
     /// resolved we decline interception (blind-tunnel) rather than risk
     /// injecting the Gate key for an unverified peer. Memoized per peer.
     fn peer_allowed(&mut self, ctx: &HttpContext) -> bool {
@@ -797,7 +801,7 @@ impl GateHandler {
                 return verdict;
             }
         }
-        let verdict = peer_uid_for(ctx.client_addr) == Some(owner);
+        let verdict = peer_is_owner(ctx.client_addr, self.listen_addr, owner);
         self.peer_verdict = Some((ctx.client_addr, verdict));
         verdict
     }
@@ -950,12 +954,59 @@ fn route_rules<'a>(
     Cow::Owned(rules)
 }
 
+/// Who a loopback peer must run as to be served ([`EngineConfig::owner_uid`]).
+/// A UID on unix.
+#[cfg(unix)]
+pub type PeerOwner = u32;
+
+/// Who a loopback peer must run as to be served ([`EngineConfig::owner_uid`]).
+/// Windows has no UIDs, and the only owner there is the user this process runs
+/// as, compared by SID (`gate_connect_paths::peer`, which the forwarder in
+/// front of the engine gates on too).
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerOwner;
+
+/// Whether the peer holding the client end of `client` -> `listener` runs as
+/// `owner`. Fails **closed**: a peer whose user can't be resolved is not the
+/// owner. Shared with the relay (`super::relay`), which gates its accept loop
+/// the same way the MITM path gates interception.
+///
+/// Blocking, like the `/proc/net/tcp` read it does on Linux: on macOS it reads
+/// the kernel's TCP socket list, on Windows the TCP table and the peer
+/// process's token.
+#[cfg(target_os = "linux")]
+pub(crate) fn peer_is_owner(
+    client: std::net::SocketAddr,
+    _listener: std::net::SocketAddr,
+    owner: PeerOwner,
+) -> bool {
+    peer_uid_for(client) == Some(owner)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn peer_is_owner(
+    client: std::net::SocketAddr,
+    listener: std::net::SocketAddr,
+    owner: PeerOwner,
+) -> bool {
+    gate_connect_paths::peer::peer_uid(client, listener) == Some(owner)
+}
+
+#[cfg(windows)]
+pub(crate) fn peer_is_owner(
+    client: std::net::SocketAddr,
+    listener: std::net::SocketAddr,
+    _owner: PeerOwner,
+) -> bool {
+    gate_connect_paths::peer::verdict(client, listener) == gate_connect_paths::peer::Verdict::Owner
+}
+
 /// Resolve the local UID that owns the socket whose *local* address is `addr`
 /// (i.e. the connecting peer's socket) by scanning the kernel's TCP table.
-/// Linux-only; other platforms never set `owner_uid`, so this just reports
-/// "unknown". Returns `None` if the socket isn't found or can't be parsed.
-/// Shared with the relay (`super::relay`), which gates its accept loop the
-/// same way the MITM path gates interception.
+/// Linux-only; macOS and Windows resolve peers through
+/// `gate_connect_paths::peer` instead ([`peer_is_owner`]).
+/// Returns `None` if the socket isn't found or can't be parsed.
 #[cfg(target_os = "linux")]
 pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
     use std::net::{Ipv4Addr, SocketAddr};
@@ -989,11 +1040,6 @@ pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
             return uid.parse::<u32>().ok();
         }
     }
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
     None
 }
 
@@ -2905,7 +2951,7 @@ where
     let relay_token_rx = token_rx.clone();
     let relay_org_rx = org_rx.clone();
     let relay_mode_rx = mode_rx.clone();
-    // The relay gates its accept loop on the same owner UID the MITM path uses.
+    // The relay gates its accept loop on the same owner the MITM path uses.
     let relay_owner_uid = cfg.owner_uid;
     let handler = GateHandler {
         rules: rules_rx,
@@ -2919,6 +2965,7 @@ where
         injected_oauth: false,
         sent_token: None,
         owner_uid: cfg.owner_uid,
+        listen_addr: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         peer_verdict: None,
         claude_code_route: false,
         intercept: intercept_rx.clone(),
@@ -4259,6 +4306,28 @@ mod tests {
         // A port nothing owns resolves to None (fails closed).
         let unused = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         assert_eq!(peer_uid_for(unused), None);
+    }
+
+    /// The gate the engine and relay ask, against a real loopback connection:
+    /// the owner (this test process) passes, any other UID does not, and a
+    /// socket nobody holds fails closed. On macOS this is what proves the
+    /// socket-list parse reads the right UID - a wrong struct layout fails the
+    /// first assertion rather than passing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn peer_is_owner_resolves_own_loopback_connection() {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let server_addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(server_addr).expect("connect loopback");
+        let _accepted = listener.accept().expect("accept loopback");
+        let peer = client.local_addr().unwrap();
+        // SAFETY: geteuid never fails.
+        let me = unsafe { libc::geteuid() };
+        assert!(peer_is_owner(peer, server_addr, me));
+        assert!(!peer_is_owner(peer, server_addr, u32::MAX));
+        let unused = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+        assert!(!peer_is_owner(unused, server_addr, me));
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]

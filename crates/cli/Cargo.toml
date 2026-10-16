@@ -25,13 +25,14 @@ rpassword = "7"
 [dev-dependencies]
 tempfile = "3"
 reqwest.workspace = true
+# `tests/cli_flows.rs` parses the configs the CLI writes, on every platform.
+serde_json.workspace = true
 
 # Test-only, Linux only: `tests/helper_daemon.rs` drives the real helper daemon
 # (`gate-connect --proxy-helper`), which exists only there. `libc` sends SIGTERM
 # to that child by its PID, `rcgen` mints the throwaway CA its engine signs
-# under (never trusted anywhere), and `serde_json` reads the control frames a
-# recording relay sees. All three are already in the lock through core.
+# under (never trusted anywhere), and `serde_json` (above) reads the control
+# frames a recording relay sees. Both are already in the lock through core.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2"
 rcgen = "0.14"
-serde_json.workspace = true
