@@ -116,6 +116,12 @@ use crate::proxy::{ENV_NO_PROXY_VALUE, LEGACY_ENV_NO_PROXY_VALUE};
 
 const MARKER_KEY: &str = "_gateConnect";
 
+/// `_gateConnect.wrote`: the value connect left in each managed key, `null`
+/// for a key it took out. Disconnect puts a key back only while it still holds
+/// that value, so an edit the user made while connected is theirs to keep, and
+/// a reconnect re-snapshots it rather than writing over it.
+const WROTE_MARKER: &str = "wrote";
+
 /// Paths to look for the `claude` binary, in priority order. Covers
 /// Homebrew on Apple Silicon, Homebrew/Intel + manual installs, plus
 /// the standard Linux install location. Windows ships the binary into
@@ -467,7 +473,10 @@ impl Integration for ClaudeCode {
                 .get(MARKER_KEY)
                 .and_then(|m| m.get(GATE_MODELS_MARKER))
                 .is_none();
-        if already_applied && gate_models_idle {
+        // A marker from before Gate recorded its values is rewritten once, so
+        // the next disconnect can tell Gate's values from the user's.
+        let old_wrote = written_env(&settings);
+        if already_applied && gate_models_idle && old_wrote.is_some() {
             return Ok(());
         }
 
@@ -480,9 +489,25 @@ impl Integration for ClaudeCode {
 
         let env_block = ensure_object(&mut settings, "env");
         for key in MANAGED_KEYS {
-            if !old_managed.iter().any(|managed| managed == key) && !prev.contains_key(key) {
-                if let Some(value) = env_block.get(key) {
+            let current = env_block.get(key);
+            let managed = old_managed.iter().any(|managed| managed == key);
+            if !managed && !prev.contains_key(key) {
+                if let Some(value) = current {
                     prev.insert(key.into(), value.clone());
+                }
+            } else if managed
+                && old_wrote.is_some()
+                && !holds_gates_value(key, current, old_wrote.as_ref(), &old_managed)
+            {
+                // The user changed a key Gate wrote. That value is now the one
+                // to hand back, not the one snapshotted before it.
+                match current {
+                    Some(value) => {
+                        prev.insert(key.into(), value.clone());
+                    }
+                    None => {
+                        prev.remove(key);
+                    }
                 }
             }
         }
@@ -501,8 +526,17 @@ impl Integration for ClaudeCode {
             Value::String(ca_cert_path.display().to_string()),
         );
 
+        let wrote: Map<String, Value> = MANAGED_KEYS
+            .iter()
+            .map(|key| {
+                let value = env_block.get(*key).cloned().unwrap_or(Value::Null);
+                ((*key).to_string(), value)
+            })
+            .collect();
+
         let marker = ensure_object(&mut settings, MARKER_KEY);
         marker.insert("previousEnv".into(), Value::Object(prev));
+        marker.insert(WROTE_MARKER.into(), Value::Object(wrote));
         marker.insert(
             "managed".into(),
             Value::Array(
@@ -535,6 +569,12 @@ impl Integration for ClaudeCode {
         let Some(mut settings) = load_settings()? else {
             return Ok(());
         };
+        // No marker, nothing of Gate's: the `env` keys Gate manages are the
+        // user's own here - a corporate `HTTPS_PROXY` or CA - and removing them
+        // would take the user's setup down with nothing of ours to undo.
+        if !settings.get(MARKER_KEY).is_some_and(Value::is_object) {
+            return Ok(());
+        }
         // Gate models first: their record lives in the marker removed below.
         revert_gate_models(&mut settings);
 
@@ -544,9 +584,15 @@ impl Integration for ClaudeCode {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
+        let wrote = written_env(&settings);
+        let managed = managed_keys(&settings);
 
         if let Some(env_block) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
             for key in MANAGED_KEYS {
+                // A key the user changed since Gate wrote it is theirs now.
+                if !holds_gates_value(key, env_block.get(key), wrote.as_ref(), &managed) {
+                    continue;
+                }
                 match prev.get(key) {
                     Some(v) => {
                         env_block.insert(key.into(), v.clone());
@@ -571,6 +617,62 @@ impl Integration for ClaudeCode {
             return Ok(());
         }
         write_settings(&settings)
+    }
+}
+
+/// The `_gateConnect.wrote` record, `None` on a marker written before Gate
+/// recorded its values.
+fn written_env(settings: &Map<String, Value>) -> Option<Map<String, Value>> {
+    settings
+        .get(MARKER_KEY)?
+        .get(WROTE_MARKER)?
+        .as_object()
+        .cloned()
+}
+
+/// The `_gateConnect.managed` list.
+fn managed_keys(settings: &Map<String, Value>) -> Vec<String> {
+    settings
+        .get(MARKER_KEY)
+        .and_then(|v| v.get("managed"))
+        .and_then(|v| v.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `current`, the value in `env.<key>`, is still the one Gate left
+/// there, and so Gate's to put back.
+///
+/// By the recorded value: `null` in the record is a key Gate took out, which
+/// is still Gate's while it stays absent. A base URL on the Gate models route
+/// counts too, since that is Gate's write under the routing record's `null`.
+/// A marker from before values were recorded owns its managed keys by name, as
+/// disconnect always did; the next connect records the values.
+fn holds_gates_value(
+    key: &str,
+    current: Option<&Value>,
+    wrote: Option<&Map<String, Value>>,
+    managed: &[String],
+) -> bool {
+    if key == KEY_BASE_URL
+        && current
+            .and_then(|v| v.as_str())
+            .is_some_and(|u| crate::proxy::gate_served::is_relay_base_url(u, ToolId::ClaudeCode))
+    {
+        return true;
+    }
+    match wrote {
+        Some(wrote) => match wrote.get(key) {
+            Some(Value::Null) => current.is_none(),
+            Some(value) => current == Some(value),
+            None => false,
+        },
+        None => managed.iter().any(|m| m == key),
     }
 }
 

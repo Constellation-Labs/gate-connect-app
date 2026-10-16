@@ -207,6 +207,13 @@ pub struct DesktopManager<O: DesktopOps> {
     /// because `proxy_env::snapshot_prior` refuses to re-record over a
     /// snapshot that already exists.
     exported_port: AtomicU16,
+    /// Set by [`disable_quiet`](Self::disable_quiet), the exit's revert, and
+    /// never cleared: an [`enable`](Self::enable) that takes the engine lock
+    /// after it refuses rather than pointing the system proxy at an engine that
+    /// dies with this process (AG-1118). The startup thread's enable can still
+    /// be on its way to the lock when the exit handler runs - in the forwarder
+    /// start or the first restore pass - and nothing else stops it.
+    exited: AtomicBool,
 }
 
 impl<O: DesktopOps> DesktopManager<O> {
@@ -219,6 +226,7 @@ impl<O: DesktopOps> DesktopManager<O> {
             forwarder_watcher_alive: AtomicBool::new(false),
             forwarder_answering: AtomicU8::new(FORWARDER_UNKNOWN),
             exported_port: AtomicU16::new(0),
+            exited: AtomicBool::new(false),
         }
     }
 
@@ -394,6 +402,13 @@ impl<O: DesktopOps> DesktopManager<O> {
         // our engine - that snapshot would later "restore" a dead port.
         // (handle_engine_crash uses try_lock, so it can't deadlock on this.)
         let mut guard = self.engine.lock().expect("proxy engine mutex poisoned");
+        // Under the engine lock, which `disable_quiet` also takes: an enable
+        // that got here first finishes and the exit's revert then undoes it,
+        // and one that gets here after sees the mark. See `exited`.
+        if self.exited.load(Ordering::SeqCst) {
+            drop(guard);
+            anyhow::bail!("Gate Connect is quitting; not enabling routing");
+        }
         if guard.is_some() {
             drop(guard);
             return self.status();
@@ -618,8 +633,16 @@ impl<O: DesktopOps> DesktopManager<O> {
                 } else {
                     crate::proxy::relay::load_persisted_port()
                 },
-                // Per-user UID gating is a Linux concern (the daemon's shared
-                // loopback proxy); unresolvable for TCP peers here.
+                // Only this user may spend the credential. Windows resolves a
+                // loopback peer's user from its process token, macOS from the
+                // kernel's TCP socket list. The forwarder in front gates on
+                // the same answer, so it cannot launder a non-owner through.
+                #[cfg(windows)]
+                owner_uid: Some(crate::proxy::engine::PeerOwner),
+                // SAFETY: geteuid never fails.
+                #[cfg(target_os = "macos")]
+                owner_uid: Some(unsafe { libc::geteuid() }),
+                #[cfg(not(any(windows, target_os = "macos")))]
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate
                 // traffic still flows through it while routing is on.
@@ -765,7 +788,12 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// variables are stranded by the quit itself, which is the residual this
     /// change does not reach - closing it needs a listener that outlives the
     /// GUI, as Linux's daemon already is.
+    ///
+    /// Marks the manager as exited before it reverts, so no later
+    /// [`enable`](Self::enable) in this process can point the system proxy at
+    /// us again. See `exited`.
     pub fn disable_quiet(&self) -> Result<()> {
+        self.exited.store(true, Ordering::SeqCst);
         self.disable_inner(Teardown::Stop)
     }
 
@@ -2733,7 +2761,9 @@ mod tests {
         assert!(!answering(port), "exit must release the port");
 
         // A gateway switch reaches through a park: the engine holds the old
-        // environment's base URL, which `engine::start` never updates.
+        // environment's base URL, which `engine::start` never updates. A
+        // manager of its own, because one that has exited never enables again.
+        let mgr = leak(FakeOps::new());
         let port = mgr.enable().expect("re-enable").port.expect("port");
         mgr.disable().expect("disable parks it");
         assert!(answering(port), "the park is what disable does");
@@ -2742,6 +2772,28 @@ mod tests {
             !answering(port),
             "a gateway switch must not leave the old account's engine bound"
         );
+    }
+
+    /// The exit's revert can run while the startup thread's enable is still on
+    /// its way to the engine lock. An enable that arrives after it must not
+    /// point the system proxy at an engine this exiting process is about to
+    /// take down with it (AG-1118).
+    #[test]
+    fn an_enable_after_the_exit_revert_never_touches_the_system_proxy() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.disable_quiet().expect("exit teardown");
+        let err = mgr.enable().expect_err("an enable after exit must refuse");
+
+        assert!(format!("{err:#}").contains("quitting"), "{err:#}");
+        assert_eq!(mgr.ops.count("snapshot"), 0, "nothing was read");
+        assert_eq!(
+            mgr.ops.count("point_system_proxy"),
+            0,
+            "the system proxy must not be pointed at us after exit"
+        );
+        assert!(!mgr.is_running());
     }
 
     #[test]

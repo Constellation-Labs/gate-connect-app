@@ -144,6 +144,14 @@ pub(crate) trait Platform:
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn updater_relaunching(&self) -> bool;
 
+    /// Note that this exit is a restart (`RESTART_EXIT_CODE`).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn note_restart_requested(&self);
+
+    /// Whether this exit is a restart.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn restart_requested(&self) -> bool;
+
     /// Record that this process reached a clean exit, which clears the
     /// crash-restart streak.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -183,6 +191,12 @@ pub(crate) trait Prefs {
 
     /// The provider domains Gate switched on for one tool.
     fn read_auto_enabled_domains(&self, tool: &str) -> Vec<String>;
+
+    /// Persist what one tool's switch says (AG-1120).
+    fn record_tool_intent(&self, tool: &str, on: bool) -> anyhow::Result<()>;
+
+    /// What one tool's switch last said, if it was ever recorded.
+    fn tool_intent(&self, tool: &str) -> Option<bool>;
 
     /// Record whether the last sign-out was the user's own.
     fn set_signed_out_deliberately(&self, deliberate: bool) -> anyhow::Result<()>;
@@ -780,6 +794,16 @@ impl<T: Tauri> Platform for T {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn note_restart_requested(&self) {
+        crate::RESTART_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn restart_requested(&self) -> bool {
+        crate::RESTART_REQUESTED.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn record_clean_exit(&self) -> anyhow::Result<()> {
         gate_connect_core::crash_restart::record_clean_exit()
     }
@@ -824,6 +848,14 @@ impl<T: Tauri> Prefs for T {
 
     fn read_auto_enabled_domains(&self, tool: &str) -> Vec<String> {
         gate_connect_core::preferences::read_auto_enabled_domains(tool)
+    }
+
+    fn record_tool_intent(&self, tool: &str, on: bool) -> anyhow::Result<()> {
+        gate_connect_core::preferences::record_tool_intent(tool, on)
+    }
+
+    fn tool_intent(&self, tool: &str) -> Option<bool> {
+        gate_connect_core::preferences::tool_intent(tool)
     }
 
     fn set_signed_out_deliberately(&self, deliberate: bool) -> anyhow::Result<()> {
@@ -1419,8 +1451,12 @@ pub(crate) mod fake {
         pub security_sound: Mutex<Option<bool>>,
         pub device_name: Mutex<String>,
         pub auto_enabled: Mutex<BTreeMap<String, Vec<String>>>,
+        /// What each tool's switch was last recorded as.
+        pub tool_intent: Mutex<BTreeMap<String, bool>>,
         pub milestones: Mutex<HashSet<String>>,
         pub updater_relaunching: Mutex<Option<bool>>,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        pub restart_requested: Mutex<bool>,
         pub popover_pinned: Mutex<Option<bool>>,
         /// What `preferences()` answers.
         pub prefs: Preferences,
@@ -1798,6 +1834,16 @@ pub(crate) mod fake {
         }
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn note_restart_requested(&self) {
+            *self.restart_requested.lock().unwrap() = true;
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        fn restart_requested(&self) -> bool {
+            *self.restart_requested.lock().unwrap()
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         fn record_clean_exit(&self) -> anyhow::Result<()> {
             self.attempt("record_clean_exit", "record_clean_exit")
         }
@@ -1857,6 +1903,19 @@ pub(crate) mod fake {
                 .get(tool)
                 .cloned()
                 .unwrap_or_default()
+        }
+
+        fn record_tool_intent(&self, tool: &str, on: bool) -> anyhow::Result<()> {
+            self.check_write()?;
+            self.tool_intent
+                .lock()
+                .unwrap()
+                .insert(tool.to_string(), on);
+            Ok(())
+        }
+
+        fn tool_intent(&self, tool: &str) -> Option<bool> {
+            self.tool_intent.lock().unwrap().get(tool).copied()
         }
 
         fn set_signed_out_deliberately(&self, deliberate: bool) -> anyhow::Result<()> {

@@ -161,6 +161,10 @@ struct State {
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
+    /// Whether connect created `config.yaml` itself, so disconnect removes it
+    /// once nothing is left in it rather than leave an empty file behind.
+    #[serde(default)]
+    config_file_created: bool,
     /// What the `config.yaml` header edit had to create, so disconnect takes
     /// back exactly that. Absent on a state file written before the header
     /// existed, which reads as "we wrote nothing there" - correct, because we
@@ -547,6 +551,9 @@ impl Integration for Hermes {
         // routing above is what makes Hermes work, and refusing to connect over
         // a label would be the wrong trade. `status` reports it.
 
+        if !crate::env::hermes_config_path()?.exists() {
+            state.config_file_created = true;
+        }
         let header_created = write_tool_header()
             .map_err(|e| {
                 eprintln!("note: could not name Hermes in its config ({e:#}); its traffic will be recorded as unattributed.");
@@ -562,6 +569,9 @@ impl Integration for Hermes {
         if state.header_created.is_none() {
             state.header_created = header_created;
         }
+        // Saved before Gate models, which can fail: without it that failure
+        // leaves the header in `config.yaml` with no record for disconnect.
+        save_state(&state)?;
 
         // Gate models: Hermes' own provider list and default model, pointed at
         // the relay's Gate models route. Unlike the header above this is not
@@ -624,6 +634,12 @@ impl Integration for Hermes {
         // predates the header or one whose write was refused.
         if let Some(created) = state.header_created.take() {
             remove_tool_header(created)?;
+            // The header opened `model:`, and whatever else is still in it
+            // (Gate models, or the user's own keys) kept it there. Record that
+            // it was absent, so the tidy below removes it once it is empty.
+            if created.parent && state.model_shape_before_gate_models.is_none() {
+                state.model_shape_before_gate_models = Some(yaml_block::ParentShape::Absent);
+            }
             save_state(&state)?;
         }
         // Then Hermes' own model, while the sidecar still says what it was.
@@ -640,9 +656,18 @@ impl Integration for Hermes {
                 write_config(&crate::env::hermes_config_path()?, &after)?;
             }
         }
-        // Each key Gate added, narrowed to Gate's own line when the file holds
-        // it: a second line of the key that the user added stays. A key the
-        // user took over is taken back by name, as disconnect always did.
+        // A `config.yaml` connect created holds nothing of the user's once
+        // Gate's lines are out, so it goes rather than stay behind empty.
+        if state.config_file_created && read_config_body()?.trim().is_empty() {
+            let path = crate::env::hermes_config_path()?;
+            if path.exists() {
+                crate::config_changes::remove(&path)?;
+            }
+        }
+        // Each key Gate added, narrowed to Gate's own line: a second line of
+        // the key that the user added stays, and so does a line the user
+        // edited since Gate wrote it. Only a sidecar from before values were
+        // recorded takes a key back by name.
         let owned: Vec<dotenv::Owned> = state
             .added_vars
             .iter()
@@ -1207,7 +1232,7 @@ const HEADER_CHILD: &str = "extra_headers";
 /// arm is reserved for I/O, so a refused shape is not reported as a failure.
 fn write_tool_header() -> Result<Option<yaml_block::Created>> {
     let path = crate::env::hermes_config_path()?;
-    let before = match std::fs::read_to_string(&path) {
+    let before = match crate::config_changes::read_to_string(&path) {
         Ok(body) => body,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
@@ -1249,7 +1274,7 @@ fn write_tool_header() -> Result<Option<yaml_block::Created>> {
 /// Take the header back out, per what connect recorded creating.
 fn remove_tool_header(created: yaml_block::Created) -> Result<()> {
     let path = crate::env::hermes_config_path()?;
-    let Ok(before) = std::fs::read_to_string(&path) else {
+    let Ok(before) = crate::config_changes::read_to_string(&path) else {
         // Gone already; nothing of ours is left in a file that is not there.
         return Ok(());
     };
@@ -1286,7 +1311,7 @@ fn is_gate_provider(value: &str) -> bool {
 
 fn read_config_body() -> Result<String> {
     let path = crate::env::hermes_config_path()?;
-    match std::fs::read_to_string(&path) {
+    match crate::config_changes::read_to_string(&path) {
         Ok(body) => Ok(body),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
@@ -1446,9 +1471,14 @@ fn revert_gate_models(state: &mut State) -> Result<()> {
     let Some(gm) = state.gate_models.clone() else {
         return Ok(());
     };
+    // No file is nothing of Gate's left to take back, and restoring Hermes'
+    // values into a new one would write a config the user removed.
+    if !crate::env::hermes_config_path()?.exists() {
+        state.gate_models = None;
+        return Ok(());
+    }
     let before = read_config_body()?;
     let mut body = before.clone();
-    let current = |body: &str, key: &str| yaml_block::get_child(body, "model", key).ok().flatten();
     let still_ours = |key: &str, value: Option<&str>| match key {
         "provider" => value.is_some_and(is_gate_provider),
         "default" => value.is_none_or(|v| gm.written.iter().any(|w| w == v)),
@@ -1459,7 +1489,12 @@ fn revert_gate_models(state: &mut State) -> Result<()> {
         _ => false,
     };
     for key in MODEL_KEYS {
-        let now = current(&body, key);
+        // A value that cannot be read back (`default:` emptied, perhaps with a
+        // comment) is not one Gate wrote: the user changed it, and that line
+        // stays. Refusing here failed disconnect on a key already taken back.
+        let Ok(now) = yaml_block::get_child(&body, "model", key) else {
+            continue;
+        };
         if !still_ours(key, now.as_deref()) {
             continue;
         }
@@ -1480,8 +1515,12 @@ fn revert_gate_models(state: &mut State) -> Result<()> {
     {
         state.model_shape_before_gate_models = Some(gm.model_shape.clone());
     }
-    body = yaml_block::set_block(&body, "providers", GATE_PROVIDER, None)
-        .map_err(|e| refused("providers", e))?;
+    // Already gone is already reverted: only an entry still there is edited,
+    // so a `providers:` reshaped since cannot fail a revert with nothing to do.
+    if yaml_block::has_child(&body, "providers", GATE_PROVIDER) {
+        body = yaml_block::set_block(&body, "providers", GATE_PROVIDER, None)
+            .map_err(|e| refused("providers", e))?;
+    }
     body = yaml_block::tidy_parent(&body, "providers", &gm.providers_shape);
     if body != before {
         write_config(&crate::env::hermes_config_path()?, &body)?;

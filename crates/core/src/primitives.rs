@@ -151,6 +151,20 @@ pub fn system_program(program: &str) -> PathBuf {
 static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    write_file_checked(path, bytes, mode, || Ok(()))
+}
+
+/// [`write_file`], with `before_rename` run after the tempfile is staged and
+/// synced, as the last step before the rename. An error from it abandons the
+/// write and leaves the destination as it was. It is how
+/// [`crate::config_changes`] looks for a tool's own edit landing while Gate was
+/// working on the file, at the latest moment it can still be kept.
+pub(crate) fn write_file_checked(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    before_rename: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     // If `path` is a symlink (e.g. ~/.claude/settings.json), resolve it so we
     // rewrite the real target and leave the link intact instead of replacing
     // it with a regular file. But refuse a link that redirects the write OUT
@@ -285,6 +299,7 @@ pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
                 .with_context(|| format!("chmod {:o} {}", mode, tmp.display()))?;
         }
         drop(f);
+        before_rename()?;
         fs::rename(&tmp, path)
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
         Ok(())
@@ -506,7 +521,7 @@ pub fn install_id_cached() -> Option<&'static str> {
 /// [`install_id`] were macOS-only: Windows has no such device, so the id could
 /// not exist on two of the three platforms Gate ships to. `rand` is already a
 /// dependency - `oauth` mints the PKCE verifier with it.
-fn simple_uuid_v4() -> Result<String> {
+pub(crate) fn simple_uuid_v4() -> Result<String> {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);

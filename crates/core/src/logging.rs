@@ -83,12 +83,32 @@ pub fn enabled() -> bool {
         // credential prompt.
         //
         // No account yet (first run) falls back to the build kind, so a dev
-        // build still records what happened before anyone signed in.
-        match crate::account::load_base_url() {
-            Ok(Some(url)) => url.trim_end_matches('/') != PRODUCTION_GATEWAY,
-            _ => cfg!(debug_assertions),
-        }
+        // build still records what happened before anyone signed in. A stored
+        // URL that does not parse is treated the same way, rather than as "not
+        // production": nothing can be concluded from it, and a release build
+        // should not start writing on the strength of a typo.
+        crate::account::load_base_url()
+            .ok()
+            .flatten()
+            .and_then(|url| names_production(&url))
+            .map(|production| !production)
+            .unwrap_or(cfg!(debug_assertions))
     })
+}
+
+/// Whether `url` is the production gateway, or `None` if it does not parse.
+///
+/// Compared by origin (scheme, host and port), not as a string. `login
+/// --base-url` stores what the user typed, and `config.ts`'s `isListedGateway`
+/// already treats `https://Gateway.constellationgate.ai/` as the same gateway,
+/// so a string compare turned the log on in a production install for nothing
+/// more than a capital letter or an explicit `:443`. The parser lowercases the
+/// host and drops a default port; the path, including a trailing slash, is not
+/// part of an origin.
+fn names_production(url: &str) -> Option<bool> {
+    let url = reqwest::Url::parse(url).ok()?;
+    let production = reqwest::Url::parse(PRODUCTION_GATEWAY).expect("static production URL");
+    Some(url.origin() == production.origin())
 }
 
 fn log_path() -> Option<PathBuf> {
@@ -159,11 +179,25 @@ pub fn log(level: Level, message: &str) {
 
     let stamp = time::OffsetDateTime::now_utc().unix_timestamp();
     let line = format!("{stamp} {} {}\n", level.label(), redact(message));
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| f.write_all(line.as_bytes()));
+    let _ = append(&path, &line);
+}
+
+/// Append `line` to `path`, creating it owner-only.
+///
+/// 0600 like every other file here that holds activity (`activity_cache`,
+/// `config_changes`): the log carries gateway error snippets, paths and error
+/// chains, which are nobody else's business on a shared machine. The mode
+/// applies only when the file is created; Windows keeps its default ACL, which
+/// already confines a file under the user's profile to that user.
+fn append(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(line.as_bytes())
 }
 
 /// A failure the caller is swallowing, to both places it can be read.
@@ -236,5 +270,59 @@ mod tests {
             with.is_some_and(|p| p.starts_with(&dir)),
             "a test home keeps the log, inside it"
         );
+    }
+
+    #[test]
+    fn production_is_recognised_by_origin_not_spelling() {
+        for url in [
+            "https://gateway.constellationgate.ai",
+            "https://gateway.constellationgate.ai/",
+            "https://Gateway.ConstellationGate.ai",
+            "HTTPS://gateway.constellationgate.ai/",
+            "https://gateway.constellationgate.ai:443",
+            "https://gateway.constellationgate.ai:443/",
+        ] {
+            assert_eq!(names_production(url), Some(true), "{url}");
+        }
+    }
+
+    #[test]
+    fn other_gateways_are_not_production() {
+        for url in [
+            "https://staging.gateway.constellationgate.ai",
+            "http://gateway.constellationgate.ai",
+            "https://gateway.constellationgate.ai:8443",
+            "http://localhost:3000",
+        ] {
+            assert_eq!(names_production(url), Some(false), "{url}");
+        }
+    }
+
+    #[test]
+    fn an_unparseable_url_decides_nothing() {
+        assert_eq!(names_production("gateway.constellationgate.ai"), None);
+        assert_eq!(names_production(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_log_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "gate-connect-logging-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gate-connect.log");
+        append(&path, "one\n").unwrap();
+        append(&path, "two\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

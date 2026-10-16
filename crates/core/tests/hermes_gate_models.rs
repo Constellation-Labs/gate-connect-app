@@ -378,6 +378,95 @@ fn a_refused_config_on_first_connect_leaves_nothing_behind() {
     assert_eq!(config(), ORIGINAL);
 }
 
+/// With no `model:` at all, the tool header opens it and Gate models then
+/// write into it. Disconnect has to take all of that back, and keep a key the
+/// user added under the block in the meantime (AG-1123).
+#[test]
+fn a_model_block_gate_opened_is_removed_but_the_users_keys_stay() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let none = "terminal:\n  backend: local\n_config_version: 45\n";
+    {
+        let _home = setup(none);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        assert_eq!(yaml()["model"]["default"], LUNA);
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), none, "Gate models then disconnect");
+    }
+    {
+        let _home = setup(none);
+        let hermes = find(ToolId::Hermes).unwrap();
+        hermes.connect(&input()).unwrap();
+        write_config(&config().replace("model:\n", "model:\n  max_turns: 90\n"));
+        hermes.disconnect().unwrap();
+        assert_eq!(
+            config(),
+            format!("{none}model:\n  max_turns: 90\n"),
+            "the user's key keeps the block Gate opened"
+        );
+    }
+}
+
+/// A comment on the `model:` line is still a block opener: Gate models apply
+/// and come back out (AG-1123).
+#[test]
+fn a_commented_model_opener_is_edited_and_restored() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let commented = ORIGINAL.replace("model:\n", "model:  # which upstream\n");
+    let _home = setup(&commented);
+    let hermes = find(ToolId::Hermes).unwrap();
+    choose_gate(&[LUNA]);
+    hermes.connect(&input()).unwrap();
+    assert_eq!(yaml()["model"]["default"], LUNA);
+    hermes.disconnect().unwrap();
+    assert_eq!(config(), commented);
+}
+
+/// Disconnecting something already disconnected must not fail: a Gate key
+/// the user emptied is theirs now and its line stays, and a second disconnect,
+/// or one after the file was removed, has nothing to do (AG-1123).
+#[test]
+fn disconnect_succeeds_on_a_config_already_taken_back() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let _home = setup(ORIGINAL);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        let emptied = config().replace(&format!("  default: {LUNA}\n"), "  default:  # later\n");
+        assert_ne!(emptied, config());
+        write_config(&emptied);
+        hermes.disconnect().unwrap();
+        let after = config();
+        assert!(after.contains("  default:  # later\n"), "{after}");
+        assert!(!after.contains("gate-connect"), "{after}");
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), after, "a second disconnect changes nothing");
+    }
+    {
+        let _home = setup(ORIGINAL);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        hermes.disconnect().unwrap();
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), ORIGINAL, "disconnect twice");
+    }
+    {
+        let _home = setup(ORIGINAL);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        fs::remove_file(env::hermes_config_path().unwrap()).unwrap();
+        hermes.disconnect().unwrap();
+        assert!(
+            !env::hermes_config_path().unwrap().exists(),
+            "a removed config is not written back"
+        );
+    }
+}
+
 /// A fresh install's `model: ""` must come back after more than one connect:
 /// the second connect writes the tool header into the block Gate models
 /// opened, and disconnect used to restore the model before removing the
@@ -487,4 +576,32 @@ fn no_proxy_and_coverage_follow_a_gate_models_switch() {
     choose_tool();
     hermes.connect(&input()).unwrap();
     assert!(names_lan("NO_PROXY") && names_lan("no_proxy"));
+}
+
+/// A Hermes install with no `config.yaml` yet: connect creates the file for the
+/// tool header and Gate models, and disconnect has to remove it again rather
+/// than leave an empty file Hermes never had (AG-1127).
+#[test]
+fn a_config_gate_created_is_removed_on_disconnect() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = setup("");
+    let path = env::hermes_config_path().unwrap();
+    let hermes = find(ToolId::Hermes).unwrap();
+    for gate_models in [false, true] {
+        fs::remove_file(&path).unwrap();
+        if gate_models {
+            choose_gate(&[LUNA]);
+        } else {
+            choose_tool();
+        }
+        hermes.connect(&input()).unwrap();
+        assert!(path.exists(), "connect writes the header");
+        hermes.disconnect().unwrap();
+        assert!(
+            !path.exists(),
+            "gate models {gate_models}: left {:?}",
+            fs::read_to_string(&path).ok()
+        );
+        write_config("");
+    }
 }

@@ -14,7 +14,10 @@ export type Status =
    *  nothing, and emphatically not `connected`, which is the claim AG-674 exists
    *  to stop making. */
   | { kind: "overridden"; source: string }
-  | { kind: "error"; message: string };
+  /** The status read failed. `intended` is what the tool's switch last said,
+   *  recorded by the backend from the last read that answered, so the switch
+   *  does not render off just because this one did not (AG-1120). */
+  | { kind: "error"; message: string; intended: boolean };
 
 /** Whose credential rides a routed request, and therefore whether a family
  *  switch may flip the row. Mirrors `taxonomy::Credential`.

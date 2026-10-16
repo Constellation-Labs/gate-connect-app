@@ -96,6 +96,44 @@ describe("verdictStatus", () => {
   });
 
   /**
+   * "Not routed" is the switch's half of the vocabulary and needs no sweep to be
+   * true. Without this, a row the user just turned off read amber "Checking"
+   * until the sweep landed, and stayed that way when it never did. AG-1120.
+   */
+  it("a switched-off row with no verdict reads Not routed", () => {
+    expect(verdictStatus(undefined, { on: false })).toEqual({ kind: "not-routed" });
+  });
+
+  /**
+   * An unreadable config outranks the sweep: switched on it is the fault, named
+   * as a read failure; switched off it is still the switch's own Not routed.
+   * AG-1120.
+   */
+  it("an unreadable config reads Not protected when on and Not routed when off", () => {
+    expect(verdictStatus(verdict({ state: "on" }), { readFailed: true, on: true })).toEqual({
+      kind: "not-protected",
+      detail: "Configuration couldn't be read",
+    });
+    expect(verdictStatus(undefined, { readFailed: true, on: true })).toEqual({
+      kind: "not-protected",
+      detail: "Configuration couldn't be read",
+    });
+    expect(
+      verdictStatus(verdict({ state: "needs_attention", reason: "connection_problem" }), {
+        readFailed: true,
+        on: false,
+      }),
+    ).toEqual({ kind: "not-routed" });
+  });
+
+  it("a switched-on row with no verdict is still checking", () => {
+    expect(verdictStatus(undefined, { on: true })).toEqual({
+      kind: "not-protected",
+      detail: "Checking",
+    });
+  });
+
+  /**
    * A failed write leaves nothing on disk, so the sweep keeps describing the
    * state from before the click - true, and not what the user needs to know.
    */
