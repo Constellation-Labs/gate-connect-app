@@ -236,7 +236,14 @@ export function TrayApp() {
    * somebody opens and closes all day.
    */
   const recheckEvery = useMemo(() => recheckCadence(verdicts.values()), [verdicts]);
-  useVerdictWatch(recheckEvery, () => void refreshVerdicts());
+  /** A routing action is writing. Set below, once `routing` exists: the watch
+   *  skips its tick meanwhile, as the window shell's does, because a sweep
+   *  landing mid-write paints the new verdict beside the old switch and the
+   *  action's own settle re-reads everything once it is done. */
+  const routingInFlight = useRef(false);
+  useVerdictWatch(recheckEvery, () => {
+    if (!routingInFlight.current) void refreshVerdicts();
+  });
 
   /** The same cadence where the reveal handler can read it.
    *
@@ -517,6 +524,9 @@ export function TrayApp() {
     },
   });
   const routingBusy = routing.busy;
+  useEffect(() => {
+    routingInFlight.current = routingBusy;
+  }, [routingBusy]);
 
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),

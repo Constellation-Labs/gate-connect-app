@@ -1002,9 +1002,15 @@ export function NewUiApp() {
    * Armed on the condition, not always: `routing_verdicts` probes the relay and
    * the account's session, which is why `redetect` deliberately leaves it out
    * of the visibility edge.
+   *
+   * Skipped while a routing action is writing, for `redetect`'s reason: a sweep
+   * landing mid-write paints the new verdict beside the old switch, and the
+   * action's own settle re-reads everything once it is done.
    */
   const recheckEvery = useMemo(() => recheckCadence(verdicts.values()), [verdicts]);
-  useVerdictWatch(recheckEvery, () => void refreshVerdicts());
+  useVerdictWatch(recheckEvery, () => {
+    if (!routingInFlight.current) void refreshVerdicts();
+  });
 
 
   const refresh = useCallback(async () => {
